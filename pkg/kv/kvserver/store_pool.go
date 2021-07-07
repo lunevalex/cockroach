@@ -625,6 +625,16 @@ func (sp *StorePool) IsLive(storeID roachpb.StoreID) (bool, error) {
 	return status == storeStatusAvailable, nil
 }
 
+// IsLive returns true if the node is considered alive by the store pool or an error
+// if the store is not found in the pool.
+func (sp *StorePool) IsDecommissioning(storeID roachpb.StoreID) (bool, error) {
+	status, err := sp.storeStatus(storeID)
+	if err != nil {
+		return false, err
+	}
+	return status == storeStatusDecommissioning, nil
+}
+
 func (sp *StorePool) storeStatus(storeID roachpb.StoreID) (storeStatus, error) {
 	sp.detailsMu.Lock()
 	defer sp.detailsMu.Unlock()

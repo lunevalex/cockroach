@@ -948,3 +948,185 @@ func TestLeasesDontThrashWhenNodeBecomesSuspect(t *testing.T) {
 		return errors.Errorf("Expected server 1 to have at lease 1 lease.")
 	})
 }
+
+// This test verifies that when a node is killed before it finishes decomissioning
+// leases dont move to it.
+func TestLeasesDontMoveToAnUnavailableDecommissioningNode(t *testing.T) {
+	defer leaktest.AfterTest(t)()
+	defer log.Scope(t).Close(t)
+
+	// This is a hefty test, so we skip it under short and race.
+	skip.UnderShort(t)
+	skip.UnderRace(t)
+
+	// We introduce constraints so that only n2,n3,n4 are considered when we
+	// determine if we should transfer leases based on capacity.
+	zcfg := zonepb.DefaultZoneConfig()
+	zcfg.Constraints = []zonepb.ConstraintsConjunction{
+		{
+			NumReplicas: 3,
+			Constraints: []zonepb.Constraint{
+				{Type: zonepb.Constraint_REQUIRED, Key: "region", Value: "us-west"},
+			},
+		},
+	}
+	locality := func(region string) roachpb.Locality {
+		return roachpb.Locality{
+			Tiers: []roachpb.Tier{
+				{Key: "region", Value: region},
+			},
+		}
+	}
+	localities := []roachpb.Locality{
+		locality("us-east"),
+		locality("us-west"),
+		locality("us-west"),
+		locality("us-west"),
+	}
+	stickyRegistry := server.NewStickyInMemEnginesRegistry()
+	defer stickyRegistry.CloseAllStickyInMemEngines()
+	ctx := context.Background()
+	manualClock := hlc.NewHybridManualClock()
+	serverArgs := make(map[int]base.TestServerArgs)
+	numNodes := 4
+	for i := 0; i < numNodes; i++ {
+		serverArgs[i] = base.TestServerArgs{
+			Locality: localities[i],
+			Knobs: base.TestingKnobs{
+				Server: &server.TestingKnobs{
+					ClockSource:               manualClock.UnixNano,
+					DefaultZoneConfigOverride: &zcfg,
+					StickyEngineRegistry:      stickyRegistry,
+				},
+			},
+			StoreSpecs: []base.StoreSpec{
+				{
+					InMemory:               true,
+					StickyInMemoryEngineID: strconv.FormatInt(int64(i), 10),
+				},
+			},
+		}
+	}
+	tc := testcluster.StartTestCluster(t, numNodes,
+		base.TestClusterArgs{
+			ReplicationMode:   base.ReplicationManual,
+			ServerArgsPerNode: serverArgs,
+		})
+	defer tc.Stopper().Stop(ctx)
+
+	// We are not going to have stats, so disable this so we just rely on
+	// the store means.
+	_, err := tc.ServerConn(0).Exec(`SET CLUSTER SETTING kv.allocator.load_based_lease_rebalancing.enabled = 'false'`)
+	require.NoError(t, err)
+
+	_, rhsDesc := tc.SplitRangeOrFatal(t, keys.UserTableDataMin)
+	tc.AddVotersOrFatal(t, rhsDesc.StartKey.AsRawKey(), tc.Targets(1, 2, 3)...)
+	tc.RemoveLeaseHolderOrFatal(t, rhsDesc, tc.Target(0), tc.Target(1))
+
+	startKeys := make([]roachpb.Key, 20)
+	startKeys[0] = rhsDesc.StartKey.AsRawKey()
+	for i := 1; i < 20; i++ {
+		startKeys[i] = startKeys[i-1].Next()
+		tc.SplitRangeOrFatal(t, startKeys[i])
+		require.NoError(t, tc.WaitForVoters(startKeys[i], tc.Targets(1, 2, 3)...))
+	}
+
+	leaseOnAvailableStores := func(key roachpb.Key) error {
+		var repl *kvserver.Replica
+		for _, i := range []int{2, 3} {
+			repl = tc.GetFirstStoreFromServer(t, i).LookupReplica(roachpb.RKey(key))
+			log.Infof(ctx, "Lease=%s", repl.CurrentLeaseStatus(ctx))
+			if repl.OwnsValidLease(ctx, tc.Servers[i].Clock().NowAsClockTimestamp()) {
+				return nil
+			}
+		}
+		return errors.Errorf("Expected no lease on server 1 for %s", repl)
+	}
+
+	allLeasesOnAvailableStores := func() error {
+		for _, key := range startKeys {
+			if err := leaseOnAvailableStores(key); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+
+	// Make sure that all store pools have seen liveness heartbeats from everyone.
+	testutils.SucceedsSoon(t, func() error {
+		for i := range tc.Servers {
+			for j := range tc.Servers {
+				live, err := tc.GetFirstStoreFromServer(t, i).GetStoreConfig().StorePool.IsLive(tc.Target(j).StoreID)
+				if err != nil {
+					return err
+				}
+				if !live {
+					return errors.Errorf("Expected server %d to be suspect on server %d", j, i)
+				}
+			}
+		}
+		return nil
+	})
+
+	for _, key := range startKeys {
+		repl := tc.GetFirstStoreFromServer(t, 1).LookupReplica(roachpb.RKey(key))
+		tc.TransferRangeLeaseOrFatal(t, *repl.Desc(), tc.Target(1))
+		testutils.SucceedsSoon(t, func() error {
+			if !repl.OwnsValidLease(ctx, tc.Servers[1].Clock().NowAsClockTimestamp()) {
+				return errors.Errorf("Expected lease to transfer to server 1 for replica %s", repl)
+			}
+			return nil
+		})
+	}
+
+	heartbeat := func(servers ...int) {
+		for _, i := range servers {
+			testutils.SucceedsSoon(t, tc.Servers[i].HeartbeatNodeLiveness)
+		}
+	}
+
+	decommSrv := tc.Server(1)
+	require.NoError(t, decommSrv.Decommission(
+		ctx, livenesspb.MembershipStatus_DECOMMISSIONING, []roachpb.NodeID{decommSrv.NodeID()}))
+	testutils.SucceedsSoon(t, func() error {
+		for i := range tc.Servers {
+			for j := range tc.Servers {
+				live, err := tc.GetFirstStoreFromServer(t, i).GetStoreConfig().StorePool.IsDecommissioning(decommSrv.GetFirstStoreID())
+				if err != nil {
+					return err
+				}
+				if !live {
+					return errors.Errorf("Expected server %d to be decommissioning on server %d", j, i)
+				}
+			}
+		}
+		return nil
+	})
+	tc.StopServer(1)
+	// We move the time, so that server 1 can start failing its liveness.
+	livenessDuration, _ := tc.GetFirstStoreFromServer(t, 0).GetStoreConfig().RaftConfig.NodeLivenessDurations()
+
+	// We dont want the other stores to lose liveness while we move the time, so
+	// tick the time a second and a time and make sure they heartbeat.
+	for i := 0; i < int(math.Ceil(livenessDuration.Seconds())+1); i++ {
+		manualClock.Increment(time.Second.Nanoseconds())
+		heartbeat(0, 2, 3)
+	}
+
+	runThroughTheReplicateQueue := func(key roachpb.Key) {
+		for _, i := range []int{2, 3} {
+			repl := tc.GetFirstStoreFromServer(t, i).LookupReplica(roachpb.RKey(key))
+			require.NotNil(t, repl)
+			_, _, enqueueError := tc.GetFirstStoreFromServer(t, i).
+				ManuallyEnqueue(ctx, "replicate", repl, true)
+			require.NoError(t, enqueueError)
+		}
+	}
+
+	testutils.SucceedsSoon(t, func() error {
+		for _, key := range startKeys {
+			runThroughTheReplicateQueue(key)
+		}
+		return allLeasesOnAvailableStores()
+	})
+}
