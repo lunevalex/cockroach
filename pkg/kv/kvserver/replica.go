@@ -1906,17 +1906,17 @@ func (r *Replica) maybeWatchForMergeLocked(ctx context.Context) (bool, error) {
 // replicas).
 func (r *Replica) maybeTransferRaftLeadershipToLeaseholderLocked(
 	ctx context.Context, now hlc.ClockTimestamp,
-) {
+) bool {
 	if r.store.TestingKnobs().DisableLeaderFollowsLeaseholder {
-		return
+		return false
 	}
 	status := r.leaseStatusAtRLocked(ctx, now)
 	if !status.IsValid() || status.OwnedBy(r.StoreID()) {
-		return
+		return false
 	}
 	raftStatus := r.raftStatusRLocked()
 	if raftStatus == nil || raftStatus.RaftState != raft.StateLeader {
-		return
+		return false
 	}
 	lhReplicaID := uint64(status.Lease.Replica.ReplicaID)
 	lhProgress, ok := raftStatus.Progress[lhReplicaID]
@@ -1924,7 +1924,9 @@ func (r *Replica) maybeTransferRaftLeadershipToLeaseholderLocked(
 		log.VEventf(ctx, 1, "transferring raft leadership to replica ID %v", lhReplicaID)
 		r.store.metrics.RangeRaftLeaderTransfers.Inc(1)
 		r.mu.internalRaftGroup.TransferLeader(lhReplicaID)
+		return true
 	}
+	return false
 }
 
 func (r *Replica) getReplicaDescriptorByIDRLocked(

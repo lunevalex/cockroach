@@ -740,6 +740,7 @@ type Store struct {
 	sstSnapshotStorage SSTSnapshotStorage
 	protectedtsReader  spanconfig.ProtectedTSReader
 	ctSender           *sidetransport.Sender
+	leaseAcquirer      leaseAcquirer
 
 	// gossipRangeCountdown and leaseRangeCountdown are countdowns of
 	// changes to range and leaseholder counts, after which the store
@@ -1218,6 +1219,7 @@ func NewStore(
 	s.rangefeedReplicas.m = map[roachpb.RangeID]struct{}{}
 	s.rangefeedReplicas.Unlock()
 
+	s.leaseAcquirer = newLeaseAcquirer(s)
 	s.tsCache = tscache.New(cfg.Clock)
 	s.metrics.registry.AddMetricStruct(s.tsCache.Metrics())
 
@@ -1867,6 +1869,8 @@ func (s *Store) Start(ctx context.Context, stopper *stop.Stopper) error {
 			truncator.durabilityAdvancedCallback()
 		})
 	}
+
+	s.leaseAcquirer.start(ctx)
 
 	// Create the recovery manager.
 	s.recoveryMgr = txnrecovery.NewManager(

@@ -1504,3 +1504,44 @@ func (r *Replica) checkLeaseRespectsPreferences(ctx context.Context) (bool, erro
 	}
 	return false, nil
 }
+
+type leaseAcquirer interface {
+	// acquire a lease for the specified range.
+	acquire(rangeID roachpb.RangeID)
+	// start kicks of the async worker to acquire leases.
+	start(ctx context.Context)
+}
+
+// leaseAcquirerImpl acquires leases asynchronously for requested ranges.
+type leaseAcquirerImpl struct {
+	queue chan roachpb.RangeID
+	store *Store
+}
+
+func newLeaseAcquirer(store *Store) leaseAcquirer {
+	return leaseAcquirerImpl{store: store, queue: make(chan roachpb.RangeID)}
+}
+
+func (a leaseAcquirerImpl) start(ctx context.Context) {
+	for {
+		select {
+			case <-a.store.stopper.ShouldQuiesce():
+				return
+		  case rangeId := <-a.queue:
+			  r, err := a.store.GetReplica(rangeId)
+				if err != nil {
+					continue
+				}
+				status := r.leaseStatusAtRLocked(ctx, r.store.Clock().NowAsClockTimestamp())
+				if !status.IsValid() {
+					if _, err := r.redirectOnOrAcquireLease(ctx); err != nil {
+						log.Errorf(ctx, "Failed to acquire lease, err=%s", err)
+					}
+				}
+		}
+	}
+}
+
+func (a leaseAcquirerImpl) acquire(rangeID roachpb.RangeID) {
+	a.queue <- rangeID
+}
