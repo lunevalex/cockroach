@@ -1,12 +1,7 @@
 // Copyright 2023 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package kvstorage
 
@@ -34,8 +29,8 @@ func TestStoresClusterVersionIncompatible(t *testing.T) {
 
 	ctx := context.Background()
 
-	current := clusterversion.Latest.Version()
-	minSupported := clusterversion.MinSupported.Version()
+	current := clusterversion.ByKey(clusterversion.BinaryVersionKey)
+	minSupported := clusterversion.ByKey(clusterversion.BinaryMinSupportedVersionKey)
 
 	future := current
 	future.Major++
@@ -97,7 +92,7 @@ func TestClusterVersionWriteSynthesize(t *testing.T) {
 	// stores with. create a store.
 	// For example's sake, let's assume that minV is 1.0. Then binV is 1.1 and
 	// development versions are 1.0-1 and 1.0-2.
-	minV := clusterversion.MinSupported.Version()
+	minV := clusterversion.TestingBinaryMinSupportedVersion
 	binV := minV
 	binV.Minor += 1
 
@@ -114,7 +109,7 @@ func TestClusterVersionWriteSynthesize(t *testing.T) {
 		st := cluster.MakeTestingClusterSettingsWithVersions(binV, minV, false /* initializeVersion */)
 		eng, err := storage.Open(
 			ctx, storage.InMemory(), st,
-			storage.ForTesting, storage.MaxSize(1<<20),
+			storage.ForTesting, storage.MaxSizeBytes(1<<20),
 		)
 		if err != nil {
 			t.Fatal(err)

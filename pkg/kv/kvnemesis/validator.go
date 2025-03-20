@@ -1,18 +1,14 @@
 // Copyright 2020 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package kvnemesis
 
 import (
 	"context"
 	"fmt"
+	"reflect"
 	"regexp"
 	"sort"
 	"strings"
@@ -242,21 +238,6 @@ type observedScan struct {
 }
 
 func (*observedScan) observedMarker() {}
-
-type savepointType int
-
-const (
-	create savepointType = iota
-	release
-	rollback
-)
-
-type observedSavepoint struct {
-	ID   int
-	Type savepointType
-}
-
-func (*observedSavepoint) observedMarker() {}
 
 type validator struct {
 	kvs *Engine
@@ -798,6 +779,7 @@ func (v *validator) processOp(op Operation) {
 		v.failIfError(
 			op, t.Result,
 			exceptRollback, exceptAmbiguous, exceptSharedLockPromotionError, exceptSkipLockedReplayError,
+			exceptSkipLockedUnsupportedError,
 		)
 
 		ops := t.Ops
@@ -880,24 +862,6 @@ func (v *validator) processOp(op Operation) {
 	case *ChangeZoneOperation:
 		execTimestampStrictlyOptional = true
 		v.failIfError(op, t.Result) // fail on all errors
-	case *SavepointCreateOperation:
-		sp := &observedSavepoint{ID: int(t.ID), Type: create}
-		v.curObservations = append(v.curObservations, sp)
-		// Don't fail on all errors because savepoints can be labeled with
-		// errOmitted if a previous op in the txn failed.
-		v.checkError(op, t.Result)
-	case *SavepointReleaseOperation:
-		sp := &observedSavepoint{ID: int(t.ID), Type: release}
-		v.curObservations = append(v.curObservations, sp)
-		// Don't fail on all errors because savepoints can be labeled with
-		// errOmitted if a previous op in the txn failed.
-		v.checkError(op, t.Result)
-	case *SavepointRollbackOperation:
-		sp := &observedSavepoint{ID: int(t.ID), Type: rollback}
-		v.curObservations = append(v.curObservations, sp)
-		// Don't fail on all errors because savepoints can be labeled with
-		// errOmitted if a previous op in the txn failed.
-		v.checkError(op, t.Result)
 	default:
 		panic(errors.AssertionFailedf(`unknown operation type: %T %v`, t, t))
 	}
@@ -1036,18 +1000,6 @@ func (v *validator) checkAtomicCommitted(
 	// unit tested.
 	lastWritesByIdx := map[int]struct{}{}
 	var lastWrites roachpb.SpanGroup
-	// We will iterate over the observations in reverse order to find the last
-	// write; so we will encounter a savepoint rollback before the corresponding
-	// savepoint create. Assuming a rollback is preceded by a matching create
-	// (guaranteed by the generator), to identify the last write we need to ignore
-	// all writes that occur between a savepoint rollback and a corresponding
-	// savepoint create.
-	// rollbackSp keeps track of the current active rollback.
-	// rollbackSp = nil if no savepoint rollback has been encountered yet or any
-	// encountered rollback has been matched by a rollback create.
-	// rollbackSp = observedSavepoint{...} when the observedSavepoint object
-	// contains a rollback for which we haven't encountered a matching create yet.
-	var rollbackSp *observedSavepoint = nil
 	for idx := len(txnObservations) - 1; idx >= 0; idx-- {
 		observation := txnObservations[idx]
 		switch o := observation.(type) {
@@ -1079,10 +1031,19 @@ func (v *validator) checkAtomicCommitted(
 			{
 				var g roachpb.SpanGroup
 				g.Add(lastWrites.Slice()...)
-				// If subtracting did nothing and there are no active rollbacks, it's a
-				// most recent write.
-				lastWrite = !g.Sub(sp) && rollbackSp == nil
+				lastWrite = !g.Sub(sp) // if subtracting did nothing, it's a most recent write
+				if !lastWrite {
+					// Otherwise, add it back in, which should restore the old set. If it
+					// didn't, there was partial overlap, which shouldn't be possible.
+					g.Add(sp)
+				}
+				if then, now := lastWrites.Slice(), g.Slice(); !reflect.DeepEqual(then, now) {
+					v.failures = append(v.failures,
+						errors.AssertionFailedf("%s has write %q partially overlapping %+v; subtracting and re-adding gave %+v", atomicType, sp, then, now))
+					return
+				}
 			}
+
 			if lastWrite {
 				lastWritesByIdx[idx] = struct{}{}
 				lastWrites.Add(sp)
@@ -1114,32 +1075,8 @@ func (v *validator) checkAtomicCommitted(
 					panic(err)
 				}
 			}
-		case *observedSavepoint:
-
-			switch o.Type {
-			case create:
-				// Set rollbackSp to nil if this savepoint create matches the rolled
-				// back one recorded in rollbackSp.
-				if rollbackSp != nil && rollbackSp.ID == o.ID {
-					rollbackSp = nil
-				}
-			case release:
-				// Savepoint releases don't affect the last write.
-			case rollback:
-				// Update rollbackSp only if there is no active rollback (i.e. a
-				// rollback for which we haven't found a matching create). Otherwise,
-				// the active rollback recorded in rollbackSp subsumes the one we're
-				// seeing now.
-				if rollbackSp == nil {
-					rollbackSp = o
-				}
-			}
 		}
 	}
-
-	// A map from a savepoint id to a batch that represents the state of the
-	// txn at the time of the savepoint creation.
-	spIDToBatch := make(map[int]*pebble.Batch)
 
 	// Iterate through the observations, building up the snapshot visible at each
 	// point in the atomic unit and filling in the valid read times (validating
@@ -1157,15 +1094,14 @@ func (v *validator) checkAtomicCommitted(
 			// writeTS was populated above as the unique timestamp at which the writes became
 			// visible. We know the operation had writes (we're looking at one now) and so
 			// this operation has either materialized or is covered by a later one that did,
-			// and so we must have a timestamp here.
-			// The only exception is when all writes were rolled back by a savepoint
-			// rollback. In that case, we still need a writeTS to ensure reads within the txn
-			// can see those writes; the execTimestamp serves that purpose.
+			// and so we must have a timestamp here. We defer the failure to the next for
+			// loop, as we will have filled in the read timestamps at that time.
 			if writeTS.IsEmpty() {
-				writeTS = execTimestamp
+				continue
 			}
 
 			_, isLastWrite := lastWritesByIdx[idx]
+
 			if !isLastWrite && o.Timestamp.IsSet() {
 				failure = `committed txn overwritten key had write`
 				break
@@ -1209,34 +1145,9 @@ func (v *validator) checkAtomicCommitted(
 				failure = `scan result not ordered correctly`
 			}
 			o.Valid = validScanTime(batch, o.Span, o.KVs, o.SkipLocked /* missingKeysValid */)
-		case *observedSavepoint:
-			switch o.Type {
-			case create:
-				// Clone the existing batch by creating a new batch and applying the
-				// existing batch state to it.
-				newBatch := v.kvs.kvs.NewIndexedBatch()
-				_ = newBatch.Apply(batch, nil)
-				if _, ok := spIDToBatch[o.ID]; ok {
-					panic(errors.AssertionFailedf("validating a savepoint create op: ID %d already exists", o.ID))
-				}
-				spIDToBatch[o.ID] = newBatch
-			case release:
-				// Savepoint releases don't affect the validation.
-			case rollback:
-				if _, ok := spIDToBatch[o.ID]; !ok {
-					panic(errors.AssertionFailedf("validating a savepoint rollback op: ID %d does not exist", o.ID))
-				}
-				// The new batch to use for validation.
-				batch = spIDToBatch[o.ID]
-			}
 		default:
 			panic(errors.AssertionFailedf(`unknown observedOp: %T %s`, observation, observation))
 		}
-	}
-
-	// Close all batches in spIDToBatch.
-	for _, spBatch := range spIDToBatch {
-		_ = spBatch.Close()
 	}
 
 	validPossibilities := disjointTimeSpans{{Start: hlc.MinTimestamp, End: hlc.MaxTimestamp}}
@@ -1260,9 +1171,6 @@ func (v *validator) checkAtomicCommitted(
 			opValid = o.ValidTimes
 		case *observedScan:
 			opValid = o.Valid.Combined()
-		case *observedSavepoint:
-			// A savepoint is always valid.
-			opValid = disjointTimeSpans{{Start: hlc.MinTimestamp, End: hlc.MaxTimestamp}}
 		default:
 			panic(errors.AssertionFailedf(`unknown observedOp: %T %s`, observation, observation))
 		}
@@ -1342,7 +1250,6 @@ func (v *validator) checkAtomicUncommitted(atomicType string, txnObservations []
 		case *observedScan:
 			// TODO(dan): Figure out what we can assert about reads in an uncommitted
 			// transaction.
-		case *observedSavepoint:
 		default:
 			panic(errors.AssertionFailedf(`unknown observedOp: %T %s`, observed, observed))
 		}
@@ -1380,6 +1287,7 @@ func (v *validator) checkError(
 		exceptDelRangeUsingTombstoneStraddlesRangeBoundary,
 		exceptSharedLockPromotionError,
 		exceptSkipLockedReplayError,
+		exceptSkipLockedUnsupportedError,
 	}
 	sl = append(sl, extraExceptions...)
 	return v.failIfError(op, r, sl...)
@@ -1734,16 +1642,6 @@ func printObserved(observedOps ...observedOp) string {
 			}
 			fmt.Fprintf(&buf, "[%s]%s:%s->[%s]",
 				opCode, o.Span, o.Valid, kvs.String())
-		case *observedSavepoint:
-			opCode := "sp"
-			if o.Type == create {
-				opCode += "(create)"
-			} else if o.Type == release {
-				opCode += "(release)"
-			} else if o.Type == rollback {
-				opCode += "(rollback)"
-			}
-			fmt.Fprintf(&buf, "[%s]id:%d", opCode, o.ID)
 		default:
 			panic(errors.AssertionFailedf(`unknown observedOp: %T %s`, observed, observed))
 		}

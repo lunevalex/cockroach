@@ -1,12 +1,7 @@
 // Copyright 2022 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package ttljob
 
@@ -120,6 +115,16 @@ func (b *SelectQueryBuilder) buildQuery() string {
 
 var qosLevel = sessiondatapb.TTLLow
 
+func getInternalExecutorOverride(
+	qosLevel sessiondatapb.QoSLevel,
+) sessiondata.InternalExecutorOverride {
+	return sessiondata.InternalExecutorOverride{
+		User:                   username.RootUserName(),
+		QualityOfService:       &qosLevel,
+		OptimizerUseHistograms: true,
+	}
+}
+
 func (b *SelectQueryBuilder) Run(
 	ctx context.Context, ie isql.Executor,
 ) (_ []tree.Datums, hasNext bool, _ error) {
@@ -148,10 +153,7 @@ func (b *SelectQueryBuilder) Run(
 		ctx,
 		b.selectOpName,
 		nil, /* txn */
-		sessiondata.InternalExecutorOverride{
-			User:             username.RootUserName(),
-			QualityOfService: &qosLevel,
-		},
+		getInternalExecutorOverride(qosLevel),
 		query,
 		b.cachedArgs...,
 	)
@@ -254,10 +256,7 @@ func (b *DeleteQueryBuilder) Run(
 		ctx,
 		b.deleteOpName,
 		txn.KV(),
-		sessiondata.InternalExecutorOverride{
-			User:             username.RootUserName(),
-			QualityOfService: &qosLevel,
-		},
+		getInternalExecutorOverride(qosLevel),
 		query,
 		deleteArgs...,
 	)

@@ -1,12 +1,7 @@
 // Copyright 2020 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package sql
 
@@ -314,7 +309,7 @@ func (e *distSQLSpecExecFactory) checkExprsAndMaybeMergeLastStage(
 		recommendation = cannotDistribute
 	}
 	for _, expr := range exprs {
-		if err := checkExpr(expr); err != nil {
+		if err := checkExprForDistSQL(expr); err != nil {
 			recommendation = cannotDistribute
 			if physPlan != nil {
 				// The filter expression cannot be distributed, so we need to
@@ -868,6 +863,7 @@ func (e *distSQLSpecExecFactory) ConstructPlan(
 	cascades []exec.Cascade,
 	checks []exec.Node,
 	rootRowCount int64,
+	flags exec.PlanFlags,
 ) (exec.Plan, error) {
 	if len(subqueries) != 0 {
 		return nil, unimplemented.NewWithIssue(47473, "experimental opt-driven distsql planning: subqueries")
@@ -883,7 +879,7 @@ func (e *distSQLSpecExecFactory) ConstructPlan(
 	} else {
 		p.physPlan.onClose = e.planCtx.getCleanupFunc()
 	}
-	return constructPlan(e.planner, root, subqueries, cascades, checks, rootRowCount)
+	return constructPlan(e.planner, root, subqueries, cascades, checks, rootRowCount, flags)
 }
 
 func (e *distSQLSpecExecFactory) ConstructExplainOpt(

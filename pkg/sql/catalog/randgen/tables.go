@@ -1,12 +1,7 @@
 // Copyright 2022 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package randgen
 
@@ -106,9 +101,9 @@ func (g *testSchemaGenerator) selectNamesAndTemplates(
 			tbNamePat := g.models.tb[i].namePat
 			cfg := g.cfg.NameGen
 			if namesPerTemplate == 1 {
-				cfg.Suffix = false
+				cfg.Number = false
 				if !cfg.HasVariability() {
-					cfg.Suffix = true
+					cfg.Number = true
 				}
 			}
 			ng := randident.NewNameGenerator(&cfg, g.rand, tbNamePat)
@@ -181,10 +176,10 @@ func (g *testSchemaGenerator) genOneTable(
 	tmpl.desc.Temporary = sc.SchemaKind() == catalog.SchemaTemporary
 	if g.cfg.RandomizeColumns {
 		nameGenCfg := g.cfg.NameGen
-		nameGenCfg.Suffix = false
+		nameGenCfg.Number = false
 		for i, cPat := range tmpl.baseColumnNames {
 			ng := randident.NewNameGenerator(&nameGenCfg, g.rand, cPat)
-			colName := ng.GenerateOne("0")
+			colName := ng.GenerateOne(0)
 			tmpl.desc.Columns[i+1].Name = colName
 			tmpl.desc.Families[0].ColumnNames[i+1] = colName
 			for j := range tmpl.desc.PrimaryIndex.KeyColumnNames {
@@ -199,7 +194,7 @@ func (g *testSchemaGenerator) genOneTable(
 			}
 		}
 		ng := randident.NewNameGenerator(&nameGenCfg, g.rand, "primary")
-		idxName := ng.GenerateOne("0")
+		idxName := ng.GenerateOne(0)
 		tmpl.desc.PrimaryIndex.Name = idxName
 	}
 

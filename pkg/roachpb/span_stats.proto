@@ -1,12 +1,7 @@
 // Copyright 2023 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 syntax = "proto3";
 package cockroach.roachpb;
@@ -33,13 +28,12 @@ message SpanStatsRequest {
   bytes end_key = 3 [(gogoproto.casttype) = "RKey"];
 
   repeated Span spans = 4 [(gogoproto.nullable) = false];
-
-  bool skip_mvcc_stats = 5;
 }
 
 message SpanStats {
   // TotalStats are the logical MVCC stats for the requested span.
   cockroach.storage.enginepb.MVCCStats total_stats = 1 [(gogoproto.nullable) = false];
+
   // range_count measures the number of ranges that the request span falls within.
   // A SpanStatsResponse for a span that lies within a range, and whose start
   // key sorts after the range start, and whose end key sorts before the
@@ -63,7 +57,13 @@ message SpanStats {
   // It represents a physical value across all replicas.
   uint64 external_file_bytes = 6;
 
-  // NEXT ID: 7.
+  // ApproximateTotalStats is the approximate, post-replicated MVCC stats for
+  // the requested span. This is an approximate value as it is constructed by
+  // querying all replicas, which includes followers, and the value can be
+  // stale.
+  cockroach.storage.enginepb.MVCCStats approximate_total_stats = 7 [(gogoproto.nullable) = false];
+
+  // NEXT ID: 8.
 }
 
 message SpanStatsResponse {

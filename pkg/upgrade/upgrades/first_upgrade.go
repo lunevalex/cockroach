@@ -1,12 +1,7 @@
 // Copyright 2023 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package upgrades
 
@@ -19,11 +14,13 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/catalogkeys"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/descs"
+	"github.com/cockroachdb/cockroach/pkg/sql/catalog/lease"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/nstree"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
 	"github.com/cockroachdb/cockroach/pkg/upgrade"
 	"github.com/cockroachdb/cockroach/pkg/util/envutil"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
+	"github.com/cockroachdb/cockroach/pkg/util/timeutil"
 	"github.com/cockroachdb/errors"
 )
 
@@ -54,25 +51,18 @@ func FirstUpgradeFromRelease(
 	}); err != nil {
 		return err
 	}
-	var batch catalog.DescriptorIDSet
-	const batchSize = 1000
+	var descsToUpdate catalog.DescriptorIDSet
 	if err := all.ForEachDescriptor(func(desc catalog.Descriptor) error {
 		changes := desc.GetPostDeserializationChanges()
 		if !changes.HasChanges() || (changes.Len() == 1 && changes.Contains(catalog.SetModTimeToMVCCTimestamp)) {
 			return nil
 		}
-		batch.Add(desc.GetID())
-		if batch.Len() >= batchSize {
-			if err := upgradeDescriptors(ctx, d, batch); err != nil {
-				return err
-			}
-			batch = catalog.MakeDescriptorIDSet()
-		}
+		descsToUpdate.Add(desc.GetID())
 		return nil
 	}); err != nil {
 		return err
 	}
-	return upgradeDescriptors(ctx, d, batch)
+	return upgradeDescriptors(ctx, d, descsToUpdate)
 }
 
 // upgradeDescriptors round-trips the descriptor protobufs for the given keys
@@ -83,28 +73,51 @@ func upgradeDescriptors(
 	if ids.Empty() {
 		return nil
 	}
-	return d.DB.DescsTxn(ctx, func(ctx context.Context, txn descs.Txn) error {
-		muts, err := txn.Descriptors().MutableByID(txn.KV()).Descs(ctx, ids.Ordered())
+	batchSize := 100
+	// Any batch size below this will use high priority.
+	const HighPriBatchSize = 25
+	repairBatchTimeLimit := lease.LeaseDuration.Get(&d.Settings.SV)
+	currentIdx := 0
+	idsToRewrite := ids.Ordered()
+	for currentIdx <= len(idsToRewrite) {
+		descBatch := idsToRewrite[currentIdx:min(currentIdx+batchSize, len(idsToRewrite))]
+		err := timeutil.RunWithTimeout(ctx, "repair-post-deserialization", repairBatchTimeLimit, func(ctx context.Context) error {
+			return d.DB.DescsTxn(ctx, func(ctx context.Context, txn descs.Txn) error {
+				if batchSize <= HighPriBatchSize {
+					if err := txn.KV().SetUserPriority(roachpb.MaxUserPriority); err != nil {
+						return err
+					}
+				}
+				muts, err := txn.Descriptors().MutableByID(txn.KV()).Descs(ctx, descBatch)
+				if err != nil {
+					return err
+				}
+				b := txn.KV().NewBatch()
+				for _, mut := range muts {
+					if !mut.GetPostDeserializationChanges().HasChanges() {
+						continue
+					}
+					key := catalogkeys.MakeDescMetadataKey(d.Codec, mut.GetID())
+					b.CPut(key, mut.DescriptorProto(), mut.GetRawBytesInStorage())
+				}
+				return txn.KV().Run(ctx, b)
+			})
+		})
 		if err != nil {
+			// If either the operation hits the retry limit or
+			// times out, then reduce the batch size.
+			if errors.HasType(err, (*timeutil.TimeoutError)(nil)) {
+				batchSize = max(batchSize/2, 1)
+				log.Infof(ctx, "reducing batch size of invalid_object repair query to %d (hipri=%t)",
+					batchSize,
+					batchSize <= HighPriBatchSize)
+				continue
+			}
 			return err
 		}
-		b := txn.KV().NewBatch()
-		for _, mut := range muts {
-			key := catalogkeys.MakeDescMetadataKey(d.Codec, mut.GetID())
-			b.CPut(key, mut.DescriptorProto(), mut.GetRawBytesInStorage())
-		}
-		return txn.KV().Run(ctx, b)
-	})
-}
-
-var firstUpgradePreconditionUsesAOST = true
-
-// TestingSetFirstUpgradePreconditionAOST allows tests to disable withAOST trick in upgrade
-// precondition check, which otherwise can produce false negative.
-func TestingSetFirstUpgradePreconditionAOST(enabled bool) func() {
-	old := firstUpgradePreconditionUsesAOST
-	firstUpgradePreconditionUsesAOST = enabled
-	return func() { firstUpgradePreconditionUsesAOST = old }
+		currentIdx += batchSize
+	}
+	return nil
 }
 
 // FirstUpgradeFromReleasePrecondition is the precondition check for upgrading
@@ -128,7 +141,7 @@ func FirstUpgradeFromReleasePrecondition(
 	// a diagnostic query. If no corruptions were found back then, we assume that
 	// there are no corruptions now. Otherwise, we retry and do everything
 	// without an AOST clause henceforth.
-	withAOST := firstUpgradePreconditionUsesAOST
+	withAOST := true
 	diagnose := func(tbl string) (hasRows bool, err error) {
 		q := fmt.Sprintf("SELECT count(*) FROM \"\".crdb_internal.%s", tbl)
 		if withAOST {
@@ -165,23 +178,51 @@ FROM
 		FROM
 			"".crdb_internal.kv_repairable_catalog_corruptions
 		LIMIT
-			1000
+			$1
 	)
 WHERE
 	was_repaired`
+		batchSize := 100
+		// Any batch size below this will use high priority.
+		const HighPriBatchSize = 25
+		repairBatchTimeLimit := lease.LeaseDuration.Get(&d.Settings.SV)
 		for {
-			row, err := d.InternalExecutor.QueryRow(
-				ctx, "repair-catalog-corruptions", nil /* txn */, repairQuery,
-			)
+			var rowsUpdated tree.DInt
+			err := timeutil.RunWithTimeout(ctx, "descriptor-repair", repairBatchTimeLimit, func(ctx context.Context) error {
+				return d.DB.DescsTxn(ctx, func(ctx context.Context, txn descs.Txn) error {
+					if batchSize <= HighPriBatchSize {
+						if err = txn.KV().SetUserPriority(roachpb.MaxUserPriority); err != nil {
+							return err
+						}
+					}
+					row, err := txn.QueryRow(
+						ctx, "repair-catalog-corruptions", txn.KV() /* txn */, repairQuery, batchSize,
+					)
+					if err != nil {
+						return err
+					}
+					rowsUpdated = tree.MustBeDInt(row[0])
+					return nil
+				})
+			})
 			if err != nil {
+				// If either the operation hits the retry limit or
+				// times out, then reduce the batch size.
+				if errors.HasType(err, (*timeutil.TimeoutError)(nil)) {
+					batchSize = max(batchSize/2, 1)
+					log.Infof(ctx, "reducing batch size of invalid_object repair query to %d (hipri=%t)",
+						batchSize,
+						batchSize <= HighPriBatchSize)
+					continue
+				}
+				// Otherwise, return any unknown errors.
 				return err
 			}
-			c := tree.MustBeDInt(row[0])
-			if c == 0 {
+			if rowsUpdated == 0 {
 				break
 			}
-			n += int(c)
-			log.Infof(ctx, "repaired %d catalog corruptions", c)
+			n += int(rowsUpdated)
+			log.Infof(ctx, "repaired %d catalog corruptions", rowsUpdated)
 		}
 		if n == 0 {
 			log.Info(ctx, "no catalog corruptions found to repair during upgrade attempt")
@@ -210,23 +251,4 @@ WHERE
 		return nil
 	}
 	return errors.AssertionFailedf("\"\".crdb_internal.invalid_objects is not empty")
-}
-
-// newFirstUpgrade creates a TenantUpgrade that corresponds to the first
-// (Vxy_zStart) internal version of a release.
-func newFirstUpgrade(v roachpb.Version) *upgrade.TenantUpgrade {
-	if v.Internal != 2 {
-		panic("not the first internal release")
-	}
-	return upgrade.NewTenantUpgrade(
-		firstUpgradeDescription(v),
-		v,
-		FirstUpgradeFromReleasePrecondition,
-		FirstUpgradeFromRelease,
-		upgrade.RestoreActionNotRequired("first upgrade is a persists nothing"),
-	)
-}
-
-func firstUpgradeDescription(v roachpb.Version) string {
-	return fmt.Sprintf("prepare upgrade to v%d.%d release", v.Major, v.Minor)
 }

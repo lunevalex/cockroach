@@ -13,6 +13,7 @@ go_library(
     deps = [
         "//pkg/base",
         "//pkg/jobs",
+        "//pkg/jobs/joberror",
         "//pkg/jobs/jobspb",
         "//pkg/keys",
         "//pkg/kv",
@@ -63,10 +64,8 @@ go_test(
         "ttljob_query_builder_test.go",
         "ttljob_test.go",
     ],
-    exec_properties = select({
-        "//build/toolchains:is_heavy": {"Pool": "heavy"},
-        "//conditions:default": {"Pool": "large"},
-    }),
+    args = ["-test.timeout=895s"],
+    exec_properties = {"Pool": "medium"},
     shard_count = 4,
     deps = [
         ":ttljob",

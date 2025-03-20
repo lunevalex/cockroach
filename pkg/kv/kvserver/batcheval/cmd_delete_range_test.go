@@ -1,12 +1,7 @@
 // Copyright 2022 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package batcheval
 
@@ -313,7 +308,7 @@ func TestDeleteRangeTombstone(t *testing.T) {
 // operated on. The command should not have written an actual rangekey!
 func checkPredicateDeleteRange(t *testing.T, engine storage.Reader, rKeyInfo storage.MVCCRangeKey) {
 
-	iter, err := engine.NewMVCCIterator(context.Background(), storage.MVCCKeyAndIntentsIterKind, storage.IterOptions{
+	iter, err := engine.NewMVCCIterator(storage.MVCCKeyAndIntentsIterKind, storage.IterOptions{
 		KeyTypes:   storage.IterKeyTypePointsAndRanges,
 		LowerBound: rKeyInfo.StartKey,
 		UpperBound: rKeyInfo.EndKey,
@@ -353,7 +348,7 @@ func checkDeleteRangeTombstone(
 	written bool,
 	now hlc.ClockTimestamp,
 ) {
-	iter, err := engine.NewMVCCIterator(context.Background(), storage.MVCCKeyAndIntentsIterKind, storage.IterOptions{
+	iter, err := engine.NewMVCCIterator(storage.MVCCKeyAndIntentsIterKind, storage.IterOptions{
 		KeyTypes:   storage.IterKeyTypeRangesOnly,
 		LowerBound: rangeKey.StartKey,
 		UpperBound: rangeKey.EndKey,
@@ -413,7 +408,7 @@ func computeStats(
 	if len(to) == 0 {
 		to = keys.MaxKey
 	}
-	ms, err := storage.ComputeStats(context.Background(), reader, from, to, nowNanos)
+	ms, err := storage.ComputeStats(reader, from, to, nowNanos)
 	require.NoError(t, err)
 	return ms
 }

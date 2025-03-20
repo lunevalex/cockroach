@@ -1,12 +1,7 @@
 // Copyright 2020 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package geoindex
 
@@ -18,7 +13,6 @@ import (
 	"testing"
 
 	"github.com/cockroachdb/cockroach/pkg/geo"
-	"github.com/cockroachdb/cockroach/pkg/geo/geopb"
 	"github.com/cockroachdb/cockroach/pkg/geo/geoprojbase"
 	"github.com/cockroachdb/cockroach/pkg/geo/geos"
 	"github.com/cockroachdb/cockroach/pkg/testutils/datapathutils"
@@ -52,7 +46,7 @@ func TestS2GeometryIndexBasic(t *testing.T) {
 			d.ScanArgs(t, "miny", &minY)
 			d.ScanArgs(t, "maxx", &maxX)
 			d.ScanArgs(t, "maxy", &maxY)
-			index = NewS2GeometryIndex(geopb.S2GeometryConfig{
+			index = NewS2GeometryIndex(S2GeometryConfig{
 				MinX:     float64(minX),
 				MinY:     float64(minY),
 				MaxX:     float64(maxX),

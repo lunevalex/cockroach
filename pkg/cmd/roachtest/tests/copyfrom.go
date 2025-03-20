@@ -1,12 +1,7 @@
 // Copyright 2022 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package tests
 
@@ -22,6 +17,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/option"
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/registry"
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/test"
+	"github.com/cockroachdb/cockroach/pkg/roachprod"
 	"github.com/cockroachdb/cockroach/pkg/roachprod/install"
 	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/pgcode"
 	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/pgerror"
@@ -73,8 +69,8 @@ func initTest(ctx context.Context, t test.Test, c cluster.Cluster, sf int) {
 		t.L().Printf("when running locally, ensure that psql is installed")
 	}
 	csv := fmt.Sprintf(tpchLineitemFmt, sf)
-	c.Run(ctx, option.WithNodes(c.Node(1)), "rm -f /tmp/lineitem-table.csv")
-	c.Run(ctx, option.WithNodes(c.Node(1)), fmt.Sprintf("curl '%s' -o /tmp/lineitem-table.csv", csv))
+	c.Run(ctx, c.Node(1), "rm -f /tmp/lineitem-table.csv")
+	c.Run(ctx, c.Node(1), fmt.Sprintf("curl '%s' -o /tmp/lineitem-table.csv", csv))
 }
 
 func runTest(ctx context.Context, t test.Test, c cluster.Cluster, pg string) {
@@ -89,12 +85,13 @@ func runTest(ctx context.Context, t test.Test, c cluster.Cluster, pg string) {
 	succeeded := false
 	for r.Next() {
 		start = timeutil.Now()
-		det, err = c.RunWithDetailsSingleNode(ctx, t.L(), option.WithNodes(c.Node(1)), fmt.Sprintf(`cat /tmp/lineitem-table.csv | %s -c "COPY lineitem FROM STDIN WITH CSV DELIMITER '|';"`, pg))
+		det, err = c.RunWithDetailsSingleNode(ctx, t.L(), c.Node(1), fmt.Sprintf(`cat /tmp/lineitem-table.csv | %s -c "COPY lineitem FROM STDIN WITH CSV DELIMITER '|';"`, pg))
 		if err == nil {
 			succeeded = true
 			break
 		}
 		if pgerror.GetPGCode(err) != pgcode.SerializationFailure {
+			t.L().Printf("err: %v\n", err)
 			t.L().Printf("stdout:\n%v\n", det.Stdout)
 			t.L().Printf("stderr:\n%v\n", det.Stderr)
 			t.Fatal(err)
@@ -112,7 +109,7 @@ func runTest(ctx context.Context, t test.Test, c cluster.Cluster, pg string) {
 	require.NoError(t, err)
 	rate := int(float64(rows) / dur.Seconds())
 
-	det, err = c.RunWithDetailsSingleNode(ctx, t.L(), option.WithNodes(c.Node(1)), "wc -c /tmp/lineitem-table.csv")
+	det, err = c.RunWithDetailsSingleNode(ctx, t.L(), c.Node(1), "wc -c /tmp/lineitem-table.csv")
 	require.NoError(t, err)
 	var bytes float64
 	_, err = fmt.Sscan(det.Stdout, &bytes)
@@ -120,32 +117,28 @@ func runTest(ctx context.Context, t test.Test, c cluster.Cluster, pg string) {
 	dataRate := bytes / 1024 / 1024 / dur.Seconds()
 	t.L().Printf("results: %d rows/s, %f mb/s", rate, dataRate)
 	// Write the copy rate into the stats.json file to be used by roachperf.
-	c.Run(ctx, option.WithNodes(c.Node(1)), "mkdir", t.PerfArtifactsDir())
+	c.Run(ctx, c.Node(1), "mkdir", t.PerfArtifactsDir())
 	cmd := fmt.Sprintf(
 		`echo '{ "copy_row_rate": %d, "copy_data_rate": %f}' > %s/stats.json`,
 		rate, dataRate, t.PerfArtifactsDir(),
 	)
-	c.Run(ctx, option.WithNodes(c.Node(1)), cmd)
+	c.Run(ctx, c.Node(1), cmd)
 }
 
 func runCopyFromPG(ctx context.Context, t test.Test, c cluster.Cluster, sf int) {
 	initTest(ctx, t, c, sf)
-	c.Run(ctx, option.WithNodes(c.Node(1)), "sudo -i -u postgres psql -c 'DROP TABLE IF EXISTS lineitem'")
-	c.Run(ctx, option.WithNodes(c.Node(1)), fmt.Sprintf("sudo -i -u postgres psql -c '%s'", lineitemSchema))
+	c.Run(ctx, c.Node(1), "sudo -i -u postgres psql -c 'DROP TABLE IF EXISTS lineitem'")
+	c.Run(ctx, c.Node(1), fmt.Sprintf("sudo -i -u postgres psql -c '%s'", lineitemSchema))
 	runTest(ctx, t, c, "sudo -i -u postgres psql")
 }
 
 func runCopyFromCRDB(ctx context.Context, t test.Test, c cluster.Cluster, sf int, atomic bool) {
-	startOpts := option.DefaultStartOpts()
-	// Enable the verbose logging on relevant files to have better understanding
-	// in case the test fails.
-	startOpts.RoachprodOpts.ExtraArgs = append(startOpts.RoachprodOpts.ExtraArgs, "--vmodule=copy_from=2,insert=2")
-	c.Start(ctx, t.L(), startOpts, install.MakeClusterSettings(), c.All())
+	c.Start(ctx, t.L(), option.DefaultStartOpts(), install.MakeClusterSettings(), c.All())
 	initTest(ctx, t, c, sf)
 	db, err := c.ConnE(ctx, t.L(), 1)
 	require.NoError(t, err)
 	stmts := []string{
-		"CREATE USER importer",
+		"CREATE USER importer WITH PASSWORD '123'",
 		fmt.Sprintf("ALTER ROLE importer SET copy_from_atomic_enabled = %t", atomic),
 	}
 	for _, stmt := range stmts {
@@ -154,7 +147,7 @@ func runCopyFromCRDB(ctx context.Context, t test.Test, c cluster.Cluster, sf int
 			t.Fatal(err)
 		}
 	}
-	urls, err := c.InternalPGUrl(ctx, t.L(), c.Node(1), "" /* tenant */, 0 /* sqlInstance */)
+	urls, err := c.InternalPGUrl(ctx, t.L(), c.Node(1), roachprod.PGURLOptions{Auth: install.AuthUserPassword})
 	require.NoError(t, err)
 	m := c.NewMonitor(ctx, c.All())
 	m.Go(func(ctx context.Context) error {
@@ -162,10 +155,10 @@ func runCopyFromCRDB(ctx context.Context, t test.Test, c cluster.Cluster, sf int
 		urlstr := strings.Replace(urls[0], "?", "/defaultdb?", 1)
 		u, err := url.Parse(urlstr)
 		require.NoError(t, err)
-		u.User = url.User("importer")
+		u.User = url.UserPassword("importer", "123")
 		urlstr = u.String()
-		c.Run(ctx, option.WithNodes(c.Node(1)), fmt.Sprintf("psql %s -c 'SELECT 1'", urlstr))
-		c.Run(ctx, option.WithNodes(c.Node(1)), fmt.Sprintf("psql %s -c '%s'", urlstr, lineitemSchema))
+		c.Run(ctx, c.Node(1), fmt.Sprintf("psql '%s' -c 'SELECT 1'", urlstr))
+		c.Run(ctx, c.Node(1), fmt.Sprintf("psql '%s' -c '%s'", urlstr, lineitemSchema))
 		runTest(ctx, t, c, fmt.Sprintf("psql '%s'", urlstr))
 		return nil
 	})

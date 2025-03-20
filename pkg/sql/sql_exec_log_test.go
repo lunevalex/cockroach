@@ -1,12 +1,7 @@
 // Copyright 2023 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package sql
 
@@ -22,39 +17,9 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/cockroach/pkg/util/log/eventpb"
 	"github.com/cockroachdb/cockroach/pkg/util/log/logpb"
+	"github.com/cockroachdb/cockroach/pkg/util/log/logtestutils"
 	"github.com/stretchr/testify/require"
 )
-
-// sqlExecLogInterceptor is used to intercept sql exec logs.
-// Intercepted QueryExecute log events will be sent to the logsChan.
-// Additional log filtering criteria can be specified in the filter fn.
-type sqlExecLogSpy struct {
-	logs   []eventpb.QueryExecute
-	filter func(eventpb.QueryExecute) bool
-}
-
-func (s *sqlExecLogSpy) Intercept(entry []byte) {
-	var rawLog logpb.Entry
-	var qe eventpb.QueryExecute
-
-	if err := json.Unmarshal(entry, &rawLog); err != nil {
-		return
-	}
-
-	if rawLog.Channel != logpb.Channel_SQL_EXEC {
-		return
-	}
-
-	if err := json.Unmarshal([]byte(rawLog.Message[rawLog.StructuredStart:rawLog.StructuredEnd]), &qe); err != nil {
-		return
-	}
-
-	if s.filter != nil && !s.filter(qe) {
-		return
-	}
-
-	s.logs = append(s.logs, qe)
-}
 
 func TestSqlExecLog(t *testing.T) {
 	defer leaktest.AfterTest(t)()
@@ -67,15 +32,24 @@ func TestSqlExecLog(t *testing.T) {
 	s := serverutils.StartServerOnly(t, base.TestServerArgs{})
 	defer s.Stopper().Stop(ctx)
 
-	appLogsSpy := sqlExecLogSpy{
-		logs: make([]eventpb.QueryExecute, 0, 5),
-		filter: func(qe eventpb.QueryExecute) bool {
-			// We only care about non-internal applications.
+	appLogsSpy := logtestutils.NewStructuredLogSpy(
+		t,
+		[]logpb.Channel{logpb.Channel_SQL_EXEC},
+		[]string{"query_execute"},
+		func(entry logpb.Entry) (eventpb.QueryExecute, error) {
+			var qe eventpb.QueryExecute
+			if err := json.Unmarshal([]byte(entry.Message[entry.StructuredStart:entry.StructuredEnd]), &qe); err != nil {
+				return qe, err
+			}
+			return qe, nil
+		},
+		func(entry logpb.Entry, qe eventpb.QueryExecute) bool {
+			// Filter out internal queries.
 			return qe.ExecMode != executorTypeInternal.logLabel()
 		},
-	}
+	)
 
-	cleanup := log.InterceptWith(ctx, &appLogsSpy)
+	cleanup := log.InterceptWith(ctx, appLogsSpy)
 	defer cleanup()
 
 	// This connection will be used to set cluster settings.
@@ -102,7 +76,7 @@ func TestSqlExecLog(t *testing.T) {
 
 	log.FlushAllSync()
 
-	capturedLogs := appLogsSpy.logs
+	capturedLogs := appLogsSpy.GetLogs(logpb.Channel_SQL_EXEC)
 	expectedIdx := 0
 
 	require.GreaterOrEqual(t, len(capturedLogs), len(queries))
@@ -120,7 +94,7 @@ func TestSqlExecLog(t *testing.T) {
 
 		// Verify expected log.
 		expectedStmt := queries[expectedIdx]
-		require.Containsf(t, qe.Statement.StripMarkers(), expectedStmt, "entry: %v", qe)
+		require.Containsf(t, qe.Statement.StripMarkers(), expectedStmt, "entry: %v", qe.Statement)
 		// Query age should be less than 3 seconds.
 		require.Lessf(t, qe.Age, float32(3000), "entry: %v", qe)
 		expectedIdx++

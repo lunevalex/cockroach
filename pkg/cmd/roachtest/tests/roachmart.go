@@ -1,12 +1,7 @@
 // Copyright 2018 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package tests
 
@@ -17,7 +12,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/cluster"
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/option"
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/registry"
-	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/roachtestutil"
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/spec"
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/test"
 	"github.com/cockroachdb/cockroach/pkg/roachprod/install"
@@ -46,17 +40,14 @@ func registerRoachmart(r registry.Registry) {
 				"--orders=100",
 				fmt.Sprintf("--partition=%v", partition))
 
-			if err := c.RunE(ctx, option.WithNodes(c.Node(nodes[i].i)), args...); err != nil {
+			if err := c.RunE(ctx, c.Node(nodes[i].i), args...); err != nil {
 				t.Fatal(err)
 			}
 		}
 		t.Status("initializing workload")
-		pgurl, err := roachtestutil.DefaultPGUrl(ctx, c, t.L(), c.Nodes(1))
-		if err != nil {
-			t.Fatal(err)
-		}
+
 		// See https://github.com/cockroachdb/cockroach/issues/94062 for the --data-loader.
-		roachmartRun(ctx, 0, "./workload", "init", "roachmart", "--data-loader=INSERT", pgurl)
+		roachmartRun(ctx, 0, "./workload", "init", "roachmart", "--data-loader=INSERT", "{pgurl:1}")
 
 		duration := " --duration=" + ifLocal(c, "10s", "10m")
 

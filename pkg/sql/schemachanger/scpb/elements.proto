@@ -1,12 +1,7 @@
 // Copyright 2020 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 syntax = "proto3";
 package cockroach.sql.schemachanger.scpb;
@@ -18,7 +13,7 @@ import "sql/sem/semenumpb/constraint.proto";
 import "sql/catalog/catpb/function.proto";
 import "sql/types/types.proto";
 import "gogoproto/gogo.proto";
-import "geo/geopb/config.proto";
+import "geo/geoindex/config.proto";
 
 option (gogoproto.equal_all) = true;
 
@@ -128,6 +123,7 @@ message ElementProto {
     // Schema elements.
     SchemaParent schema_parent = 90 [(gogoproto.moretags) = "parent:\"Schema\""];
     SchemaComment schema_comment = 91 [(gogoproto.moretags) = "parent:\"Schema\""];
+
 
     // SchemaChild elements.
     SchemaChild schema_child = 100 [(gogoproto.moretags) = "parent:\"AliasType, EnumType, Table, View, Sequence\""];
@@ -734,4 +730,3 @@ message FunctionParamDefaultExpression {
 message ElementCreationMetadata {
   bool in_23_1_or_later = 1;
 }
-

@@ -37,7 +37,6 @@ go_library(
         "//pkg/kv/kvpb",
         "//pkg/multitenant/tenantcapabilities",
         "//pkg/roachpb",
-        "//pkg/rpc/rpcpb",
         "//pkg/security",
         "//pkg/security/certnames",
         "//pkg/security/username",
@@ -82,6 +81,7 @@ go_library(
         "@org_golang_google_grpc//keepalive",
         "@org_golang_google_grpc//metadata",
         "@org_golang_google_grpc//peer",
+        "@org_golang_google_grpc//stats",
         "@org_golang_google_grpc//status",
     ],
 )
@@ -118,12 +118,9 @@ go_test(
         "tls_test.go",
         ":mock_rpc",  # keep
     ],
+    args = ["-test.timeout=55s"],
     data = glob(["testdata/**"]),
     embed = [":rpc"],
-    exec_properties = select({
-        "//build/toolchains:is_heavy": {"Pool": "heavy"},
-        "//conditions:default": {"Pool": "default"},
-    }),
     deps = [
         "//pkg/base",
         "//pkg/clusterversion",

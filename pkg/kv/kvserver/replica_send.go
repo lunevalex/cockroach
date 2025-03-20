@@ -1,12 +1,7 @@
 // Copyright 2019 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package kvserver
 
@@ -146,7 +141,7 @@ func (r *Replica) SendWithWriteBytes(
 	r.recordBatchRequestLoad(ctx, ba)
 
 	// If the internal Raft group is quiesced, wake it and the leader.
-	r.maybeUnquiesce(ctx, true /* wakeLeader */, true /* mayCampaign */)
+	r.maybeUnquiesce(true /* wakeLeader */, true /* mayCampaign */)
 
 	isReadOnly := ba.IsReadOnly()
 	if err := r.checkBatchRequest(ba, isReadOnly); err != nil {
@@ -477,7 +472,6 @@ func (r *Replica) executeBatchWithConcurrencyRetries(
 			Requests:        ba.Requests,
 			LatchSpans:      latchSpans, // nil if g != nil
 			LockSpans:       lockSpans,  // nil if g != nil
-			BaFmt:           ba,
 		}, requestEvalKind)
 		if pErr != nil {
 			if poisonErr := (*poison.PoisonedError)(nil); errors.As(pErr.GoError(), &poisonErr) {
@@ -1349,7 +1343,7 @@ func (ec *endCmds) done(
 	// do so if the request is consistent and was operating on the leaseholder
 	// under a valid range lease.
 	if ba.ReadConsistency == kvpb.CONSISTENT && ec.st.State == kvserverpb.LeaseState_VALID {
-		ec.repl.updateTimestampCache(ctx, &ec.st, ba, br, pErr)
+		ec.repl.updateTimestampCache(ctx, ba, br, pErr)
 	}
 
 	if ts := ec.replicatingSince; !ts.IsZero() {

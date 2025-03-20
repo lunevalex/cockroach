@@ -1,12 +1,7 @@
 // Copyright 2023 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package plpgsqltree
 
@@ -34,14 +29,14 @@ type TaggedStatement interface {
 }
 
 type StatementImpl struct {
-	// TODO(drewk): figure out how to get line number from scanner.
+	// TODO(Chengxiong): figure out how to get line number from scanner.
 	LineNo int
 	/*
 	 * Unique statement ID in this function (starting at 1; 0 is invalid/not
 	 * set).  This can be used by a profiler as the index for an array of
 	 * per-statement metrics.
 	 */
-	// TODO(drewk): figure out how to get statement id from parser.
+	// TODO(Chengxiong): figure out how to get statement id from parser.
 	StmtID uint
 }
 
@@ -72,12 +67,8 @@ func (s *Block) CopyNode() *Block {
 	return &copyNode
 }
 
+// TODO(drewk): format Label and Exceptions fields.
 func (s *Block) Format(ctx *tree.FmtCtx) {
-	if s.Label != "" {
-		ctx.WriteString("<<")
-		ctx.FormatNameP(&s.Label)
-		ctx.WriteString(">>\n")
-	}
 	if s.Decls != nil {
 		ctx.WriteString("DECLARE\n")
 		for _, dec := range s.Decls {
@@ -96,12 +87,7 @@ func (s *Block) Format(ctx *tree.FmtCtx) {
 			ctx.FormatNode(&e)
 		}
 	}
-	ctx.WriteString("END")
-	if s.Label != "" {
-		ctx.WriteString(" ")
-		ctx.FormatNameP(&s.Label)
-	}
-	ctx.WriteString(";\n")
+	ctx.WriteString("END\n")
 }
 
 func (s *Block) PlpgSQLStatementTag() string {
@@ -662,7 +648,7 @@ func (s *ForSelect) WalkStmt(visitor StatementVisitor) (newStmt Statement, chang
 
 type ForCursor struct {
 	ForQuery
-	CurVar   int
+	CurVar   int // TODO(drewk): is this CursorVariable?
 	ArgQuery Expr
 }
 
@@ -872,7 +858,7 @@ func (s *Raise) Format(ctx *tree.FmtCtx) {
 	ctx.WriteString("RAISE")
 	if s.LogLevel != "" {
 		ctx.WriteString(" ")
-		ctx.WriteString(strings.ToUpper(s.LogLevel))
+		ctx.WriteString(s.LogLevel)
 	}
 	if s.Code != "" {
 		ctx.WriteString(" SQLSTATE ")
@@ -1099,7 +1085,7 @@ func (s *GetDiagnostics) Format(ctx *tree.FmtCtx) {
 
 type GetDiagnosticsItem struct {
 	Kind GetDiagnosticsKind
-	// TODO(drewk): TargetName is temporary -- should be removed and use Target.
+	// TODO(jane): TargetName is temporary -- should be removed and use Target.
 	TargetName string
 	Target     int // where to assign it?
 }

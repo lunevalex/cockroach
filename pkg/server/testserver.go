@@ -1,12 +1,7 @@
 // Copyright 2014 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package server
 
@@ -26,6 +21,7 @@ import (
 
 	"github.com/cockroachdb/cockroach/pkg/base"
 	"github.com/cockroachdb/cockroach/pkg/base/serverident"
+	"github.com/cockroachdb/cockroach/pkg/clusterversion"
 	"github.com/cockroachdb/cockroach/pkg/config"
 	"github.com/cockroachdb/cockroach/pkg/config/zonepb"
 	"github.com/cockroachdb/cockroach/pkg/jobs"
@@ -58,7 +54,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/catconstants"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
 	"github.com/cockroachdb/cockroach/pkg/sql/sessiondata"
-	"github.com/cockroachdb/cockroach/pkg/sql/sqlclustersettings"
 	"github.com/cockroachdb/cockroach/pkg/storage"
 	"github.com/cockroachdb/cockroach/pkg/testutils"
 	"github.com/cockroachdb/cockroach/pkg/testutils/serverutils"
@@ -322,8 +317,6 @@ func makeTestConfigFromParams(params base.TestServerArgs) Config {
 	if params.Knobs.AdmissionControlOptions == nil {
 		cfg.TestingKnobs.AdmissionControlOptions = &admission.Options{}
 	}
-
-	cfg.ObsServiceAddr = params.ObsServiceAddr
 
 	return cfg
 }
@@ -642,6 +635,7 @@ func (ts *testServer) startDefaultTestTenant(
 
 	if ts.params.Knobs.Server != nil {
 		params.TestingKnobs.Server.(*TestingKnobs).DiagnosticsTestingKnobs = ts.params.Knobs.Server.(*TestingKnobs).DiagnosticsTestingKnobs
+		params.TestingKnobs.LicenseTestingKnobs = ts.params.Knobs.LicenseTestingKnobs
 	}
 	return ts.StartTenant(ctx, params)
 }
@@ -652,12 +646,12 @@ func (ts *testServer) getSharedProcessDefaultTenantArgs() base.TestSharedProcess
 		TenantID:    serverutils.TestTenantID(),
 		Knobs:       ts.params.Knobs,
 		UseDatabase: ts.params.UseDatabase,
-		Settings:    ts.params.Settings,
 	}
 	// See comment above on separate process tenant regarding the testing knobs.
 	args.Knobs.Server = &TestingKnobs{}
 	if ts.params.Knobs.Server != nil {
 		args.Knobs.Server.(*TestingKnobs).DiagnosticsTestingKnobs = ts.params.Knobs.Server.(*TestingKnobs).DiagnosticsTestingKnobs
+		args.Knobs.LicenseTestingKnobs = ts.params.Knobs.LicenseTestingKnobs
 	}
 	return args
 }
@@ -743,7 +737,7 @@ func (ts *testServer) grantDefaultTenantCapabilities(
 	for _, setting := range []settings.Setting{
 		sql.SecondaryTenantScatterEnabled,
 		sql.SecondaryTenantSplitAtEnabled,
-		sqlclustersettings.SecondaryTenantZoneConfigsEnabled,
+		sql.SecondaryTenantZoneConfigsEnabled,
 		sql.SecondaryTenantsMultiRegionAbstractionsEnabled,
 	} {
 		// Update the override for this setting. We need to do this
@@ -767,7 +761,8 @@ func (ts *testServer) grantDefaultTenantCapabilities(
 	// configured an ExternalIODir since nodelocal storage only works with that
 	// configured.
 	shouldGrantNodelocalCap := ts.params.ExternalIODir != ""
-	if shouldGrantNodelocalCap {
+	canGrantNodelocalCap := ts.ClusterSettings().Version.IsActive(ctx, clusterversion.V23_1TenantCapabilities)
+	if canGrantNodelocalCap && shouldGrantNodelocalCap {
 		_, err := ie.Exec(ctx, "testserver-alter-tenant-cap", nil,
 			"ALTER TENANT [$1] GRANT CAPABILITY can_use_nodelocal_storage", tenantID.ToUint64())
 		if err != nil {
@@ -1655,6 +1650,7 @@ func (ts *testServer) StartTenant(
 	st.ExternalIODir = params.ExternalIODir
 	sqlCfg := makeTestSQLConfig(st, params.TenantID)
 	sqlCfg.TenantLoopbackAddr = ts.AdvRPCAddr()
+	sqlCfg.ExternalIODirConfig = params.ExternalIODirConfig
 	if params.MemoryPoolSize != 0 {
 		sqlCfg.MemoryPoolSize = params.MemoryPoolSize
 	}
@@ -1666,7 +1662,11 @@ func (ts *testServer) StartTenant(
 	if stopper == nil {
 		// We don't share the stopper with the server because we want their Tracers
 		// to be different, to simulate them being different processes.
-		tr := tracing.NewTracerWithOpt(ctx, tracing.WithClusterSettings(&st.SV), tracing.WithTracingMode(params.TracingDefault))
+		tr := params.Tracer
+		if tr == nil {
+			tr = tracing.NewTracerWithOpt(ctx, tracing.WithClusterSettings(&st.SV), tracing.WithTracingMode(params.TracingDefault))
+		}
+
 		stopper = stop.NewStopper(stop.WithTracer(tr))
 		// The server's stopper stops the tenant, for convenience.
 		// Use main server quiesce as a signal to stop tenants stopper. In the
@@ -1685,7 +1685,10 @@ func (ts *testServer) StartTenant(
 			return nil, err
 		}
 	} else if stopper.Tracer() == nil {
-		tr := tracing.NewTracerWithOpt(ctx, tracing.WithClusterSettings(&st.SV), tracing.WithTracingMode(params.TracingDefault))
+		tr := params.Tracer
+		if tr == nil {
+			tr = tracing.NewTracerWithOpt(ctx, tracing.WithClusterSettings(&st.SV), tracing.WithTracingMode(params.TracingDefault))
+		}
 		stopper.SetTracer(tr)
 	}
 
@@ -1693,8 +1696,6 @@ func (ts *testServer) StartTenant(
 	baseCfg.TestingKnobs = params.TestingKnobs
 	baseCfg.Insecure = params.ForceInsecure
 	baseCfg.Locality = params.Locality
-	baseCfg.HeapProfileDirName = params.HeapProfileDirName
-	baseCfg.GoroutineDumpDirName = params.GoroutineDumpDirName
 	baseCfg.ClusterName = ts.Cfg.ClusterName
 	baseCfg.StartDiagnosticsReporting = params.StartDiagnosticsReporting
 	baseCfg.DisableTLSForHTTP = params.DisableTLSForHTTP
@@ -1702,8 +1703,8 @@ func (ts *testServer) StartTenant(
 	baseCfg.TestingInsecureWebAccess = ts.Cfg.TestingInsecureWebAccess
 	baseCfg.DefaultZoneConfig = ts.Cfg.DefaultZoneConfig
 	baseCfg.HeapProfileDirName = ts.Cfg.BaseConfig.HeapProfileDirName
+	baseCfg.CPUProfileDirName = ts.Cfg.BaseConfig.CPUProfileDirName
 	baseCfg.GoroutineDumpDirName = ts.Cfg.BaseConfig.GoroutineDumpDirName
-	baseCfg.ExternalIODirConfig = params.ExternalIODirConfig
 
 	// Grant the tenant the default capabilities.
 	if err := ts.grantDefaultTenantCapabilities(ctx, params.TenantID, params.SkipTenantCheck); err != nil {
@@ -2572,7 +2573,7 @@ func (ts *testServer) RPCClientConn(
 func (ts *testServer) RPCClientConnE(user username.SQLUsername) (*grpc.ClientConn, error) {
 	ctx := context.Background()
 	rpcCtx := ts.NewClientRPCContext(ctx, user)
-	return rpcCtx.GRPCDialNode(ts.AdvRPCAddr(), ts.NodeID(), rpc.DefaultClass).Connect(ctx)
+	return rpcCtx.GRPCDialNode(ts.AdvRPCAddr(), ts.NodeID(), ts.Locality(), rpc.DefaultClass).Connect(ctx)
 }
 
 // GetAdminClient is part of the serverutils.ApplicationLayerInterface.
@@ -2613,7 +2614,7 @@ func (t *testTenant) RPCClientConn(
 func (t *testTenant) RPCClientConnE(user username.SQLUsername) (*grpc.ClientConn, error) {
 	ctx := context.Background()
 	rpcCtx := t.NewClientRPCContext(ctx, user)
-	return rpcCtx.GRPCDialPod(t.AdvRPCAddr(), t.SQLInstanceID(), rpc.DefaultClass).Connect(ctx)
+	return rpcCtx.GRPCDialPod(t.AdvRPCAddr(), t.SQLInstanceID(), t.Locality(), rpc.DefaultClass).Connect(ctx)
 }
 
 // GetAdminClient is part of the serverutils.ApplicationLayerInterface.

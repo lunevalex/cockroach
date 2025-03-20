@@ -1,12 +1,7 @@
 // Copyright 2015 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package kvserver
 
@@ -83,9 +78,6 @@ func (r *replicaRaftStorage) InitialState() (raftpb.HardState, raftpb.ConfState,
 	hs, err := r.mu.stateLoader.LoadHardState(ctx, r.store.TODOEngine())
 	// For uninitialized ranges, membership is unknown at this point.
 	if raft.IsEmptyHardState(hs) || err != nil {
-		if err != nil {
-			r.reportRaftStorageError(err)
-		}
 		return raftpb.HardState{}, raftpb.ConfState{}, err
 	}
 	cs := r.mu.state.Desc.Replicas().ConfState()
@@ -100,11 +92,7 @@ func (r *replicaRaftStorage) InitialState() (raftpb.HardState, raftpb.ConfState,
 //
 // Entries can return log entries that are not yet stable in durable storage.
 func (r *replicaRaftStorage) Entries(lo, hi uint64, maxBytes uint64) ([]raftpb.Entry, error) {
-	entries, err := r.TypedEntries(kvpb.RaftIndex(lo), kvpb.RaftIndex(hi), maxBytes)
-	if err != nil {
-		r.reportRaftStorageError(err)
-	}
-	return entries, err
+	return r.TypedEntries(kvpb.RaftIndex(lo), kvpb.RaftIndex(hi), maxBytes)
 }
 
 func (r *replicaRaftStorage) TypedEntries(
@@ -135,9 +123,6 @@ const invalidLastTerm = 0
 // Term implements the raft.Storage interface.
 func (r *replicaRaftStorage) Term(i uint64) (uint64, error) {
 	term, err := r.TypedTerm(kvpb.RaftIndex(i))
-	if err != nil {
-		r.reportRaftStorageError(err)
-	}
 	return uint64(term), err
 }
 
@@ -176,9 +161,6 @@ func (r *Replica) raftLastIndexRLocked() kvpb.RaftIndex {
 // LastIndex requires that r.mu is held for reading.
 func (r *replicaRaftStorage) LastIndex() (uint64, error) {
 	index, err := r.TypedLastIndex()
-	if err != nil {
-		r.reportRaftStorageError(err)
-	}
 	return uint64(index), err
 }
 
@@ -203,9 +185,6 @@ func (r *Replica) raftFirstIndexRLocked() kvpb.RaftIndex {
 // FirstIndex requires that r.mu is held for reading.
 func (r *replicaRaftStorage) FirstIndex() (uint64, error) {
 	index, err := r.TypedFirstIndex()
-	if err != nil {
-		r.reportRaftStorageError(err)
-	}
 	return uint64(index), err
 }
 
@@ -251,15 +230,6 @@ func (r *replicaRaftStorage) Snapshot() (raftpb.Snapshot, error) {
 			Term:  uint64(r.mu.state.RaftAppliedIndexTerm),
 		},
 	}, nil
-}
-
-var raftStorageErrorLogger = log.Every(30 * time.Second)
-
-func (r *replicaRaftStorage) reportRaftStorageError(err error) {
-	if raftStorageErrorLogger.ShouldLog() {
-		log.Errorf(r.raftCtx, "error in raft.Storage %v", err)
-	}
-	r.store.metrics.RaftStorageError.Inc(1)
 }
 
 // raftSnapshotLocked requires that r.mu is held for writing.
@@ -417,8 +387,7 @@ func snapshot(
 	// know they cannot be committed yet; operations that modify range
 	// descriptors resolve their own intents when they commit.
 	ok, err := storage.MVCCGetProto(ctx, snap, keys.RangeDescriptorKey(startKey),
-		hlc.MaxTimestamp, &desc, storage.MVCCGetOptions{
-			Inconsistent: true, ReadCategory: storage.RangeSnapshotReadCategory})
+		hlc.MaxTimestamp, &desc, storage.MVCCGetOptions{Inconsistent: true})
 	if err != nil {
 		return OutgoingSnapshot{}, errors.Wrap(err, "failed to get desc")
 	}
@@ -814,7 +783,7 @@ func (r *Replica) applySnapshot(
 	// make sure to update the timestamp cache using the prior read summary to
 	// account for any reads that were served on the right-hand side range(s).
 	if len(subsumedRepls) > 0 && state.Lease.Replica.ReplicaID == r.replicaID && prioReadSum != nil {
-		applyReadSummaryToTimestampCache(ctx, r.store.tsCache, r.descRLocked(), *prioReadSum)
+		applyReadSummaryToTimestampCache(r.store.tsCache, r.descRLocked(), *prioReadSum)
 	}
 
 	// Inform the concurrency manager that this replica just applied a snapshot.
@@ -1005,7 +974,6 @@ func clearSubsumedReplicaDiskData(
 			)
 			defer subsumedReplSST.Close()
 			if err := storage.ClearRangeWithHeuristic(
-				ctx,
 				reader,
 				&subsumedReplSST,
 				keySpans[i].EndKey,

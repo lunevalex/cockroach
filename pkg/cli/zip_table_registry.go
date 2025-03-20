@@ -1,12 +1,7 @@
 // Copyright 2022 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package cli
 
@@ -135,36 +130,6 @@ var zipInternalTablesPerCluster = DebugZipTableRegistry{
 			"crdb_internal.hide_sql_constants(stmt) as stmt",
 		},
 	},
-	"crdb_internal.cluster_execution_insights": {
-		// `last_retry_reason` column contains error text that may contain
-		// sensitive data.
-		nonSensitiveCols: NonSensitiveColumns{
-			"session_id",
-			"txn_id",
-			"txn_fingerprint_id",
-			"stmt_id",
-			"stmt_fingerprint_id",
-			"query",
-			"status",
-			"start_time",
-			"end_time",
-			"full_scan",
-			"user_name",
-			"app_name",
-			"database_name",
-			"plan_gist",
-			"rows_read",
-			"rows_written",
-			"priority",
-			"retries",
-			"exec_node_ids",
-			"contention",
-			"index_recommendations",
-			"retries",
-			"error_code",
-			"crdb_internal.redact(last_error_redactable) as last_error_redactable",
-		},
-	},
 	"crdb_internal.cluster_locks": {
 		// `lock_key` column contains the txn lock key, which may contain
 		// sensitive row-level data.
@@ -220,7 +185,6 @@ var zipInternalTablesPerCluster = DebugZipTableRegistry{
 			"session_end",
 			"crdb_internal.hide_sql_constants(active_queries) as active_queries",
 			"crdb_internal.hide_sql_constants(last_active_query) as last_active_query",
-			"trace_id",
 		},
 	},
 	"crdb_internal.cluster_settings": {
@@ -262,31 +226,6 @@ var zipInternalTablesPerCluster = DebugZipTableRegistry{
 			"isolation_level",
 			"priority",
 			"quality_of_service",
-		},
-	},
-	"crdb_internal.cluster_txn_execution_insights": {
-		// `last_retry_reason` column contains error text that may contain
-		// sensitive data.
-		nonSensitiveCols: NonSensitiveColumns{
-			"txn_id",
-			"txn_fingerprint_id",
-			"query",
-			"implicit_txn",
-			"session_id",
-			"start_time",
-			"end_time",
-			"user_name",
-			"app_name",
-			"rows_read",
-			"rows_written",
-			"priority",
-			"retries",
-			"contention",
-			"problems",
-			"causes",
-			"stmt_execution_ids",
-			"last_error_code",
-			"crdb_internal.redact(last_error_redactable) as last_error_redactable",
 		},
 	},
 	`"".crdb_internal.create_function_statements`: {
@@ -409,7 +348,9 @@ var zipInternalTablesPerCluster = DebugZipTableRegistry{
 	"crdb_internal.system_jobs": {
 		// `payload` column may contain customer info, such as URI params
 		// containing access keys, encryption salts, etc.
-		customQueryUnredacted: `SELECT *
+		customQueryUnredacted: `SELECT *, 
+			to_hex(payload) AS hex_payload, 
+			to_hex(progress) AS hex_progress 
 			FROM crdb_internal.system_jobs`,
 		customQueryRedacted: `SELECT 
 			"id",
@@ -422,7 +363,9 @@ var zipInternalTablesPerCluster = DebugZipTableRegistry{
 			"claim_session_id",
 			"claim_instance_id",
 			"num_runs",
-			"last_run"
+			"last_run", 
+			'<redacted>' AS "hex_payload", 
+			to_hex(progress) AS "hex_progress"
 			FROM crdb_internal.system_jobs`,
 	},
 	"crdb_internal.kv_system_privileges": {
@@ -561,6 +504,28 @@ var zipInternalTablesPerCluster = DebugZipTableRegistry{
 		},
 	},
 	"crdb_internal.transaction_contention_events": {
+		customQueryUnredacted: `
+SELECT collection_ts,
+       contention_duration,
+       waiting_txn_id,
+       waiting_txn_fingerprint_id,
+       waiting_stmt_fingerprint_id,
+       s.metadata ->> 'query'                      AS waiting_stmt_query,
+       blocking_txn_id,
+       blocking_txn_fingerprint_id,
+       array_agg(distinct ss.metadata ->> 'query') AS blocking_txn_queries_unordered,
+       contending_pretty_key,
+       index_name,
+       table_name,
+       database_name
+FROM crdb_internal.transaction_contention_events
+         LEFT JOIN system.statement_statistics AS s ON waiting_stmt_fingerprint_id = s.fingerprint_id
+         LEFT JOIN system.statement_statistics AS ss ON ss.transaction_fingerprint_id = blocking_txn_fingerprint_id
+WHERE ss.transaction_fingerprint_id != '\x0000000000000000' AND s.fingerprint_id != '\x0000000000000000'
+GROUP BY collection_ts, contention_duration, waiting_txn_id, waiting_txn_fingerprint_id, blocking_txn_id,
+         blocking_txn_fingerprint_id, waiting_stmt_fingerprint_id, contending_pretty_key, s.metadata ->> 'query',
+         index_name, table_name, database_name
+`,
 		// `contending_key` column contains the contended key, which may
 		// contain sensitive row-level data. So, we will only fetch if the
 		// table is under the system schema.
@@ -657,15 +622,6 @@ var zipInternalTablesPerNode = DebugZipTableRegistry{
 			"deleted",
 		},
 	},
-	"crdb_internal.kv_session_based_leases": {
-		nonSensitiveCols: NonSensitiveColumns{
-			"desc_id",
-			"version",
-			"sql_instance_id",
-			"session_id",
-			"crdb_region",
-		},
-	},
 	"crdb_internal.node_build_info": {
 		nonSensitiveCols: NonSensitiveColumns{
 			"node_id",
@@ -744,6 +700,7 @@ var zipInternalTablesPerNode = DebugZipTableRegistry{
 			"used",
 			"reserved_used",
 			"reserved_reserved",
+			"stopped",
 		},
 	},
 	"crdb_internal.node_metrics": {
@@ -794,7 +751,6 @@ var zipInternalTablesPerNode = DebugZipTableRegistry{
 			"session_end",
 			"crdb_internal.hide_sql_constants(active_queries) as active_queries",
 			"crdb_internal.hide_sql_constants(last_active_query) as last_active_query",
-			"trace_id",
 		},
 	},
 	"crdb_internal.node_statement_statistics": {
@@ -1022,11 +978,13 @@ var zipSystemTables = DebugZipTableRegistry{
 	"system.descriptor": {
 		customQueryUnredacted: `SELECT
 				id,
-				descriptor
+				descriptor,
+				to_hex(descriptor) AS hex_descriptor
 			FROM system.descriptor`,
 		customQueryRedacted: `SELECT
 				id,
-				crdb_internal.redact_descriptor(descriptor) AS descriptor
+				crdb_internal.redact_descriptor(descriptor) AS descriptor,
+				to_hex(crdb_internal.redact_descriptor(descriptor)) AS hex_descriptor
 			FROM system.descriptor`,
 	},
 	"system.eventlog": {
@@ -1051,23 +1009,30 @@ var zipSystemTables = DebugZipTableRegistry{
 	"system.jobs": {
 		// NB: `payload` column may contain customer info, such as URI params
 		// containing access keys, encryption salts, etc.
-		customQueryUnredacted: `SELECT * 
+		customQueryUnredacted: `SELECT *, 
+			to_hex(payload) AS hex_payload, 
+			to_hex(progress) AS hex_progress 
 			FROM system.jobs`,
 		customQueryRedacted: `SELECT id,
 			status,
 			created,
+			'<redacted>' as payload,
+			progress,
 			created_by_type,
 			created_by_id,
 			claim_session_id,
 			claim_instance_id,
 			num_runs,
-			last_run
+			last_run,
+			'<redacted>' AS hex_payload,
+			to_hex(progress) AS hex_progress
 			FROM system.jobs`,
 	},
 	"system.job_info": {
 		// `value` column may contain customer info, such as URI params
 		// containing access keys, encryption salts, etc.
-		customQueryUnredacted: `SELECT *
+		customQueryUnredacted: `SELECT *,
+			to_hex(value) AS hex_value
 			FROM system.job_info`,
 		customQueryRedacted: `SELECT job_id,
 			info_key,
@@ -1222,15 +1187,16 @@ var zipSystemTables = DebugZipTableRegistry{
 		},
 	},
 	"system.settings": {
-		customQueryUnredacted: `SELECT * FROM system.settings`,
+		customQueryUnredacted: `SELECT *, to_hex(value) as hex_value FROM system.settings`,
 		customQueryRedacted: `SELECT * FROM (
-    		SELECT *
+    		SELECT *, to_hex(value) as hex_value
     		FROM system.settings
 			WHERE "valueType" <> 's'
     	) UNION (
 			SELECT name, '<redacted>' as value,
 			"lastUpdated",
-			"valueType"
+			"valueType",
+			to_hex('redacted') as hex_value
 			FROM system.settings
 			WHERE "valueType"  = 's'
     	)`,

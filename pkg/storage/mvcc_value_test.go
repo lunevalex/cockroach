@@ -1,12 +1,7 @@
 // Copyright 2022 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package storage
 
@@ -59,16 +54,18 @@ func TestMVCCValueGetLocalTimestamp(t *testing.T) {
 	ts0 := hlc.Timestamp{Logical: 0}
 	ts1 := hlc.Timestamp{Logical: 1}
 	ts2 := hlc.Timestamp{Logical: 2}
+	ts2S := hlc.Timestamp{Logical: 2, Synthetic: true}
 
 	testcases := map[string]struct {
 		localTs   hlc.Timestamp
 		versionTs hlc.Timestamp
 		expect    hlc.Timestamp
 	}{
-		"no local timestamp":      {ts0, ts2, ts2},
-		"smaller local timestamp": {ts1, ts2, ts1},
-		"equal local timestamp":   {ts2, ts2, ts2},
-		"larger local timestamp":  {ts2, ts1, ts2},
+		"no local timestamp":                    {ts0, ts2, ts2},
+		"no local timestamp, version synthetic": {ts0, ts2S, hlc.MinTimestamp},
+		"smaller local timestamp":               {ts1, ts2, ts1},
+		"equal local timestamp":                 {ts2, ts2, ts2},
+		"larger local timestamp":                {ts2, ts1, ts2},
 	}
 	for name, tc := range testcases {
 		t.Run(name, func(t *testing.T) {

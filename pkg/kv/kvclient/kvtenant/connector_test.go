@@ -1,12 +1,7 @@
 // Copyright 2023 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package kvtenant
 
@@ -27,6 +22,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/rpc"
 	"github.com/cockroachdb/cockroach/pkg/testutils"
 	"github.com/cockroachdb/cockroach/pkg/util"
+	"github.com/cockroachdb/cockroach/pkg/util/grpcutil"
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
 	"github.com/cockroachdb/cockroach/pkg/util/leaktest"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
@@ -474,6 +470,12 @@ func TestConnectorRangeLookup(t *testing.T) {
 	require.Nil(t, resDescs)
 	require.Nil(t, resPreDescs)
 	require.Regexp(t, context.Canceled.Error(), err)
+
+	// FirstRange always returns error.
+	desc, err := c.FirstRange()
+	require.Nil(t, desc)
+	require.Regexp(t, "does not have access to FirstRange", err)
+	require.True(t, grpcutil.IsAuthError(err))
 }
 
 // TestConnectorRetriesUnreachable tests that connector iterates over each of

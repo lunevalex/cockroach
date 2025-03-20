@@ -1,10 +1,7 @@
 // Copyright 2021 The Cockroach Authors.
 //
-// Licensed as a CockroachDB Enterprise file under the Cockroach Community
-// License (the "License"); you may not use this file except in compliance with
-// the License. You may obtain a copy of the License at
-//
-//     https://github.com/cockroachdb/cockroach/blob/master/licenses/CCL.txt
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package streamproducer_test
 
@@ -238,7 +235,10 @@ func TestReplicationStreamInitialization(t *testing.T) {
 	defer log.Scope(t).Close(t)
 
 	serverArgs := base.TestServerArgs{
-		DefaultTestTenant: base.TestControlsTenantsExplicitly,
+		// This test fails when run from within a test tenant. This is likely
+		// due to the lack of support for tenant streaming, but more
+		// investigation is required. Tracked with #76378.
+		DefaultTestTenant: base.TODOTestTenantDisabled,
 		Knobs: base.TestingKnobs{
 			JobsTestingKnobs: jobs.NewTestingKnobsWithShortIntervals(),
 		},
@@ -251,24 +251,26 @@ func TestReplicationStreamInitialization(t *testing.T) {
 	defer cleanupTenant()
 
 	// Makes the stream time out really soon
+	h.SysSQL.Exec(t, "SET CLUSTER SETTING stream_replication.job_liveness.timeout = '10ms'")
 	h.SysSQL.Exec(t, "SET CLUSTER SETTING stream_replication.stream_liveness_track_frequency = '1ms'")
 	t.Run("failed-after-timeout", func(t *testing.T) {
 		replicationProducerSpec := h.StartReplicationStream(t, testTenantName)
 		streamID := replicationProducerSpec.StreamID
-		jobutils.WaitForJobToRun(t, h.SysSQL, jobspb.JobID(streamID))
-		h.SysSQL.Exec(t, fmt.Sprintf(`ALTER TENANT '%s' SET REPLICATION EXPIRATION WINDOW ='1ms'`, testTenantName))
-		jobutils.WaitForJobToFail(t, h.SysSQL, jobspb.JobID(streamID))
+
+		h.SysSQL.CheckQueryResultsRetry(t, fmt.Sprintf("SELECT status FROM system.jobs WHERE id = %d", streamID),
+			[][]string{{"failed"}})
 		testStreamReplicationStatus(t, h.SysSQL, streamID, streampb.StreamReplicationStatus_STREAM_INACTIVE)
 	})
 
 	// Make sure the stream does not time out within the test timeout
+	h.SysSQL.Exec(t, "SET CLUSTER SETTING stream_replication.job_liveness.timeout = '500s'")
 	t.Run("continuously-running-within-timeout", func(t *testing.T) {
 		replicationProducerSpec := h.StartReplicationStream(t, testTenantName)
 		streamID := replicationProducerSpec.StreamID
 
 		h.SysSQL.CheckQueryResultsRetry(t, fmt.Sprintf("SELECT status FROM system.jobs WHERE id = %d", streamID),
 			[][]string{{"running"}})
-		h.SysSQL.Exec(t, fmt.Sprintf(`ALTER TENANT '%s' SET REPLICATION EXPIRATION WINDOW ='1hr'`, testTenantName))
+
 		// Ensures the job is continuously running for 3 seconds.
 		testDuration, now := 3*time.Second, timeutil.Now()
 		for start, end := now, now.Add(testDuration); start.Before(end); start = start.Add(300 * time.Millisecond) {
@@ -341,7 +343,9 @@ func TestStreamPartition(t *testing.T) {
 	defer log.Scope(t).Close(t)
 	h, cleanup := replicationtestutils.NewReplicationHelper(t,
 		base.TestServerArgs{
-			DefaultTestTenant: base.TestControlsTenantsExplicitly,
+			// Test fails within a test tenant. More investigation is required.
+			// Tracked with #76378.
+			DefaultTestTenant: base.TODOTestTenantDisabled,
 		})
 	defer cleanup()
 	testTenantName := roachpb.TenantName("test-tenant")
@@ -459,7 +463,9 @@ func TestStreamAddSSTable(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
 	h, cleanup := replicationtestutils.NewReplicationHelper(t, base.TestServerArgs{
-		DefaultTestTenant: base.TestControlsTenantsExplicitly,
+		// Test hangs when run within the default test tenant. Tracked with
+		// #76378.
+		DefaultTestTenant: base.TODOTestTenantDisabled,
 	})
 	defer cleanup()
 	testTenantName := roachpb.TenantName("test-tenant")
@@ -549,7 +555,7 @@ func TestCompleteStreamReplication(t *testing.T) {
 			Knobs: base.TestingKnobs{
 				JobsTestingKnobs: jobs.NewTestingKnobsWithShortIntervals(),
 			},
-			DefaultTestTenant: base.TestControlsTenantsExplicitly,
+			DefaultTestTenant: base.TODOTestTenantDisabled,
 		})
 	defer cleanup()
 	srcTenantID := serverutils.TestTenantID()
@@ -557,15 +563,17 @@ func TestCompleteStreamReplication(t *testing.T) {
 	_, cleanupTenant := h.CreateTenant(t, srcTenantID, testTenantName)
 	defer cleanupTenant()
 
+	// Make the producer job times out fast and fastly tracks ingestion cutover signal.
 	h.SysSQL.ExecMultiple(t,
+		"SET CLUSTER SETTING stream_replication.job_liveness.timeout = '2s';",
 		"SET CLUSTER SETTING stream_replication.stream_liveness_track_frequency = '2s';")
 
 	replicationProducerSpec := h.StartReplicationStream(t, testTenantName)
 	timedOutStreamID := replicationProducerSpec.StreamID
-	jobutils.WaitForJobToRun(t, h.SysSQL, jobspb.JobID(timedOutStreamID))
-	h.SysSQL.Exec(t, fmt.Sprintf(`ALTER TENANT '%s' SET REPLICATION EXPIRATION WINDOW ='1ms'`, testTenantName))
 	jobutils.WaitForJobToFail(t, h.SysSQL, jobspb.JobID(timedOutStreamID))
 
+	// Makes the producer job not easily time out.
+	h.SysSQL.Exec(t, "SET CLUSTER SETTING stream_replication.job_liveness.timeout = '10m';")
 	testCompleteStreamReplication := func(t *testing.T, successfulIngestion bool) {
 		// Verify no error when completing a timed out replication stream.
 		h.SysSQL.Exec(t, "SELECT crdb_internal.complete_replication_stream($1, $2)",
@@ -577,7 +585,6 @@ func TestCompleteStreamReplication(t *testing.T) {
 		jobutils.WaitForJobToRun(t, h.SysSQL, jobspb.JobID(streamID))
 		h.SysSQL.Exec(t, "SELECT crdb_internal.complete_replication_stream($1, $2)",
 			streamID, successfulIngestion)
-		h.SysSQL.Exec(t, fmt.Sprintf(`ALTER TENANT '%s' SET REPLICATION EXPIRATION WINDOW ='100ms'`, testTenantName))
 
 		if successfulIngestion {
 			jobutils.WaitForJobToSucceed(t, h.SysSQL, jobspb.JobID(streamID))
@@ -616,7 +623,9 @@ func TestStreamDeleteRange(t *testing.T) {
 	skip.UnderStressRace(t, "disabled under stress and race")
 
 	h, cleanup := replicationtestutils.NewReplicationHelper(t, base.TestServerArgs{
-		DefaultTestTenant: base.TestControlsTenantsExplicitly,
+		// Test hangs when run within the default test tenant. Tracked with
+		// #76378.
+		DefaultTestTenant: base.TODOTestTenantDisabled,
 	})
 	defer cleanup()
 	testTenantName := roachpb.TenantName("test-tenant")
@@ -770,7 +779,7 @@ USE d;
 
 	receivedKVs, receivedDelRangeSpans := consumeUntilTimestamp(batchHLCTime)
 	require.Equal(t, t2Span.Key, receivedKVs[0].Key)
-	require.True(t, batchHLCTime.LessEq(receivedKVs[0].Value.Timestamp))
+	require.Equal(t, batchHLCTime, receivedKVs[0].Value.Timestamp)
 	require.Equal(t, expectedDelRanges, normalizeRangeKeys(receivedDelRangeSpans))
 }
 

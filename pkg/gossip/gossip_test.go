@@ -1,12 +1,7 @@
 // Copyright 2014 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package gossip
 
@@ -192,7 +187,7 @@ func TestGossipLocalityResolver(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	nodeAddress, err := g.GetNodeIDAddress(node1.NodeID)
+	nodeAddress, _, err := g.GetNodeIDAddress(node1.NodeID)
 	if err != nil {
 		t.Error(err)
 	}
@@ -200,7 +195,7 @@ func TestGossipLocalityResolver(t *testing.T) {
 		t.Fatalf("expected: %s but got: %s address", node1PrivateAddress, *nodeAddress)
 	}
 
-	nodeAddress, err = g.GetNodeIDAddress(node2.NodeID)
+	nodeAddress, _, err = g.GetNodeIDAddress(node2.NodeID)
 	if err != nil {
 		t.Error(err)
 	}
@@ -209,7 +204,7 @@ func TestGossipLocalityResolver(t *testing.T) {
 		t.Fatalf("expected: %s but got: %s address", node2PublicAddressRPC, *nodeAddress)
 	}
 
-	nodeAddressSQL, err := g.GetNodeIDSQLAddress(node2.NodeID)
+	nodeAddressSQL, _, err := g.GetNodeIDSQLAddress(node2.NodeID)
 	if err != nil {
 		t.Error(err)
 	}
@@ -231,7 +226,7 @@ func TestGossipRaceLogStatus(t *testing.T) {
 
 	local.mu.Lock()
 	peer, _ := startGossip(clusterID, 2, stopper, t, metric.NewRegistry())
-	local.startClientLocked(peer.mu.is.NodeAddr, localCtx)
+	local.startClientLocked(peer.mu.is.NodeAddr, roachpb.Locality{}, localCtx)
 	local.mu.Unlock()
 
 	// Race gossiping against LogStatus.
@@ -288,7 +283,7 @@ func TestGossipOutgoingLimitEnforced(t *testing.T) {
 		// before we start the actual test.
 		newPeer, peerCtx := startGossip(clusterID, roachpb.NodeID(i+2), stopper, t, metric.NewRegistry())
 		newPeer.mu.Lock()
-		newPeer.startClientLocked(localAddr, peerCtx)
+		newPeer.startClientLocked(localAddr, roachpb.Locality{}, peerCtx)
 		newPeer.mu.Unlock()
 		peers = append(peers, newPeer)
 	}
@@ -342,7 +337,7 @@ func TestGossipMostDistant(t *testing.T) {
 		addr := to.mu.is.NodeAddr
 		to.mu.Unlock()
 		from.mu.Lock()
-		from.startClientLocked(addr, fromCtx)
+		from.startClientLocked(addr, roachpb.Locality{}, fromCtx)
 		from.mu.Unlock()
 	}
 
@@ -482,10 +477,10 @@ func TestGossipNoForwardSelf(t *testing.T) {
 	}
 
 	for i, peer := range peers {
-		c := newClient(log.MakeTestingAmbientCtxWithNewTracer(), local.GetNodeAddr(), makeMetrics())
+		c := newClient(log.MakeTestingAmbientCtxWithNewTracer(), local.GetNodeAddr(), roachpb.Locality{}, makeMetrics())
 
 		testutils.SucceedsSoon(t, func() error {
-			conn, err := peerCtx[i].GRPCUnvalidatedDial(c.addr.String()).Connect(ctx)
+			conn, err := peerCtx[i].GRPCUnvalidatedDial(c.addr.String(), c.locality).Connect(ctx)
 			if err != nil {
 				return err
 			}
@@ -518,7 +513,7 @@ func TestGossipNoForwardSelf(t *testing.T) {
 
 		for {
 			localAddr := local.GetNodeAddr()
-			c := newClient(log.MakeTestingAmbientCtxWithNewTracer(), localAddr, makeMetrics())
+			c := newClient(log.MakeTestingAmbientCtxWithNewTracer(), localAddr, roachpb.Locality{}, makeMetrics())
 			peer.mu.Lock()
 			c.startLocked(peer, disconnectedCh, peerCtx, stopper)
 			peer.mu.Unlock()
@@ -557,7 +552,7 @@ func TestGossipCullNetwork(t *testing.T) {
 	local.mu.Lock()
 	for i := 0; i < minPeers; i++ {
 		peer, peerCtx := startGossip(clusterID, roachpb.NodeID(i+2), stopper, t, metric.NewRegistry())
-		local.startClientLocked(*peer.GetNodeAddr(), peerCtx)
+		local.startClientLocked(*peer.GetNodeAddr(), roachpb.Locality{}, peerCtx)
 	}
 	local.mu.Unlock()
 
@@ -612,7 +607,7 @@ func TestGossipOrphanedStallDetection(t *testing.T) {
 	peerAddrStr := peerAddr.String()
 
 	local.mu.Lock()
-	local.startClientLocked(*peerAddr, localCtx)
+	local.startClientLocked(*peerAddr, roachpb.Locality{}, localCtx)
 	local.mu.Unlock()
 
 	testutils.SucceedsSoon(t, func() error {
@@ -797,7 +792,7 @@ func TestGossipPropagation(t *testing.T) {
 			// Restart the client connection in the loop. It might have failed due to
 			// a heartbeat timeout.
 			local.mu.Lock()
-			local.startClientLocked(rAddr, localCtx)
+			local.startClientLocked(rAddr, roachpb.Locality{}, localCtx)
 			local.mu.Unlock()
 			return fmt.Errorf("unable to find local to remote client")
 		}
@@ -922,7 +917,7 @@ func TestGossipLoopbackInfoPropagation(t *testing.T) {
 
 	// Start a client connection to the remote node.
 	local.mu.Lock()
-	local.startClientLocked(rAddr, localCtx)
+	local.startClientLocked(rAddr, roachpb.Locality{}, localCtx)
 	local.mu.Unlock()
 
 	getInfo := func(g *Gossip, key string) *Info {

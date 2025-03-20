@@ -1,12 +1,7 @@
 // Copyright 2022 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 import React, { useContext, useEffect, useRef } from "react";
 import classNames from "classnames/bind";
@@ -32,9 +27,16 @@ export type BarGraphTimeSeriesProps = {
   tooltip?: React.ReactNode;
   uPlotOptions: Partial<Options>;
   yAxisUnits: AxisUnits;
+  xScale?: XScale;
+};
+
+export type XScale = {
+  graphTsStartMillis: number;
+  graphTsEndMillis: number;
 };
 
 // Currently this component only supports stacked multi-series bars.
+// The value of xScale will take precedent over the start and end of the data provided.
 export const BarGraphTimeSeries: React.FC<BarGraphTimeSeriesProps> = ({
   alignedData,
   colourPalette,
@@ -43,6 +45,7 @@ export const BarGraphTimeSeries: React.FC<BarGraphTimeSeriesProps> = ({
   tooltip,
   uPlotOptions,
   yAxisUnits,
+  xScale,
 }) => {
   const graphRef = useRef<HTMLDivElement>(null);
   const samplingIntervalMillis =
@@ -52,9 +55,15 @@ export const BarGraphTimeSeries: React.FC<BarGraphTimeSeriesProps> = ({
   useEffect(() => {
     if (!alignedData) return;
 
+    const start = xScale.graphTsStartMillis
+      ? xScale.graphTsStartMillis
+      : alignedData[0][0];
+    const end = xScale.graphTsEndMillis
+      ? xScale.graphTsEndMillis
+      : alignedData[0][alignedData[0].length - 1];
     const xAxisDomain = calculateXAxisDomainBarChart(
-      alignedData[0][0], // startMillis
-      alignedData[0][alignedData[0].length - 1], // endMillis
+      start, // startMillis
+      end, // endMillis
       samplingIntervalMillis,
       timezone,
     );
@@ -87,6 +96,7 @@ export const BarGraphTimeSeries: React.FC<BarGraphTimeSeriesProps> = ({
     yAxisUnits,
     samplingIntervalMillis,
     timezone,
+    xScale,
   ]);
 
   return (

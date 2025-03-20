@@ -19,11 +19,8 @@ go_test(
         "reader_test.go",
         "writer_test.go",
     ],
+    args = ["-test.timeout=55s"],
     embed = [":csv"],
-    exec_properties = select({
-        "//build/toolchains:is_heavy": {"Pool": "heavy"},
-        "//conditions:default": {"Pool": "default"},
-    }),
     deps = [
         "//pkg/util/log",
         "@com_github_cockroachdb_errors//:errors",

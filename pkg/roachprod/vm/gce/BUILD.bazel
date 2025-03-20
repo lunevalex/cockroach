@@ -11,12 +11,14 @@ go_library(
     visibility = ["//visibility:public"],
     deps = [
         "//pkg/roachprod/config",
+        "//pkg/roachprod/errors",
         "//pkg/roachprod/logger",
         "//pkg/roachprod/vm",
         "//pkg/roachprod/vm/flagstub",
         "//pkg/util/syncutil",
         "//pkg/util/timeutil",
         "@com_github_cockroachdb_errors//:errors",
+        "@com_github_masterminds_semver_v3//:semver",
         "@com_github_spf13_pflag//:pflag",
         "@org_golang_google_api//cloudbilling/v1beta",
         "@org_golang_x_exp//maps",
@@ -28,15 +30,7 @@ go_test(
     name = "gce_test",
     size = "small",
     srcs = ["gcloud_test.go"],
+    args = ["-test.timeout=55s"],
     embed = [":gce"],
-    exec_properties = select({
-        "//build/toolchains:is_heavy": {"Pool": "heavy"},
-        "//conditions:default": {"Pool": "default"},
-    }),
-    deps = [
-        "//pkg/roachprod/vm",
-        "//pkg/util/timeutil",
-        "@com_github_cockroachdb_errors//:errors",
-        "@com_github_stretchr_testify//assert",
-    ],
+    deps = ["@com_github_stretchr_testify//assert"],
 )

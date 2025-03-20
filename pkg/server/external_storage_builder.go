@@ -1,12 +1,7 @@
 // Copyright 2022 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package server
 
@@ -23,6 +18,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/security/username"
 	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
 	"github.com/cockroachdb/cockroach/pkg/sql/isql"
+	"github.com/cockroachdb/cockroach/pkg/util/cidr"
 	"github.com/cockroachdb/cockroach/pkg/util/metric"
 	"github.com/cockroachdb/errors"
 )
@@ -40,11 +36,11 @@ type externalStorageBuilder struct {
 	db                isql.DB
 	limiters          cloud.Limiters
 	recorder          multitenant.TenantSideExternalIORecorder
-	metrics           metric.Struct
+	metrics           *cloud.Metrics
 }
 
 func (e *externalStorageBuilder) init(
-	esAccessor *cloud.EarlyBootExternalStorageAccessor,
+	ctx context.Context,
 	conf base.ExternalIODirConfig,
 	settings *cluster.Settings,
 	nodeIDContainer *base.SQLIDContainer,
@@ -54,6 +50,7 @@ func (e *externalStorageBuilder) init(
 	db isql.DB,
 	recorder multitenant.TenantSideExternalIORecorder,
 	registry *metric.Registry,
+	cidr *cidr.Lookup,
 ) {
 	var blobClientFactory blobs.BlobClientFactory
 	if p, ok := testingKnobs.Server.(*TestingKnobs); ok && p.BlobClientFactory != nil {
@@ -67,12 +64,12 @@ func (e *externalStorageBuilder) init(
 	e.blobClientFactory = blobClientFactory
 	e.initCalled = true
 	e.db = db
-	e.limiters = esAccessor.Limiters()
+	e.limiters = cloud.MakeLimiters(ctx, &settings.SV)
 	e.recorder = recorder
 
 	// Register the metrics that track interactions with external storage
 	// providers.
-	e.metrics = esAccessor.Metrics()
+	e.metrics = cloud.MakeMetrics(cidr)
 	registry.AddMetricStruct(e.metrics)
 }
 

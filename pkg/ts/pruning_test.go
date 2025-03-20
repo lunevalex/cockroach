@@ -1,17 +1,11 @@
 // Copyright 2016 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package ts
 
 import (
-	"context"
 	"reflect"
 	"testing"
 	"time"
@@ -277,8 +271,7 @@ func TestFindTimeSeries(t *testing.T) {
 		},
 	} {
 		snap := e.NewSnapshot()
-		actual, err := tm.DB.findTimeSeries(
-			context.Background(), snap, tcase.start, tcase.end, tcase.timestamp)
+		actual, err := tm.DB.findTimeSeries(snap, tcase.start, tcase.end, tcase.timestamp)
 		snap.Close()
 		if err != nil {
 			t.Fatalf("case %d: unexpected error %q", i, err)

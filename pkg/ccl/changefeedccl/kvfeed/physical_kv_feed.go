@@ -1,10 +1,7 @@
 // Copyright 2020 The Cockroach Authors.
 //
-// Licensed as a CockroachDB Enterprise file under the Cockroach Community
-// License (the "License"); you may not use this file except in compliance with
-// the License. You may obtain a copy of the License at
-//
-//     https://github.com/cockroachdb/cockroach/blob/master/licenses/CCL.txt
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package kvfeed
 
@@ -12,6 +9,7 @@ import (
 	"context"
 
 	"github.com/cockroachdb/cockroach/pkg/ccl/changefeedccl/kvevent"
+	"github.com/cockroachdb/cockroach/pkg/ccl/changefeedccl/timers"
 	"github.com/cockroachdb/cockroach/pkg/jobs/jobspb"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvclient/kvcoord"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvpb"
@@ -31,8 +29,10 @@ type rangeFeedConfig struct {
 	Spans         []kvcoord.SpanTimePair
 	WithDiff      bool
 	WithFiltering bool
-	RangeObserver func(fn kvcoord.ForEachRangeFn)
+	RangeObserver kvcoord.RangeObserver
 	Knobs         TestingKnobs
+	UseMux        bool
+	Timers        *timers.ScopedTimers
 }
 
 type rangefeedFactory func(
@@ -47,6 +47,7 @@ type rangefeed struct {
 	cfg    rangeFeedConfig
 	eventC chan kvcoord.RangeFeedMessage
 	knobs  TestingKnobs
+	st     *timers.ScopedTimers
 }
 
 func (p rangefeedFactory) Run(ctx context.Context, sink kvevent.Writer, cfg rangeFeedConfig) error {
@@ -72,10 +73,14 @@ func (p rangefeedFactory) Run(ctx context.Context, sink kvevent.Writer, cfg rang
 		cfg:    cfg,
 		eventC: make(chan kvcoord.RangeFeedMessage, 128),
 		knobs:  cfg.Knobs,
+		st:     cfg.Timers,
 	}
 	g := ctxgroup.WithContext(ctx)
 	g.GoCtx(feed.addEventsToBuffer)
 	var rfOpts []kvcoord.RangeFeedOption
+	if cfg.UseMux {
+		rfOpts = append(rfOpts, kvcoord.WithMuxRangeFeed())
+	}
 	if cfg.WithDiff {
 		rfOpts = append(rfOpts, kvcoord.WithDiff())
 	}
@@ -109,12 +114,22 @@ func (p *rangefeed) addEventsToBuffer(ctx context.Context) error {
 						return err
 					}
 				}
+				if p.knobs.ModifyTimestamps != nil {
+					e = kvcoord.RangeFeedMessage{RangeFeedEvent: e.ShallowCopy(), RegisteredSpan: e.RegisteredSpan}
+					p.knobs.ModifyTimestamps(&e.Val.Value.Timestamp)
+				}
+				stop := p.st.RangefeedBufferValue.Start()
 				if err := p.memBuf.Add(
 					ctx, kvevent.MakeKVEvent(e.RangeFeedEvent),
 				); err != nil {
 					return err
 				}
+				stop()
 			case *kvpb.RangeFeedCheckpoint:
+				if p.knobs.ModifyTimestamps != nil {
+					e = kvcoord.RangeFeedMessage{RangeFeedEvent: e.ShallowCopy(), RegisteredSpan: e.RegisteredSpan}
+					p.knobs.ModifyTimestamps(&e.Checkpoint.ResolvedTS)
+				}
 				if !t.ResolvedTS.IsEmpty() && t.ResolvedTS.Less(p.cfg.Frontier) {
 					// RangeFeed happily forwards any closed timestamps it receives as
 					// soon as there are no outstanding intents under them.
@@ -124,11 +139,13 @@ func (p *rangefeed) addEventsToBuffer(ctx context.Context) error {
 				if p.knobs.ShouldSkipCheckpoint != nil && p.knobs.ShouldSkipCheckpoint(t) {
 					continue
 				}
+				stop := p.st.RangefeedBufferCheckpoint.Start()
 				if err := p.memBuf.Add(
 					ctx, kvevent.MakeResolvedEvent(e.RangeFeedEvent, jobspb.ResolvedSpan_NONE),
 				); err != nil {
 					return err
 				}
+				stop()
 			case *kvpb.RangeFeedSSTable:
 				// For now, we just error on SST ingestion, since we currently don't
 				// expect SST ingestion into spans with active changefeeds.

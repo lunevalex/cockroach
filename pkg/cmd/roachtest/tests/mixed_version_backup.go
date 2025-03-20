@@ -1,12 +1,7 @@
 // Copyright 2023 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package tests
 
@@ -44,7 +39,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/testutils/jobutils"
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
 	"github.com/cockroachdb/cockroach/pkg/util/humanizeutil"
-	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/cockroach/pkg/util/protoutil"
 	"github.com/cockroachdb/cockroach/pkg/util/randutil"
 	"github.com/cockroachdb/cockroach/pkg/util/retry"
@@ -81,6 +75,11 @@ const (
 
 	// the test will not pause a backup job more than `maxPauses` times.
 	maxPauses = 3
+
+	// These constants are used to define the scope of the cluster
+	// settings used in this test.
+	systemOnly       = "system-only"
+	applicationLevel = "application-level"
 )
 
 var (
@@ -125,7 +124,7 @@ var (
 		"zones":        "SHOW ZONE CONFIGURATIONS",
 	}
 
-	// systemSettingValues is a mapping from system setting names to
+	// clusterSettingValues is a mapping from cluster setting names to
 	// possible values they can assume in this test. The system settings
 	// listed here are chosen based on availability of documentation
 	// (see below), meaning a customer could have reasonably set them;
@@ -135,14 +134,14 @@ var (
 	//
 	// Documentation:
 	// https://www.cockroachlabs.com/docs/stable/cluster-settings.html
-	systemSettingValues = map[string][]string{
-		"bulkio.backup.file_size":                        {"8MiB", "32MiB", "512MiB", "750MiB"},
-		"bulkio.backup.read_timeout":                     {"2m0s", "10m0s"},
-		"bulkio.backup.read_with_priority_after":         {"20s", "5m0s"},
-		"bulkio.stream_ingestion.minimum_flush_interval": {"1s", "10s", "30s"},
-		"kv.bulk_io_write.max_rate":                      {"250MiB", "500MiB", "2TiB"},
-		"kv.bulk_sst.max_allowed_overage":                {"16MiB", "256MiB"},
-		"kv.bulk_sst.target_size":                        {"4MiB", "64MiB", "128MiB"},
+	clusterSettingValues = map[string]metamorphicSetting{
+		"bulkio.backup.file_size":                        tenantSetting("8MiB", "32MiB", "512MiB", "750MiB"),
+		"bulkio.backup.read_timeout":                     tenantSetting("2m0s", "10m0s"),
+		"bulkio.backup.read_with_priority_after":         tenantSetting("20s", "5m0s"),
+		"bulkio.stream_ingestion.minimum_flush_interval": systemSetting("1s", "10s", "30s"),
+		"kv.bulk_io_write.max_rate":                      systemSetting("250MiB", "500MiB", "2TiB"),
+		"kv.bulk_sst.max_allowed_overage":                systemSetting("16MiB", "256MiB"),
+		"kv.bulk_sst.target_size":                        systemSetting("4MiB", "64MiB", "128MiB"),
 		// The default is currently 384 MB, which was set to be about 75% of a
 		// range's worth of data. This configuration will reduce the size of this
 		// setting to test restore_span_covering correctness, at the cost of a
@@ -150,12 +149,12 @@ var (
 		//
 		// Note that a size of 0 indicates that target_size will not be used while
 		// constructing restore span entries.
-		"backup.restore_span.target_size": {"0 B", "4 MiB", "32 MiB", "128 MiB"},
+		"backup.restore_span.target_size": tenantSetting("0 B", "4 MiB", "32 MiB", "128 MiB"),
 	}
 
-	systemSettingNames = func() []string {
-		names := make([]string, 0, len(systemSettingValues))
-		for name := range systemSettingValues {
+	clusterSettingNames = func() []string {
+		names := make([]string, 0, len(clusterSettingValues))
+		for name := range clusterSettingValues {
 			names = append(names, name)
 		}
 
@@ -182,11 +181,22 @@ var (
 	possibleNumIncrementalBackups = []int{
 		1,
 		3,
-		5,
 	}
 
 	schemaChangeDB = "schemachange"
 )
+
+func systemSetting(values ...string) metamorphicSetting {
+	return metamorphicSetting{Scope: systemOnly, Values: values}
+}
+
+func tenantSetting(values ...string) metamorphicSetting {
+	return metamorphicSetting{Scope: applicationLevel, Values: values}
+}
+
+func (s metamorphicSetting) IsSystemOnly() bool {
+	return s.Scope == systemOnly
+}
 
 // sanitizeVersionForBackup takes the string representation of a
 // version and removes any characters that would not be allowed in a
@@ -251,6 +261,14 @@ type (
 	// backup as well.
 	encryptionPassphrase struct {
 		passphrase string
+	}
+
+	// metamorphicSetting encodes the space of possible values a cluster
+	// setting may assume during this test, along with the scope where
+	// it applies (system or tenant).
+	metamorphicSetting struct {
+		Scope  string
+		Values []string
 	}
 
 	// backupScope is the interface to be implemented by each backup scope
@@ -452,7 +470,7 @@ func randString(rng *rand.Rand, strLen int) string {
 }
 
 func randWaitDuration(rng *rand.Rand) time.Duration {
-	durations := []int{1, 10, 60, 5 * 60}
+	durations := []int{1, 10, 60}
 	return time.Duration(durations[rng.Intn(len(durations))]) * time.Second
 }
 
@@ -843,13 +861,13 @@ func (sc *systemTableContents) loadShowResults(
 
 	query := fmt.Sprintf("SELECT * FROM [%s]%s", showStmt, aostFor(timestamp))
 	showCmd := roachtestutil.NewCommand("%s sql", test.DefaultCockroachPath).
-		Flag("certs-dir", "certs").
+		Flag("certs-dir", install.CockroachNodeCertsDir).
 		Flag("e", fmt.Sprintf("%q", query)).
 		Flag("port", fmt.Sprintf("{pgport:%d}", sc.roachNode)).
 		String()
 
 	node := sc.cluster.Node(sc.roachNode)
-	result, err := sc.cluster.RunWithDetailsSingleNode(ctx, l, option.WithNodes(node), showCmd)
+	result, err := sc.cluster.RunWithDetailsSingleNode(ctx, l, node, showCmd)
 	if err != nil {
 		return fmt.Errorf("error running command (%s): %w", showCmd, err)
 	}
@@ -1173,9 +1191,9 @@ func newBackupRestoreTestDriver(
 }
 
 func (mvb *mixedVersionBackup) initBackupRestoreTestDriver(
-	ctx context.Context, l *logger.Logger, rng *rand.Rand,
+	ctx context.Context, l *logger.Logger, rng *rand.Rand, h *mixedversion.Helper,
 ) error {
-	u, err := mvb.CommonTestUtils(ctx)
+	u, err := mvb.CommonTestUtils(ctx, h)
 	if err != nil {
 		return err
 	}
@@ -1196,15 +1214,19 @@ func (mvb *mixedVersionBackup) initBackupRestoreTestDriver(
 
 // newBackupScope chooses a random backup type (table, database,
 // cluster) with equal probability.
-func (d *BackupRestoreTestDriver) newBackupScope(rng *rand.Rand) backupScope {
+func (d *BackupRestoreTestDriver) newBackupScope(rng *rand.Rand, isMultitenant bool) backupScope {
 	possibleTypes := []backupScope{
 		newTableBackup(rng, d.dbs, d.tables),
 		newDatabaseBackup(rng, d.dbs, d.tables),
 	}
-	if !d.cluster.IsLocal() {
-		// Cluster backups cannot be restored on nodelocal because the cluster is
-		// wiped before cluster restore.
-		possibleTypes = append(possibleTypes, newClusterBackup(rng, d.dbs, d.tables))
+	if !d.cluster.IsLocal() && !isMultitenant {
+		// Cluster backups cannot be restored on nodelocal because the
+		// cluster is wiped before cluster restore. Cluster restores in
+		// multitenant deployments are also not supported by this test at
+		// the moment.
+		possibleTypes = append(
+			possibleTypes, newClusterBackup(rng, d.dbs, d.tables),
+		)
 	}
 
 	return possibleTypes[rng.Intn(len(possibleTypes))]
@@ -1381,7 +1403,7 @@ func (u *CommonTestUtils) loadTablesForDBs(
 
 // setMaxRangeSizeAndDependentSettings chooses a random default range size from
 // maxRangeSize bytes and scales the cluster settings in
-// systemSettingsScaledOnRangeSize such that rangeSize/settingValue remains the
+// clusterSettingsScaledOnRangeSize such that rangeSize/settingValue remains the
 // same.
 func (u *CommonTestUtils) setMaxRangeSizeAndDependentSettings(
 	ctx context.Context, t test.Test, rng *rand.Rand, dbs []string,
@@ -1405,7 +1427,7 @@ func (u *CommonTestUtils) setMaxRangeSizeAndDependentSettings(
 		}
 	}
 
-	for _, setting := range systemSettingsScaledOnRangeSize {
+	for _, setting := range clusterSettingsScaledOnRangeSize {
 		var humanizedCurrentValue string
 		if err := u.QueryRow(ctx, rng, fmt.Sprintf("SHOW CLUSTER SETTING %s", setting)).Scan(&humanizedCurrentValue); err != nil {
 			return err
@@ -1427,13 +1449,13 @@ func (u *CommonTestUtils) setMaxRangeSizeAndDependentSettings(
 }
 
 // setClusterSettings may set up to numCustomSettings cluster settings
-// as defined in `systemSettingValues`. The system settings changed
+// as defined in `clusterSettingValues`. The system settings changed
 // are logged. This function should be called *before* the upgrade
 // begins; the cockroach documentation says explicitly that changing
 // cluster settings is not supported in mixed-version, so we don't
 // test that scenario.
 func (u *CommonTestUtils) setClusterSettings(
-	ctx context.Context, l *logger.Logger, rng *rand.Rand,
+	ctx context.Context, l *logger.Logger, c cluster.Cluster, rng *rand.Rand,
 ) error {
 	const numCustomSettings = 3
 	const defaultSettingsProbability = 0.2
@@ -1443,14 +1465,32 @@ func (u *CommonTestUtils) setClusterSettings(
 		return nil
 	}
 
-	for j := 0; j < numCustomSettings; j++ {
-		setting := systemSettingNames[rng.Intn(len(systemSettingNames))]
-		possibleValues := systemSettingValues[setting]
-		value := possibleValues[rng.Intn(len(possibleValues))]
+	// Make sure to use a connection to the system tenant as it will be
+	// necessary when changing system-only cluster settings.
+	systemDB, err := c.ConnE(ctx, l, 1, option.VirtualClusterName(install.SystemInterfaceName))
+	if err != nil {
+		return errors.Wrap(err, "failed to connect to system tenant")
+	}
+	defer systemDB.Close()
 
-		l.Printf("setting cluster setting %q to %q", setting, value)
-		stmt := fmt.Sprintf("SET CLUSTER SETTING %s = '%s'", setting, value)
-		if err := u.Exec(ctx, rng, stmt); err != nil {
+	appDB := u.Connect(1) // no need to Close() this as it's a cached connection
+
+	for j := 0; j < numCustomSettings; j++ {
+		settingName := clusterSettingNames[rng.Intn(len(clusterSettingNames))]
+		setting := clusterSettingValues[settingName]
+		value := setting.Values[rng.Intn(len(setting.Values))]
+
+		l.Printf("setting %s cluster setting %q to %q", setting.Scope, settingName, value)
+		stmt := fmt.Sprintf("SET CLUSTER SETTING %s = '%s'", settingName, value)
+
+		var db *gosql.DB
+		if setting.IsSystemOnly() {
+			db = systemDB
+		} else {
+			db = appDB
+		}
+
+		if _, err := db.ExecContext(ctx, stmt); err != nil {
 			return err
 		}
 	}
@@ -1461,7 +1501,7 @@ func (u *CommonTestUtils) setClusterSettings(
 func (mvb *mixedVersionBackup) setShortJobIntervals(
 	ctx context.Context, l *logger.Logger, rng *rand.Rand, h *mixedversion.Helper,
 ) error {
-	u, err := mvb.CommonTestUtils(ctx)
+	u, err := mvb.CommonTestUtils(ctx, h)
 	if err != nil {
 		return err
 	}
@@ -1477,7 +1517,7 @@ func (mvb *mixedVersionBackup) systemTableWriter(
 	}
 	l.Printf("user tables loaded, starting random inserts")
 
-	u, err := mvb.CommonTestUtils(ctx)
+	u, err := mvb.CommonTestUtils(ctx, h)
 	if err != nil {
 		return err
 	}
@@ -1488,11 +1528,50 @@ func (mvb *mixedVersionBackup) systemTableWriter(
 func (mvb *mixedVersionBackup) setClusterSettings(
 	ctx context.Context, l *logger.Logger, rng *rand.Rand, h *mixedversion.Helper,
 ) error {
-	u, err := mvb.CommonTestUtils(ctx)
+	u, err := mvb.CommonTestUtils(ctx, h)
 	if err != nil {
 		return err
 	}
-	return u.setClusterSettings(ctx, l, rng)
+	return u.setClusterSettings(ctx, l, mvb.cluster, rng)
+}
+
+// waitForDBs waits until every database in the `dbs` field
+// exists. Useful in case a mixed-version hook is called concurrently
+// with the process of actually creating the tables (e.g., workload
+// initialization).
+func (mvb *mixedVersionBackup) waitForDBs(
+	ctx context.Context, l *logger.Logger, rng *rand.Rand, h *mixedversion.Helper,
+) error {
+	retryOptions := retry.Options{
+		InitialBackoff: 10 * time.Second,
+		MaxBackoff:     1 * time.Minute,
+		Multiplier:     1.5,
+		MaxRetries:     20,
+	}
+
+	for _, dbName := range mvb.dbs {
+		r := retry.StartWithCtx(ctx, retryOptions)
+		var err error
+		for r.Next() {
+			q := "SELECT 1 FROM [SHOW DATABASES] WHERE database_name = $1"
+			var n int
+			if err = h.QueryRow(rng, q, dbName).Scan(&n); err == nil {
+				break
+			}
+
+			l.Printf("waiting for DB %s (err: %v)", dbName, err)
+		}
+
+		if err != nil {
+			return fmt.Errorf("failed to wait for DB %s (last error: %w)", dbName, err)
+		}
+	}
+
+	// After every database exists, wait for a small amount of time to
+	// make sure *some* data exists (the workloads could be inserting
+	// data concurrently).
+	time.Sleep(1 * time.Minute)
+	return nil
 }
 
 // maybeTakePreviousVersionBackup creates a backup collection (full +
@@ -1503,31 +1582,25 @@ func (mvb *mixedVersionBackup) setClusterSettings(
 func (mvb *mixedVersionBackup) maybeTakePreviousVersionBackup(
 	ctx context.Context, l *logger.Logger, rng *rand.Rand, h *mixedversion.Helper,
 ) error {
-	// Wait here for a few minutes to allow the workloads (which are
-	// initializing concurrently with this step) to store some data in
-	// the cluster by the time the backup is taken. The actual wait time
-	// chosen is somewhat arbitrary: it's less time than workloads
-	// typically need to finish initializing (especially tpcc), so the
-	// backup is taken while data is still being inserted. The actual
-	// time is irrelevant as far as correctness is concerned: we should
-	// be able to restore this backup after upgrading regardless of the
-	// amount of data backed up.
-	wait := 3 * time.Minute
-	l.Printf("waiting for %s", wait)
-	time.Sleep(wait)
-
-	if err := mvb.initBackupRestoreTestDriver(ctx, l, rng); err != nil {
+	// Wait here to allow the workloads (which are initializing
+	// concurrently with this step) to store some data in the cluster by
+	// the time the backup is taken.
+	if err := mvb.waitForDBs(ctx, l, rng, h); err != nil {
 		return err
 	}
 
-	previousVersion := h.Context.FromVersion
+	if err := mvb.initBackupRestoreTestDriver(ctx, l, rng, h); err != nil {
+		return err
+	}
+
+	previousVersion := h.Context().FromVersion
 	label := fmt.Sprintf("before upgrade in %s", sanitizeVersionForBackup(previousVersion))
 	allPrevVersionNodes := labeledNodes{Nodes: mvb.roachNodes, Version: previousVersion.String()}
 	executeOnAllNodesSpec := backupSpec{PauseProbability: neverPause, Plan: allPrevVersionNodes, Execute: allPrevVersionNodes}
 	return mvb.createBackupCollection(ctx, l, rng, executeOnAllNodesSpec, executeOnAllNodesSpec, h, label)
 }
 
-// randomWait waits from 1s to 5m, to allow for the background
+// randomWait waits from 1s to 3m, to allow for the background
 // workloads to update the databases we are backing up.
 func (d *BackupRestoreTestDriver) randomWait(l *logger.Logger, rng *rand.Rand) {
 	dur := randWaitDuration(rng)
@@ -1551,12 +1624,12 @@ func (d *BackupRestoreTestDriver) nextRestoreID() int64 {
 // provide more context. Example: '22.2.4-to-current_final'
 func (mvb *mixedVersionBackup) backupNamePrefix(h *mixedversion.Helper, label string) string {
 	var finalizing string
-	if h.Context.Finalizing {
+	if h.IsFinalizing() {
 		finalizing = finalizingLabel
 	}
 
-	fromVersion := sanitizeVersionForBackup(h.Context.FromVersion)
-	toVersion := sanitizeVersionForBackup(h.Context.ToVersion)
+	fromVersion := sanitizeVersionForBackup(h.Context().FromVersion)
+	toVersion := sanitizeVersionForBackup(h.Context().ToVersion)
 	sanitizedLabel := strings.ReplaceAll(label, " ", "-")
 
 	return fmt.Sprintf(
@@ -1689,7 +1762,7 @@ func (d *BackupRestoreTestDriver) computeTableContents(
 	}
 
 	if err := eg.Wait(); err != nil {
-		log.Errorf(ctx, "Error loading system table content %s", err)
+		l.ErrorfCtx(ctx, "Error loading system table content %s", err)
 		return nil, err
 	}
 
@@ -1728,6 +1801,7 @@ func (d *BackupRestoreTestDriver) runBackup(
 	pauseProbability float64,
 	bType fmt.Stringer,
 	internalSystemJobs bool,
+	isMultitenant bool,
 ) (backupCollection, string, error) {
 	pauseAfter := 1024 * time.Hour // infinity
 	var pauseResumeDB *gosql.DB
@@ -1753,7 +1827,7 @@ func (d *BackupRestoreTestDriver) runBackup(
 	var collection backupCollection
 	switch b := bType.(type) {
 	case fullBackup:
-		btype := d.newBackupScope(rng)
+		btype := d.newBackupScope(rng, isMultitenant)
 		name := d.backupCollectionName(d.nextBackupID(), b.namePrefix, btype)
 		createOptions := newBackupOptions(rng)
 		collection = newBackupCollection(name, btype, createOptions, d.cluster.IsLocal())
@@ -1819,6 +1893,19 @@ func (d *BackupRestoreTestDriver) runBackup(
 				continue
 			}
 
+			if err := testutils.SucceedsSoonError(func() error {
+				var status string
+				if err := pauseResumeDB.QueryRow(`SELECT status FROM [SHOW JOB $1]`, jobID).Scan(&status); err != nil {
+					return err
+				}
+				if status != "paused" {
+					return errors.Newf("expected status `paused` but found %s", status)
+				}
+				return nil
+			}); err != nil {
+				return backupCollection{}, "", err
+			}
+
 			time.Sleep(pauseDur)
 
 			l.Printf("resuming job %d", jobID)
@@ -1870,14 +1957,17 @@ func (mvb *mixedVersionBackup) createBackupCollection(
 		label = labelOverride
 	}
 	backupNamePrefix := mvb.backupNamePrefix(h, label)
-	n, db := h.RandomDB(rng, mvb.roachNodes)
+	n, db := h.System.RandomDB(rng)
 	l.Printf("checking existence of crdb_internal.system_jobs via node %d", n)
 	internalSystemJobs, err := hasInternalSystemJobs(ctx, rng, db)
 	if err != nil {
 		return err
 	}
 
-	collection, err := mvb.backupRestoreTestDriver.createBackupCollection(ctx, l, rng, fullBackupSpec, incBackupSpec, backupNamePrefix, internalSystemJobs)
+	collection, err := mvb.backupRestoreTestDriver.createBackupCollection(
+		ctx, l, rng, fullBackupSpec, incBackupSpec, backupNamePrefix,
+		internalSystemJobs, h.IsMultitenant(),
+	)
 	if err != nil {
 		return err
 	}
@@ -1899,6 +1989,7 @@ func (d *BackupRestoreTestDriver) createBackupCollection(
 	incBackupSpec backupSpec,
 	backupNamePrefix string,
 	internalSystemJobs bool,
+	isMultitenant bool,
 ) (*backupCollection, error) {
 	var collection backupCollection
 	var latestIncBackupEndTime string
@@ -1908,7 +1999,8 @@ func (d *BackupRestoreTestDriver) createBackupCollection(
 	if err := d.testUtils.runJobOnOneOf(ctx, l, fullBackupSpec.Execute.Nodes, func() error {
 		var err error
 		collection, fullBackupEndTime, err = d.runBackup(
-			ctx, l, rng, fullBackupSpec.Plan.Nodes, fullBackupSpec.PauseProbability, fullBackup{backupNamePrefix}, internalSystemJobs,
+			ctx, l, rng, fullBackupSpec.Plan.Nodes, fullBackupSpec.PauseProbability,
+			fullBackup{backupNamePrefix}, internalSystemJobs, isMultitenant,
 		)
 		return err
 	}); err != nil {
@@ -1926,7 +2018,8 @@ func (d *BackupRestoreTestDriver) createBackupCollection(
 		if err := d.testUtils.runJobOnOneOf(ctx, l, incBackupSpec.Execute.Nodes, func() error {
 			var err error
 			collection, latestIncBackupEndTime, err = d.runBackup(
-				ctx, l, rng, incBackupSpec.Plan.Nodes, incBackupSpec.PauseProbability, incrementalBackup{collection: collection, incNum: i + 1}, internalSystemJobs,
+				ctx, l, rng, incBackupSpec.Plan.Nodes, incBackupSpec.PauseProbability,
+				incrementalBackup{collection: collection, incNum: i + 1}, internalSystemJobs, isMultitenant,
 			)
 			return err
 		}); err != nil {
@@ -1951,7 +2044,7 @@ func (u *CommonTestUtils) sentinelFilePath(
 	ctx context.Context, l *logger.Logger, node int,
 ) (string, error) {
 	result, err := u.cluster.RunWithDetailsSingleNode(
-		ctx, l, option.WithNodes(u.cluster.Node(node)), "echo -n {store-dir}",
+		ctx, l, u.cluster.Node(node), "echo -n {store-dir}",
 	)
 	if err != nil {
 		return "", fmt.Errorf("failed to retrieve store directory from node %d: %w", node, err)
@@ -1975,7 +2068,7 @@ func (u *CommonTestUtils) disableJobAdoption(
 			if err != nil {
 				return err
 			}
-			if err := u.cluster.RunE(ctx, option.WithNodes(u.cluster.Node(node)), "touch", sentinelFilePath); err != nil {
+			if err := u.cluster.RunE(ctx, u.cluster.Node(node), "touch", sentinelFilePath); err != nil {
 				return fmt.Errorf("node %d: failed to touch sentinel file %q: %w", node, sentinelFilePath, err)
 			}
 
@@ -2026,7 +2119,7 @@ func (u *CommonTestUtils) enableJobAdoption(
 				return err
 			}
 
-			if err := u.cluster.RunE(ctx, option.WithNodes(u.cluster.Node(node)), "rm -f", sentinelFilePath); err != nil {
+			if err := u.cluster.RunE(ctx, u.cluster.Node(node), "rm -f", sentinelFilePath); err != nil {
 				return fmt.Errorf("node %d: failed to remove sentinel file %q: %w", node, sentinelFilePath, err)
 			}
 
@@ -2048,10 +2141,10 @@ func (mvb *mixedVersionBackup) planAndRunBackups(
 	ctx context.Context, l *logger.Logger, rng *rand.Rand, h *mixedversion.Helper,
 ) error {
 	onPrevious := labeledNodes{
-		Nodes: h.Context.NodesInPreviousVersion(), Version: sanitizeVersionForBackup(h.Context.FromVersion),
+		Nodes: h.Context().NodesInPreviousVersion(), Version: sanitizeVersionForBackup(h.Context().FromVersion),
 	}
 	onNext := labeledNodes{
-		Nodes: h.Context.NodesInNextVersion(), Version: sanitizeVersionForBackup(h.Context.ToVersion),
+		Nodes: h.Context().NodesInNextVersion(), Version: sanitizeVersionForBackup(h.Context().ToVersion),
 	}
 	onRandom := labeledNodes{Nodes: mvb.roachNodes, Version: "random node"}
 	defaultPauseProbability := 0.2
@@ -2089,7 +2182,7 @@ func (mvb *mixedVersionBackup) planAndRunBackups(
 		},
 	}
 
-	if h.Context.MixedBinary() {
+	if h.Context().MixedBinary() {
 		const numCollections = 2
 		rng.Shuffle(len(collectionSpecs), func(i, j int) {
 			collectionSpecs[i], collectionSpecs[j] = collectionSpecs[j], collectionSpecs[i]
@@ -2258,18 +2351,22 @@ func (bc *backupCollection) verifyBackupCollection(
 // specified version binary. This is done before we attempt restoring a
 // full cluster backup.
 func (u *CommonTestUtils) resetCluster(
-	ctx context.Context, l *logger.Logger, version *clusterupgrade.Version, expectDeathsFn func(int),
+	ctx context.Context,
+	l *logger.Logger,
+	version *clusterupgrade.Version,
+	expectDeathsFn func(int),
+	settings []install.ClusterSettingOption,
 ) error {
 	l.Printf("resetting cluster using version %q", version.String())
 	expectDeathsFn(len(u.roachNodes))
-	if err := u.cluster.WipeE(ctx, l, true /* preserveCerts */, u.roachNodes); err != nil {
+	if err := u.cluster.WipeE(ctx, l, u.roachNodes); err != nil {
 		return fmt.Errorf("failed to wipe cluster: %w", err)
 	}
 
 	cockroachPath := clusterupgrade.CockroachPathForVersion(u.t, version)
+	settings = append(settings, install.BinaryOption(cockroachPath), install.SecureOption(true))
 	return clusterupgrade.StartWithSettings(
-		ctx, l, u.cluster, u.roachNodes, option.DefaultStartOptsNoBackups(),
-		install.BinaryOption(cockroachPath), install.SecureOption(true),
+		ctx, l, u.cluster, u.roachNodes, option.NewStartOpts(option.NoBackupSchedule), settings...,
 	)
 }
 
@@ -2299,7 +2396,7 @@ func (mvb *mixedVersionBackup) verifySomeBackups(
 		l.Printf("skipping check_files as it is not supported")
 	}
 
-	n, db := h.RandomDB(rng, mvb.roachNodes)
+	n, db := h.System.RandomDB(rng)
 	l.Printf("checking existence of crdb_internal.system_jobs via node %d", n)
 	internalSystemJobs, err := hasInternalSystemJobs(ctx, rng, db)
 	if err != nil {
@@ -2328,7 +2425,7 @@ func (mvb *mixedVersionBackup) verifyAllBackups(
 	l.Printf("stopping background functions and workloads")
 	mvb.stopBackground()
 
-	u, err := mvb.CommonTestUtils(ctx)
+	u, err := mvb.CommonTestUtils(ctx, h)
 	if err != nil {
 		return err
 	}
@@ -2347,7 +2444,7 @@ func (mvb *mixedVersionBackup) verifyAllBackups(
 			}
 
 			if _, ok := collection.btype.(*clusterBackup); ok {
-				err := u.resetCluster(ctx, l, version, h.ExpectDeaths)
+				err := u.resetCluster(ctx, l, version, h.ExpectDeaths, []install.ClusterSettingOption{})
 				if err != nil {
 					err := errors.Wrapf(err, "%s", version)
 					l.Printf("error resetting cluster: %v", err)
@@ -2365,7 +2462,7 @@ func (mvb *mixedVersionBackup) verifyAllBackups(
 				l.Printf("skipping check_files as it is not supported")
 			}
 
-			n, db := h.RandomDB(rng, mvb.roachNodes)
+			n, db := h.System.RandomDB(rng)
 			l.Printf("checking existence of crdb_internal.system_jobs via node %d", n)
 			internalSystemJobs, err := hasInternalSystemJobs(ctx, rng, db)
 			if err != nil {
@@ -2388,8 +2485,10 @@ func (mvb *mixedVersionBackup) verifyAllBackups(
 		}
 	}
 
-	verify(h.Context.FromVersion)
-	verify(h.Context.ToVersion)
+	if h.Context().FromVersion.AtLeast(mixedversion.OldestSupportedVersion) {
+		verify(h.Context().FromVersion)
+	}
+	verify(h.Context().ToVersion)
 
 	// If the context was canceled (most likely due to a test timeout),
 	// return early. In these cases, it's likely that `restoreErrors`
@@ -2432,14 +2531,16 @@ func registerBackupMixedVersion(r registry.Registry) {
 	// different set of events. Reusing the same seed will produce the
 	// same test.
 	r.Add(registry.TestSpec{
-		Name:              "backup-restore/mixed-version",
-		Timeout:           8 * time.Hour,
-		Owner:             registry.OwnerDisasterRecovery,
-		Cluster:           r.MakeClusterSpec(5),
-		EncryptionSupport: registry.EncryptionMetamorphic,
-		RequiresLicense:   true,
-		CompatibleClouds:  registry.AllExceptAWS,
-		Suites:            registry.Suites(registry.Nightly),
+		Name:                      "backup-restore/mixed-version",
+		Timeout:                   8 * time.Hour,
+		Owner:                     registry.OwnerDisasterRecovery,
+		Cluster:                   r.MakeClusterSpec(5),
+		EncryptionSupport:         registry.EncryptionMetamorphic,
+		RequiresLicense:           true,
+		CompatibleClouds:          registry.AllExceptAWS,
+		Suites:                    registry.Suites(registry.Nightly),
+		TestSelectionOptOutSuites: registry.Suites(registry.Nightly),
+		Randomized:                true,
 		Run: func(ctx context.Context, t test.Test, c cluster.Cluster) {
 			if c.Cloud() != spec.GCE && !c.IsLocal() {
 				t.Skip("uses gs://cockroachdb-backup-testing-long-ttl; see https://github.com/cockroachdb/cockroach/issues/105968")
@@ -2455,6 +2556,20 @@ func registerBackupMixedVersion(r registry.Registry) {
 				// attempted.
 				mixedversion.UpgradeTimeout(30*time.Minute),
 				mixedversion.AlwaysUseLatestPredecessors,
+				// We disable cluster setting mutators because this test
+				// resets the cluster to older versions when verifying cluster
+				// backups. This makes the mixed-version context inaccurate
+				// and leads to flakes.
+				//
+				// TODO(renato): don't disable these mutators when the
+				// framework exposes some utility to provide mutual exclusion
+				// of concurrent steps.
+				mixedversion.DisableMutators(
+					mixedversion.ClusterSettingMutator("kv.expiration_leases_only.enabled"),
+					mixedversion.ClusterSettingMutator("kv.snapshot_receiver.excise.enabled"),
+					mixedversion.ClusterSettingMutator("storage.ingest_split.enabled"),
+					mixedversion.ClusterSettingMutator("storage.sstable.compression_algorithm"),
+				),
 			)
 			testRNG := mvt.RNG()
 
@@ -2529,8 +2644,14 @@ func tpccWorkloadCmd(
 func bankWorkloadCmd(
 	l *logger.Logger, testRNG *rand.Rand, roachNodes option.NodeListOption, mock bool,
 ) (init *roachtestutil.Command, run *roachtestutil.Command) {
-	bankPayload := bankPossiblePayloadBytes[testRNG.Intn(len(bankPossiblePayloadBytes))]
 	bankRows := bankPossibleRows[testRNG.Intn(len(bankPossibleRows))]
+	possiblePayloads := bankPossiblePayloadBytes
+	// force smaller row counts to use smaller payloads too to avoid making lots
+	// of large revisions of a handful of keys.
+	if bankRows < 1000 {
+		possiblePayloads = []int{16, 64}
+	}
+	bankPayload := possiblePayloads[testRNG.Intn(len(possiblePayloads))]
 
 	if mock {
 		bankPayload = 9
@@ -2612,15 +2733,19 @@ type CommonTestUtils struct {
 // and puts these connections in a cache for reuse. The caller should remember to close all connections
 // once done with them to prevent any goroutine leaks (CloseConnections).
 func newCommonTestUtils(
-	ctx context.Context, t test.Test, c cluster.Cluster, nodes option.NodeListOption, mock bool,
+	ctx context.Context,
+	t test.Test,
+	c cluster.Cluster,
+	connectFunc func(int) (*gosql.DB, error),
+	nodes option.NodeListOption,
+	mock bool,
 ) (*CommonTestUtils, error) {
 	cc := make([]*gosql.DB, len(nodes))
 	for _, node := range nodes {
-		conn, err := c.ConnE(ctx, t.L(), node)
+		conn, err := connectFunc(node)
 		if err != nil {
-			return nil, fmt.Errorf("failed to connect to node %d: %w", node, err)
+			return nil, err
 		}
-
 		cc[node-1] = conn
 	}
 
@@ -2638,16 +2763,27 @@ func newCommonTestUtils(
 	return u, nil
 }
 
-func (mvb *mixedVersionBackup) CommonTestUtils(ctx context.Context) (*CommonTestUtils, error) {
+func (mvb *mixedVersionBackup) CommonTestUtils(
+	ctx context.Context, h *mixedversion.Helper,
+) (*CommonTestUtils, error) {
 	var err error
 	mvb.utilsOnce.Do(func() {
-		mvb.commonTestUtils, err = newCommonTestUtils(ctx, mvb.t, mvb.cluster, mvb.roachNodes, false)
+		connectFunc := func(node int) (*gosql.DB, error) { return h.Connect(node), nil }
+		mvb.commonTestUtils, err = newCommonTestUtils(
+			ctx, mvb.t, mvb.cluster, connectFunc, mvb.roachNodes, false,
+		)
 	})
 	return mvb.commonTestUtils, err
 }
 
 func (mvb *mixedVersionBackup) cleanUp(ctx context.Context) error {
-	u, err := mvb.CommonTestUtils(ctx)
+	if mvb.commonTestUtils == nil {
+		return nil
+	}
+
+	// The helper should not be necessary if we already set up a
+	// `commonTestUtils`.
+	u, err := mvb.CommonTestUtils(ctx, nil /* helper */)
 	if err != nil {
 		return err
 	}

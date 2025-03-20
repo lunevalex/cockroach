@@ -1,12 +1,7 @@
 // Copyright 2018 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package importer
 
@@ -784,6 +779,7 @@ func readPostgresStmt(
 				case *tree.FuncExpr:
 					// Look for function calls that mutate schema (this is actually a thing).
 					semaCtx := tree.MakeSemaContext()
+					semaCtx.Properties.Require("pg_dump function arguments", tree.RejectSubqueries)
 					if _, err := expr.TypeCheck(ctx, &semaCtx, nil /* desired */); err != nil {
 						// If the expression does not type check, it may be a case of using
 						// a column that does not exist yet in a setval call (as is the case
@@ -1083,9 +1079,17 @@ func (m *pgDumpReader) readFile(
 		}
 		switch i := stmt.(type) {
 		case *tree.Insert:
-			n, ok := i.Table.(*tree.TableName)
-			if !ok {
-				return errors.Errorf("unexpected: %T", i.Table)
+			n, isTableName := i.Table.(*tree.TableName)
+			if !isTableName {
+				// We might have the table name wrapped in an AliasedTableExpr.
+				a, isAliasedTableExpr := i.Table.(*tree.AliasedTableExpr)
+				if !isAliasedTableExpr {
+					return errors.Errorf("unexpected: %T", i.Table)
+				}
+				n, isTableName = a.Expr.(*tree.TableName)
+				if !isTableName {
+					return errors.Errorf("unexpected: %T", a.Expr)
+				}
 			}
 			name, err := getSchemaAndTableName(n)
 			if err != nil {

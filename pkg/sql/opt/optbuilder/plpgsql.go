@@ -1,12 +1,7 @@
 // Copyright 2023 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package optbuilder
 
@@ -189,9 +184,6 @@ type plpgsqlBuilder struct {
 func (b *plpgsqlBuilder) init(
 	ob *Builder, colRefs *opt.ColSet, params []tree.ParamType, block *ast.Block, returnType *types.T,
 ) {
-	if block.Label != "" {
-		panic(blockLabelErr)
-	}
 	b.ob = ob
 	b.colRefs = colRefs
 	b.params = params
@@ -218,13 +210,22 @@ func (b *plpgsqlBuilder) init(
 		}
 		b.addVariableType(dec.Var, typ)
 		if dec.NotNull {
-			panic(notNullVarErr)
+			panic(unimplemented.NewWithIssueDetail(105243,
+				"not null variable",
+				"not-null PL/pgSQL variables are not yet supported",
+			))
 		}
 		if dec.Collate != "" {
-			panic(collatedVarErr)
+			panic(unimplemented.NewWithIssueDetail(105245,
+				"variable collation",
+				"collation for PL/pgSQL variables is not yet supported",
+			))
 		}
 		if types.IsRecordType(typ) {
-			panic(recordVarErr)
+			panic(unimplemented.NewWithIssueDetail(114874,
+				"RECORD variable",
+				"RECORD type for PL/pgSQL variables is not yet supported",
+			))
 		}
 	}
 }
@@ -383,7 +384,10 @@ func (b *plpgsqlBuilder) buildPLpgSQLStatements(stmts []ast.Statement, s *scope)
 
 		case *ast.Loop:
 			if t.Label != "" {
-				panic(loopLabelErr)
+				panic(unimplemented.New(
+					"LOOP label",
+					"LOOP statement labels are not yet supported",
+				))
 			}
 			// LOOP control flow is handled similarly to IF statements, but two
 			// continuation functions are used - one that executes the loop body, and
@@ -436,32 +440,47 @@ func (b *plpgsqlBuilder) buildPLpgSQLStatements(stmts []ast.Statement, s *scope)
 
 		case *ast.Exit:
 			if t.Label != "" {
-				panic(exitLabelErr)
+				panic(unimplemented.New(
+					"EXIT label",
+					"EXIT statement labels are not yet supported",
+				))
 			}
 			if t.Condition != nil {
-				panic(exitCondErr)
+				panic(unimplemented.New(
+					"EXIT WHEN",
+					"conditional EXIT statements are not yet supported",
+				))
 			}
 			// EXIT statements are handled by calling the function that executes the
 			// statements after a loop. Errors if used outside a loop.
 			if con := b.getExitContinuation(); con != nil {
 				return b.callContinuation(con, s)
 			} else {
-				panic(exitOutsideLoopErr)
+				panic(pgerror.New(
+					pgcode.Syntax,
+					"EXIT cannot be used outside a loop, unless it has a label",
+				))
 			}
 
 		case *ast.Continue:
 			if t.Label != "" {
-				panic(continueLabelErr)
+				panic(unimplemented.New(
+					"CONTINUE label",
+					"CONTINUE statement labels are not yet supported",
+				))
 			}
 			if t.Condition != nil {
-				panic(continueCondErr)
+				panic(unimplemented.New(
+					"CONTINUE WHEN",
+					"conditional CONTINUE statements are not yet supported",
+				))
 			}
 			// CONTINUE statements are handled by calling the function that executes
 			// the loop body. Errors if used outside a loop.
 			if con := b.getLoopContinuation(); con != nil {
 				return b.callContinuation(con, s)
 			} else {
-				panic(continueOutsideLoopErr)
+				panic(pgerror.New(pgcode.Syntax, "CONTINUE cannot be used outside a loop"))
 			}
 
 		case *ast.Raise:
@@ -481,13 +500,18 @@ func (b *plpgsqlBuilder) buildPLpgSQLStatements(stmts []ast.Statement, s *scope)
 
 		case *ast.Execute:
 			if t.Strict {
-				panic(strictIntoErr)
+				panic(unimplemented.NewWithIssuef(107854,
+					"INTO STRICT statements are not yet implemented",
+				))
 			}
 			if len(t.Target) > 1 {
 				seenTargets := make(map[ast.Variable]struct{})
 				for _, name := range t.Target {
 					if _, ok := seenTargets[name]; ok {
-						panic(dupIntoErr)
+						panic(unimplemented.New(
+							"duplicate INTO target",
+							"assigning to a variable more than once in the same INTO statement is not supported",
+						))
 					}
 					seenTargets[name] = struct{}{}
 				}
@@ -533,6 +557,13 @@ func (b *plpgsqlBuilder) buildPLpgSQLStatements(stmts []ast.Statement, s *scope)
 				memo.EmptyJoinPrivate,
 			)
 
+			// Add an optimization barrier in case the projected variables are never
+			// referenced again, to prevent column-pruning rules from dropping the
+			// side effects of executing the SELECT ... INTO statement.
+			if stmtScope.expr.Relational().VolatilitySet.HasVolatile() {
+				b.addBarrier(stmtScope)
+			}
+
 			// Step 2: build the INTO statement into a continuation routine that calls
 			// the previously built continuation.
 			intoScope := b.buildInto(stmtScope, t.Target)
@@ -548,7 +579,7 @@ func (b *plpgsqlBuilder) buildPLpgSQLStatements(stmts []ast.Statement, s *scope)
 			// function in a separate body statement that returns no results, similar
 			// to the RAISE implementation.
 			if t.Scroll == tree.Scroll {
-				panic(scrollableCursorErr)
+				panic(unimplemented.NewWithIssue(77102, "DECLARE SCROLL CURSOR"))
 			}
 			openCon := b.makeContinuation("_stmt_open")
 			openCon.def.Volatility = volatility.Volatile
@@ -577,7 +608,9 @@ func (b *plpgsqlBuilder) buildPLpgSQLStatements(stmts []ast.Statement, s *scope)
 			openScope := b.ob.buildStmtAtRootWithScope(query, nil /* desiredTypes */, openCon.s)
 			if openScope.expr.Relational().CanMutate {
 				// Cursors with mutations are invalid.
-				panic(cursorMutationErr)
+				panic(pgerror.Newf(pgcode.FeatureNotSupported,
+					"DECLARE CURSOR must not contain data-modifying statements in WITH",
+				))
 			}
 			b.appendBodyStmt(&openCon, openScope)
 			b.appendPlpgSQLStmts(&openCon, stmts[i+1:])
@@ -646,7 +679,9 @@ func (b *plpgsqlBuilder) buildPLpgSQLStatements(stmts []ast.Statement, s *scope)
 			// builtin function.
 			if !t.IsMove {
 				if t.Cursor.FetchType == tree.FetchAll || t.Cursor.FetchType == tree.FetchBackwardAll {
-					panic(fetchRowsErr)
+					panic(pgerror.New(
+						pgcode.FeatureNotSupported, "FETCH statement cannot return multiple rows",
+					))
 				}
 			}
 			fetchCon := b.makeContinuation("_stmt_fetch")
@@ -676,6 +711,10 @@ func (b *plpgsqlBuilder) buildPLpgSQLStatements(stmts []ast.Statement, s *scope)
 			}
 			b.ob.constructProjectForScope(fetchScope, intoScope)
 
+			// Add a barrier in case the projected variables are never referenced
+			// again, to prevent column-pruning rules from removing the FETCH.
+			b.addBarrier(intoScope)
+
 			// Call a continuation for the remaining PLpgSQL statements from the newly
 			// built statement that has updated variables. Then, call the fetch
 			// continuation from the parent scope.
@@ -686,7 +725,10 @@ func (b *plpgsqlBuilder) buildPLpgSQLStatements(stmts []ast.Statement, s *scope)
 			return b.callContinuation(&fetchCon, s)
 
 		default:
-			panic(unsupportedPLStmtErr)
+			panic(unimplemented.New(
+				"unimplemented PL/pgSQL statement",
+				"attempted to use a PL/pgSQL statement that is not yet supported",
+			))
 		}
 	}
 	// Call the parent continuation to execute the rest of the function.
@@ -775,12 +817,15 @@ func (b *plpgsqlBuilder) addPLpgSQLAssign(inScope *scope, ident ast.Variable, va
 		// column from the previous scope.
 		assignScope.appendColumn(col)
 	}
-	// Project the assignment as a new column.
+	// Project the assignment as a new column. If the projected expression is
+	// volatile, add barriers before and after the projection to prevent optimizer
+	// rules from reordering or removing its side effects.
 	colName := scopeColName(ident)
 	scalar := b.buildPLpgSQLExpr(val, typ, inScope)
 	b.addBarrierIfVolatile(inScope, scalar)
 	b.ob.synthesizeColumn(assignScope, colName, typ, nil, scalar)
 	b.ob.constructProjectForScope(inScope, assignScope)
+	b.addBarrierIfVolatile(assignScope, scalar)
 	return assignScope
 }
 
@@ -975,7 +1020,7 @@ func (b *plpgsqlBuilder) makeRaiseFormatMessage(
 			if j > 0 {
 				// Add the next argument at the location of this parameter.
 				if argIdx >= len(args) {
-					panic(tooFewRaiseParamsErr)
+					panic(pgerror.Newf(pgcode.Syntax, "too few parameters specified for RAISE"))
 				}
 				// If the argument is NULL, postgres prints "<NULL>".
 				expr := &tree.CastExpr{Expr: args[argIdx], Type: types.String}
@@ -988,7 +1033,7 @@ func (b *plpgsqlBuilder) makeRaiseFormatMessage(
 		}
 	}
 	if argIdx < len(args) {
-		panic(tooManyRaiseParamsErr)
+		panic(pgerror.Newf(pgcode.Syntax, "too many parameters specified for RAISE"))
 	}
 	return result
 }
@@ -1074,7 +1119,9 @@ func (b *plpgsqlBuilder) buildExceptions(block *ast.Block) *memo.ExceptionBlock 
 		case pgcode.TransactionRollback, pgcode.TransactionIntegrityConstraintViolation,
 			pgcode.SerializationFailure, pgcode.StatementCompletionUnknown,
 			pgcode.DeadlockDetected:
-			panic(retryableErrErr)
+			panic(unimplemented.NewWithIssue(111446,
+				"catching a Transaction Retry error in a PLpgSQL EXCEPTION block is not yet implemented",
+			))
 		}
 		codes = append(codes, code)
 		handlers = append(handlers, handler)
@@ -1357,8 +1404,14 @@ func (b *plpgsqlBuilder) addBarrierIfVolatile(s *scope, expr opt.ScalarExpr) {
 	var p props.Shared
 	memo.BuildSharedProps(expr, &p, b.ob.evalCtx)
 	if p.VolatilitySet.HasVolatile() {
-		s.expr = b.ob.factory.ConstructBarrier(s.expr)
+		b.addBarrier(s)
 	}
+}
+
+// addBarrier adds an optimization barrier to the given scope, in order to
+// prevent side effects from being duplicated, eliminated, or reordered.
+func (b *plpgsqlBuilder) addBarrier(s *scope) {
+	s.expr = b.ob.factory.ConstructBarrier(s.expr)
 }
 
 // buildPLpgSQLExpr parses and builds the given SQL expression into a ScalarExpr
@@ -1524,87 +1577,22 @@ func (r *recordTypeVisitor) Visit(stmt ast.Statement) (newStmt ast.Statement, ch
 			return stmt, false
 		}
 		if typ.Family() != types.TupleFamily {
-			panic(nonCompositeErr)
+			panic(pgerror.New(pgcode.DatatypeMismatch,
+				"cannot return non-composite value from function returning composite type",
+			))
 		}
 		if r.typ == types.Unknown {
 			r.typ = typ
 			return stmt, false
 		}
 		if !typ.Identical(r.typ) {
-			panic(recordReturnErr)
+			panic(errors.WithHint(
+				unimplemented.NewWithIssue(115384,
+					"returning different types from a RECORD-returning function is not yet supported",
+				),
+				"try casting all RETURN statements to the same type",
+			))
 		}
 	}
 	return stmt, false
 }
-
-var (
-	unsupportedPLStmtErr = unimplemented.New("unimplemented PL/pgSQL statement",
-		"attempted to use a PL/pgSQL statement that is not yet supported",
-	)
-	notNullVarErr = unimplemented.NewWithIssueDetail(105243, "not null variable",
-		"not-null PL/pgSQL variables are not yet supported",
-	)
-	collatedVarErr = unimplemented.NewWithIssueDetail(105245, "variable collation",
-		"collation for PL/pgSQL variables is not yet supported",
-	)
-	recordVarErr = unimplemented.NewWithIssueDetail(114874, "RECORD variable",
-		"RECORD type for PL/pgSQL variables is not yet supported",
-	)
-	blockLabelErr = unimplemented.New("block label",
-		"block labels are not yet supported",
-	)
-	loopLabelErr = unimplemented.New("LOOP label",
-		"LOOP statement labels are not yet supported",
-	)
-	exitLabelErr = unimplemented.New("EXIT label",
-		"EXIT statement labels are not yet supported",
-	)
-	exitCondErr = unimplemented.New("EXIT WHEN",
-		"conditional EXIT statements are not yet supported",
-	)
-	continueLabelErr = unimplemented.New("CONTINUE label",
-		"CONTINUE statement labels are not yet supported",
-	)
-	continueCondErr = unimplemented.New("CONTINUE WHEN",
-		"conditional CONTINUE statements are not yet supported",
-	)
-	strictIntoErr = unimplemented.NewWithIssuef(107854,
-		"INTO STRICT statements are not yet implemented",
-	)
-	dupIntoErr = unimplemented.New("duplicate INTO target",
-		"assigning to a variable more than once in the same INTO statement is not supported",
-	)
-	scrollableCursorErr = unimplemented.NewWithIssue(77102,
-		"DECLARE SCROLL CURSOR",
-	)
-	retryableErrErr = unimplemented.NewWithIssue(111446,
-		"catching a Transaction Retry error in a PLpgSQL EXCEPTION block is not yet implemented",
-	)
-	recordReturnErr = errors.WithHint(
-		unimplemented.NewWithIssue(115384,
-			"returning different types from a RECORD-returning function is not yet supported",
-		),
-		"try casting all RETURN statements to the same type",
-	)
-	exitOutsideLoopErr = pgerror.New(pgcode.Syntax,
-		"EXIT cannot be used outside a loop, unless it has a label",
-	)
-	continueOutsideLoopErr = pgerror.New(pgcode.Syntax,
-		"CONTINUE cannot be used outside a loop",
-	)
-	cursorMutationErr = pgerror.Newf(pgcode.FeatureNotSupported,
-		"DECLARE CURSOR must not contain data-modifying statements in WITH",
-	)
-	fetchRowsErr = pgerror.New(pgcode.FeatureNotSupported,
-		"FETCH statement cannot return multiple rows",
-	)
-	tooFewRaiseParamsErr = pgerror.Newf(pgcode.Syntax,
-		"too few parameters specified for RAISE",
-	)
-	tooManyRaiseParamsErr = pgerror.Newf(pgcode.Syntax,
-		"too many parameters specified for RAISE",
-	)
-	nonCompositeErr = pgerror.New(pgcode.DatatypeMismatch,
-		"cannot return non-composite value from function returning composite type",
-	)
-)

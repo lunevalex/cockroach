@@ -1,12 +1,7 @@
 // Copyright 2018 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package sql
 
@@ -17,7 +12,7 @@ import (
 
 	"github.com/cockroachdb/cockroach/pkg/clusterversion"
 	"github.com/cockroachdb/cockroach/pkg/config"
-	"github.com/cockroachdb/cockroach/pkg/geo/geopb"
+	"github.com/cockroachdb/cockroach/pkg/geo/geoindex"
 	"github.com/cockroachdb/cockroach/pkg/keys"
 	"github.com/cockroachdb/cockroach/pkg/kv"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
@@ -1701,7 +1696,7 @@ func (oi *optIndex) ImplicitPartitioningColumnCount() int {
 }
 
 // GeoConfig is part of the cat.Index interface.
-func (oi *optIndex) GeoConfig() geopb.Config {
+func (oi *optIndex) GeoConfig() geoindex.Config {
 	return oi.idx.IndexDesc().GeoConfig
 }
 
@@ -2605,8 +2600,8 @@ func (oi *optVirtualIndex) ImplicitPartitioningColumnCount() int {
 }
 
 // GeoConfig is part of the cat.Index interface.
-func (oi *optVirtualIndex) GeoConfig() geopb.Config {
-	return geopb.Config{}
+func (oi *optVirtualIndex) GeoConfig() geoindex.Config {
+	return geoindex.Config{}
 }
 
 // Version is part of the cat.Index interface.

@@ -21,12 +21,9 @@ go_library(
 go_test(
     name = "pgurl_test",
     srcs = ["pgurl_test.go"],
+    args = ["-test.timeout=295s"],
     data = glob(["testdata/**"]),
     embed = [":pgurl"],
-    exec_properties = select({
-        "//build/toolchains:is_heavy": {"Pool": "heavy"},
-        "//conditions:default": {"Pool": "default"},
-    }),
     deps = [
         "//pkg/testutils/datapathutils",
         "@com_github_cockroachdb_datadriven//:datadriven",

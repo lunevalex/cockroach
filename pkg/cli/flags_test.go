@@ -1,12 +1,7 @@
 // Copyright 2015 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package cli
 
@@ -918,6 +913,57 @@ func TestServerJoinSettings(t *testing.T) {
 	}
 }
 
+func TestConnectJoinSettings(t *testing.T) {
+	defer leaktest.AfterTest(t)()
+	defer log.Scope(t).Close(t)
+
+	// Avoid leaking configuration changes after the tests end.
+	defer initCLIDefaults()
+
+	f := connectInitCmd.Flags()
+	testData := []struct {
+		args         []string
+		expectedJoin []string
+	}{
+		{[]string{"connect", "init", "--join=a"},
+			[]string{"a:" + base.DefaultPort}},
+		{[]string{"connect", "init", "--join=a,b,c"},
+			[]string{"a:" + base.DefaultPort, "b:" + base.DefaultPort, "c:" + base.DefaultPort}},
+		{[]string{"connect", "init", "--join=a", "--join=b"},
+			[]string{"a:" + base.DefaultPort, "b:" + base.DefaultPort}},
+		{[]string{"connect", "init", "--join=127.0.0.1"},
+			[]string{"127.0.0.1:" + base.DefaultPort}},
+		{[]string{"connect", "init", "--join=127.0.0.1:"},
+			[]string{"127.0.0.1:" + base.DefaultPort}},
+		{[]string{"connect", "init", "--join=127.0.0.1,abc"},
+			[]string{"127.0.0.1:" + base.DefaultPort, "abc:" + base.DefaultPort}},
+		{[]string{"connect", "init", "--join=[::1],[::2]"},
+			[]string{"[::1]:" + base.DefaultPort, "[::2]:" + base.DefaultPort}},
+		{[]string{"connect", "init", "--join=[::1]:123,[::2]"},
+			[]string{"[::1]:123", "[::2]:" + base.DefaultPort}},
+		{[]string{"connect", "init", "--join=[::1],127.0.0.1"},
+			[]string{"[::1]:" + base.DefaultPort, "127.0.0.1:" + base.DefaultPort}},
+		{[]string{"connect", "init", "--join=[::1]:123", "--join=[::2]"},
+			[]string{"[::1]:123", "[::2]:" + base.DefaultPort}},
+	}
+
+	for i, td := range testData {
+		initCLIDefaults()
+		if err := f.Parse(td.args); err != nil {
+			t.Fatalf("Parse(%#v) got unexpected error: %v", td.args, err)
+		}
+
+		if err := extraClientFlagInit(); err != nil {
+			t.Fatal(err)
+		}
+
+		if !reflect.DeepEqual(td.expectedJoin, []string(serverCfg.JoinList)) {
+			t.Errorf("%d. serverCfg.JoinList expected %#v, but got %#v. td.args was '%#v'.",
+				i, td.expectedJoin, serverCfg.JoinList, td.args)
+		}
+	}
+}
+
 func TestClientConnSettings(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
@@ -1343,47 +1389,27 @@ func TestSQLPodStorageDefaults(t *testing.T) {
 
 	defer initCLIDefaults()
 
-	expectedDefaultDir, err := base.GetAbsoluteStorePath("", "cockroach-data-tenant-9")
+	expectedDefaultDir, err := base.GetAbsoluteStorePath("",
+		fmt.Sprintf("cockroach-data-tenant-%d", os.Getpid()))
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	for _, td := range []struct {
-		args        []string
-		storePath   string
-		expectedErr string
-	}{
-		{
-			args:      []string{"mt", "start-sql", "--tenant-id", "9"},
-			storePath: expectedDefaultDir,
-		},
-		{
-			args:      []string{"mt", "start-sql", "--tenant-id", "9", "--store", "/tmp/data"},
-			storePath: "/tmp/data",
-		},
-		{
-			args:      []string{"mt", "start-sql", "--tenant-id-file", "foo", "--store", "/tmp/data"},
-			storePath: "/tmp/data",
-		},
-		{
-			args:        []string{"mt", "start-sql", "--tenant-id-file", "foo"},
-			expectedErr: "--store must be explicitly supplied when using --tenant-id-file",
-		},
+		args      []string
+		storePath string
+	}{{[]string{"mt", "start-sql", "--tenant-id", "9"}, expectedDefaultDir},
+		{[]string{"mt", "start-sql", "--tenant-id", "9", "--store", "/tmp/data"}, "/tmp/data"},
 	} {
 		t.Run(strings.Join(td.args, ","), func(t *testing.T) {
 			initCLIDefaults()
 			f := mtStartSQLCmd.Flags()
 			require.NoError(t, f.Parse(td.args))
-			err := mtStartSQLCmd.PersistentPreRunE(mtStartSQLCmd, td.args)
-			if td.expectedErr == "" {
-				require.NoError(t, err)
-				assert.Equal(t, td.storePath, serverCfg.Stores.Specs[0].Path)
-				for _, s := range serverCfg.Stores.Specs {
-					assert.Zero(t, s.BallastSize.InBytes)
-					assert.Zero(t, s.BallastSize.Percent)
-				}
-			} else {
-				require.EqualError(t, err, td.expectedErr)
+			require.NoError(t, mtStartSQLCmd.PersistentPreRunE(mtStartSQLCmd, td.args))
+			assert.Equal(t, td.storePath, serverCfg.Stores.Specs[0].Path)
+			for _, s := range serverCfg.Stores.Specs {
+				assert.Zero(t, s.BallastSize.InBytes)
+				assert.Zero(t, s.BallastSize.Percent)
 			}
 		})
 	}

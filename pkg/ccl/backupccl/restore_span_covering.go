@@ -1,10 +1,7 @@
 // Copyright 2022 The Cockroach Authors.
 //
-// Licensed as a CockroachDB Enterprise file under the Cockroach Community
-// License (the "License"); you may not use this file except in compliance with
-// the License. You may obtain a copy of the License at
-//
-//     https://github.com/cockroachdb/cockroach/blob/master/licenses/CCL.txt
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package backupccl
 
@@ -57,12 +54,15 @@ var targetRestoreSpanSize = settings.RegisterByteSizeSetting(
 	384<<20,
 )
 
-var targetOnlineRestoreSpanSize = settings.RegisterByteSizeSetting(
+var maxFileCount = settings.RegisterIntSetting(
 	settings.ApplicationLevel,
-	"backup.restore_span.online_target_size",
-	"target size to which base spans of an online restore are merged to produce a restore span (0 disables)",
-	16<<30,
+	"backup.restore_span.max_file_count",
+	"the maximum number of backup files an extending restore span may contain",
+	defaultMaxFileCount,
+	settings.PositiveInt,
 )
+
+const defaultMaxFileCount = 200
 
 // backupManifestFileIterator exposes methods that can be used to iterate over
 // the `BackupManifest_Files` field of a manifest.
@@ -108,11 +108,12 @@ var _ backupManifestFileIterator = &sstFileIterator{}
 
 // createIntroducedSpanFrontier creates a span frontier that tracks the end time
 // of the latest incremental backup of each introduced span in the backup chain.
-// Note: this function assumes that manifests are sorted in increasing EndTime.
+// See ReintroducedSpans( ) for more information. Note: this function assumes
+// that manifests are sorted in increasing EndTime.
 func createIntroducedSpanFrontier(
 	manifests []backuppb.BackupManifest, asOf hlc.Timestamp,
-) (spanUtils.Frontier, error) {
-	introducedSpanFrontier, err := spanUtils.MakeFrontier()
+) (*spanUtils.Frontier, error) {
+	introducedSpanFrontier, err := spanUtils.MakeFrontier(roachpb.Span{})
 	if err != nil {
 		return nil, err
 	}
@@ -133,28 +134,38 @@ func createIntroducedSpanFrontier(
 // spanCoveringFilter holds metadata that filters which backups and required spans are used to
 // populate a restoreSpanEntry
 type spanCoveringFilter struct {
-	checkpointFrontier       spanUtils.Frontier
+	checkpointFrontier       *spanUtils.Frontier
 	highWaterMark            roachpb.Key
-	introducedSpanFrontier   spanUtils.Frontier
+	introducedSpanFrontier   *spanUtils.Frontier
 	useFrontierCheckpointing bool
 	targetSize               int64
+	maxFileCount             int
 }
 
 func makeSpanCoveringFilter(
 	requiredSpans roachpb.Spans,
 	checkpointedSpans []jobspb.RestoreProgress_FrontierEntry,
 	highWater roachpb.Key,
-	introducedSpanFrontier spanUtils.Frontier,
+	introducedSpanFrontier *spanUtils.Frontier,
 	targetSize int64,
+	maxFileCount int64,
 	useFrontierCheckpointing bool,
 ) (spanCoveringFilter, error) {
 	f, err := loadCheckpointFrontier(requiredSpans, checkpointedSpans)
 	if err != nil {
 		return spanCoveringFilter{}, err
 	}
+	if maxFileCount == 0 {
+		// A 0 valued maxFileCount may get passed in a mixed version cluster:
+		// specifically, when the job coordinator is on an older version and the
+		// generative split and scatter processor is on a newer version. In this
+		// case, ensure the maxFileCount is set to default.
+		maxFileCount = defaultMaxFileCount
+	}
 	sh := spanCoveringFilter{
 		introducedSpanFrontier:   introducedSpanFrontier,
 		targetSize:               targetSize,
+		maxFileCount:             int(maxFileCount),
 		highWaterMark:            highWater,
 		useFrontierCheckpointing: useFrontierCheckpointing,
 		checkpointFrontier:       f,
@@ -225,10 +236,6 @@ func (f spanCoveringFilter) getLayersCoveredLater(
 	return layersCoveredLater
 }
 
-func (f spanCoveringFilter) close() {
-	f.checkpointFrontier.Release()
-}
-
 // generateAndSendImportSpans partitions the spans of requiredSpans into a
 // covering of RestoreSpanEntry's which each have all overlapping files from the
 // passed backups assigned to them. The spans of requiredSpans are
@@ -286,22 +293,28 @@ func generateAndSendImportSpans(
 	if err != nil {
 		return err
 	}
+	defer startKeyIt.Close()
 
 	var key roachpb.Key
 
 	fileIterByLayer := make([]bulk.Iterator[*backuppb.BackupManifest_File], 0, len(backups))
+	defer func() {
+		for _, i := range fileIterByLayer {
+			i.Close()
+		}
+	}()
 	for layer := range backups {
 		iter, err := layerToBackupManifestFileIterFactory[layer].NewFileIter(ctx)
 		if err != nil {
 			return err
 		}
-
 		fileIterByLayer = append(fileIterByLayer, iter)
 	}
 
 	// lastCovSpanSize is the size of files added to the right-most span of
 	// the cover so far.
 	var lastCovSpanSize int64
+	var lastCovSpanCount int
 	var lastCovSpan roachpb.Span
 	var covFilesByLayer [][]*backuppb.BackupManifest_File
 	var firstInSpan bool
@@ -384,8 +397,8 @@ func generateAndSendImportSpans(
 				}
 
 				var filesByLayer [][]*backuppb.BackupManifest_File
-				var covSize int64
-				var newCovFilesSize int64
+				var covSize, newCovFilesSize int64
+				var covCount, newCovFilesCount int
 
 				for layer := range newFilesByLayer {
 					for _, file := range newFilesByLayer[layer] {
@@ -395,6 +408,7 @@ func generateAndSendImportSpans(
 						}
 						newCovFilesSize += sz
 					}
+					newCovFilesCount += len(newFilesByLayer[layer])
 					filesByLayer = append(filesByLayer, newFilesByLayer[layer])
 				}
 
@@ -407,6 +421,7 @@ func generateAndSendImportSpans(
 
 						if inclusiveOverlap(coverSpan, file.Span) {
 							covSize += sz
+							covCount++
 							filesByLayer[layer] = append(filesByLayer[layer], file)
 						}
 					}
@@ -416,8 +431,17 @@ func generateAndSendImportSpans(
 					covFilesByLayer = newFilesByLayer
 					lastCovSpan = coverSpan
 					lastCovSpanSize = newCovFilesSize
+					lastCovSpanCount = newCovFilesCount
 				} else {
-					if (newCovFilesSize == 0 || lastCovSpanSize+newCovFilesSize <= filter.targetSize) && !firstInSpan {
+					// We have room to add to the last span if doing so would remain below
+					// both the target byte size and maxFileCount total files. We limit the number
+					// of files since we default to running multiple concurrent workers so
+					// we want to bound sum total open files across all of them to <= 1k.
+					// We bound the span byte size to improve work distribution and make
+					// the progress more granular.
+					fits := lastCovSpanSize+newCovFilesSize <= filter.targetSize && lastCovSpanCount+newCovFilesCount <= filter.maxFileCount
+
+					if (newCovFilesCount == 0 || fits) && !firstInSpan {
 						// If there are no new files that cover this span or if we can add the
 						// files in the new span's cover to the last span's cover and still stay
 						// below targetSize, then we should merge the two spans.
@@ -426,6 +450,7 @@ func generateAndSendImportSpans(
 						}
 						lastCovSpan.EndKey = coverSpan.EndKey
 						lastCovSpanSize = lastCovSpanSize + newCovFilesSize
+						lastCovSpanCount = lastCovSpanCount + newCovFilesCount
 					} else {
 						if err := flush(ctx); err != nil {
 							return err
@@ -433,6 +458,7 @@ func generateAndSendImportSpans(
 						lastCovSpan = coverSpan
 						covFilesByLayer = filesByLayer
 						lastCovSpanSize = covSize
+						lastCovSpanCount = covCount
 					}
 				}
 				firstInSpan = false
@@ -482,6 +508,12 @@ func newFileSpanStartKeyIterator(
 	}
 	it.reset()
 	return it, nil
+}
+
+func (i *fileSpanStartKeyIterator) Close() {
+	for _, iter := range i.allIters {
+		iter.Close()
+	}
 }
 
 func (i *fileSpanStartKeyIterator) next() {

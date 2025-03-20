@@ -1,12 +1,7 @@
 // Copyright 2018 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package memo
 
@@ -416,10 +411,12 @@ type ScanFlags struct {
 
 	// ForceIndex forces the use of a specific index (specified in Index).
 	// ForceIndex and NoIndexJoin cannot both be set at the same time.
-	ForceIndex  bool
-	ForceZigzag bool
-	Direction   tree.Direction
-	Index       int
+	ForceIndex bool
+	// ForceInvertedIndex forces the use of an inverted index.
+	ForceInvertedIndex bool
+	ForceZigzag        bool
+	Direction          tree.Direction
+	Index              int
 
 	// When the optimizer is performing unique constraint or foreign key
 	// constraint check, we will temporarily disable the not visible index feature
@@ -459,12 +456,14 @@ type JoinFlags uint16
 
 // Each flag indicates if a certain type of join is disallowed.
 const (
-	// DisallowHashJoinStoreLeft corresponds to a hash join where the left side
-	// is stored into the hashtable.
+	// DisallowHashJoinStoreLeft corresponds to a hash join where the left side is
+	// stored into the hashtable. Note that execution can override the stored side
+	// if it finds that the other side is smaller (up to a certain size).
 	DisallowHashJoinStoreLeft JoinFlags = 1 << iota
 
-	// DisallowHashJoinStoreRight corresponds to a hash join where the right
-	// side is stored into the hashtable.
+	// DisallowHashJoinStoreRight corresponds to a hash join where the right side
+	// is stored into the hashtable. Note that execution can override the stored
+	// side if it finds that the other side is smaller (up to a certain size).
 	DisallowHashJoinStoreRight
 
 	// DisallowMergeJoin corresponds to a merge join.
@@ -835,6 +834,12 @@ func (s *ScanPrivate) IsFullIndexScan(md *opt.Metadata) bool {
 		s.HardLimit == 0
 }
 
+// IsInvertedScan returns true if the index being scanned is an inverted
+// index.
+func (s *ScanPrivate) IsInvertedScan(md *opt.Metadata) bool {
+	return md.Table(s.Table).Index(s.Index).IsInverted()
+}
+
 // IsVirtualTable returns true if the table being scanned is a virtual table.
 func (s *ScanPrivate) IsVirtualTable(md *opt.Metadata) bool {
 	tab := md.Table(s.Table)
@@ -1085,7 +1090,7 @@ func (prj *ProjectExpr) initUnexportedFields(mem *Memo) {
 			// This does not necessarily hold for "composite" types like decimals or
 			// collated strings. For example if d is a decimal, d::TEXT can have
 			// different values for equal values of d, like 1 and 1.0.
-			if !CanBeCompositeSensitive(item.Element) {
+			if !CanBeCompositeSensitive(mem.Metadata(), item.Element) {
 				prj.internalFuncDeps.AddSynthesizedCol(from, item.Col)
 			}
 		}

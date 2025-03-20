@@ -28,9 +28,6 @@ go_test(
     name = "protectedts_test",
     size = "small",
     srcs = ["protectedts_test.go"],
+    args = ["-test.timeout=55s"],
     embed = [":protectedts"],
-    exec_properties = select({
-        "//build/toolchains:is_heavy": {"Pool": "heavy"},
-        "//conditions:default": {"Pool": "default"},
-    }),
 )

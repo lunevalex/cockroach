@@ -1,12 +1,7 @@
 // Copyright 2017 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package server
 
@@ -26,7 +21,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/rpc"
 	"github.com/cockroachdb/cockroach/pkg/server/serverpb"
 	"github.com/cockroachdb/cockroach/pkg/settings"
-	"github.com/cockroachdb/cockroach/pkg/sql/catalog/bootstrap"
 	"github.com/cockroachdb/cockroach/pkg/storage"
 	"github.com/cockroachdb/cockroach/pkg/util"
 	"github.com/cockroachdb/cockroach/pkg/util/grpcutil"
@@ -273,10 +267,10 @@ func (s *initServer) ServeAndWait(
 			// Bootstrap() did its job. At this point, we know that the cluster
 			// version will be the bootstrap version (aka the binary version[1]),
 			// but the version setting does not know yet (it was initialized as
-			// MinSupportedVersion because the engines were all uninitialized). Given
-			// that the bootstrap version was persisted to all the engines, it's now
-			// safe for us to bump the version setting itself and start operating at
-			// the latest cluster version.
+			// BinaryMinSupportedVersion because the engines were all
+			// uninitialized). Given that the bootstrap version was persisted to
+			// all the engines, it's now safe for us to bump the version setting
+			// itself and start operating at the latest cluster version.
 			//
 			// TODO(irfansharif): We're calling Initialize a second time here.
 			// There's no real reason to anymore, we can use
@@ -352,7 +346,7 @@ func (s *initServer) Bootstrap(
 		return nil, s.mu.rejectErr
 	}
 
-	state, err := bootstrapCluster(ctx, s.inspectedDiskState.uninitializedEngines, s.config)
+	state, err := s.tryBootstrap(ctx)
 	if err != nil {
 		log.Errorf(ctx, "bootstrap: %v", err)
 		s.mu.rejectErr = errInternalBootstrapError
@@ -491,9 +485,9 @@ func (s *initServer) attemptJoinTo(
 		_ = conn.Close() // nolint:grpcconnclose
 	}()
 
-	latestVersion := s.config.latestVersion
+	binaryVersion := s.config.binaryVersion
 	req := &kvpb.JoinNodeRequest{
-		BinaryVersion: &latestVersion,
+		BinaryVersion: &binaryVersion,
 	}
 
 	initClient := kvpb.NewInternalClient(conn)
@@ -520,8 +514,28 @@ func (s *initServer) attemptJoinTo(
 	return resp, nil
 }
 
+func (s *initServer) tryBootstrap(ctx context.Context) (*initState, error) {
+	// We expect all the stores to be empty at this point, except for
+	// the store cluster version key. Assert so.
+	//
+	// TODO(jackson): Eventually we should be able to avoid opening the
+	// engines altogether until here, but that requires us to move the
+	// store cluster version key outside of the storage engine.
+	if err := assertEnginesEmpty(s.inspectedDiskState.uninitializedEngines); err != nil {
+		return nil, err
+	}
+
+	// We use our binary version to bootstrap the cluster.
+	cv := clusterversion.ClusterVersion{Version: s.config.binaryVersion}
+	if err := kvstorage.WriteClusterVersionToEngines(ctx, s.inspectedDiskState.uninitializedEngines, cv); err != nil {
+		return nil, err
+	}
+
+	return bootstrapCluster(ctx, s.inspectedDiskState.uninitializedEngines, s.config)
+}
+
 // DiskClusterVersion returns the cluster version synthesized from disk. This
-// is always non-zero since it falls back to the MinSupportedVersion.
+// is always non-zero since it falls back to the BinaryMinSupportedVersion.
 func (s *initServer) DiskClusterVersion() clusterversion.ClusterVersion {
 	return s.inspectedDiskState.clusterVersion
 }
@@ -559,18 +573,16 @@ func (s *initServer) initializeFirstStoreAfterJoin(
 
 	return inspectEngines(
 		ctx, s.inspectedDiskState.uninitializedEngines,
-		s.config.latestVersion, s.config.minSupportedVersion,
+		s.config.binaryVersion, s.config.binaryMinSupportedVersion,
 	)
 }
 
 func assertEnginesEmpty(engines []storage.Engine) error {
 	storeClusterVersionKey := keys.DeprecatedStoreClusterVersionKey()
 
-	// TODO(sumeer): plumb a context if necessary.
-	ctx := context.Background()
 	for _, engine := range engines {
 		err := func() error {
-			iter, err := engine.NewEngineIterator(ctx, storage.IterOptions{
+			iter, err := engine.NewEngineIterator(storage.IterOptions{
 				KeyTypes:   storage.IterKeyTypePointsAndRanges,
 				UpperBound: roachpb.KeyMax,
 			})
@@ -607,11 +619,11 @@ func assertEnginesEmpty(engines []storage.Engine) error {
 // initServerCfg is a thin wrapper around the server Config object, exposing
 // only the fields needed by the init server.
 type initServerCfg struct {
-	advertiseAddr           string
-	minSupportedVersion     roachpb.Version
-	latestVersion           roachpb.Version // the version used during bootstrap
-	defaultSystemZoneConfig zonepb.ZoneConfig
-	defaultZoneConfig       zonepb.ZoneConfig
+	advertiseAddr             string
+	binaryMinSupportedVersion roachpb.Version
+	binaryVersion             roachpb.Version // the version used during bootstrap
+	defaultSystemZoneConfig   zonepb.ZoneConfig
+	defaultZoneConfig         zonepb.ZoneConfig
 
 	// getDialOpts retrieves the gRPC dial options to use to issue Join RPCs.
 	getDialOpts func(ctx context.Context, target string, class rpc.ConnectionClass) ([]grpc.DialOption, error)
@@ -637,47 +649,39 @@ func newInitServerConfig(
 	cfg Config,
 	getDialOpts func(context.Context, string, rpc.ConnectionClass) ([]grpc.DialOption, error),
 ) initServerCfg {
-	latestVersion := cfg.Settings.Version.LatestVersion()
-	minSupportedVersion := cfg.Settings.Version.MinSupportedVersion()
+	binaryVersion := cfg.Settings.Version.BinaryVersion()
+	binaryMinSupportedVersion := cfg.Settings.Version.BinaryMinSupportedVersion()
 	if knobs := cfg.TestingKnobs.Server; knobs != nil {
-		if overrideVersion := knobs.(*TestingKnobs).BinaryVersionOverride; overrideVersion != (roachpb.Version{}) {
-			// We are customizing the cluster version. We can only bootstrap a fresh
-			// cluster at specific versions (specifically, the current version and
-			// previously released versions down to the minimum supported).
-			// We choose the closest version that's not newer than the target version.;
-			// later on, we will upgrade to `BinaryVersionOverride` (this happens
-			// separately when we Activate the server).
-			var bootstrapVersion roachpb.Version
-			for _, v := range bootstrap.VersionsWithInitialValues() {
-				if !overrideVersion.Less(v.Version()) {
-					bootstrapVersion = v.Version()
-					break
-				}
+		// If BinaryVersionOverride is set, and our `binaryMinSupportedVersion` is
+		// at its default value, we must bootstrap the cluster at
+		// `binaryMinSupportedVersion`. This cluster will then run the necessary
+		// upgrades until `BinaryVersionOverride` before being ready to use in the
+		// test.
+		//
+		// Refer to the header comment on BinaryVersionOverride for more details.
+		if ov := knobs.(*TestingKnobs).BinaryVersionOverride; ov != (roachpb.Version{}) {
+			if binaryMinSupportedVersion.Equal(clusterversion.ByKey(clusterversion.BinaryMinSupportedVersionKey)) {
+				binaryVersion = clusterversion.ByKey(clusterversion.BinaryMinSupportedVersionKey)
+			} else {
+				binaryVersion = ov
 			}
-			if bootstrapVersion == (roachpb.Version{}) {
-				// As a special case, we tolerate initializing clusters at versions
-				// older than the min supported for some specific tests (we will just
-				// use the minimum supported version for the initial values).
-				bootstrapVersion = overrideVersion
-			}
-			latestVersion = bootstrapVersion
 		}
 	}
-	if latestVersion.Less(minSupportedVersion) {
+	if binaryVersion.Less(binaryMinSupportedVersion) {
 		log.Fatalf(ctx, "binary version (%s) less than min supported version (%s)",
-			latestVersion, minSupportedVersion)
+			binaryVersion, binaryMinSupportedVersion)
 	}
 
 	bootstrapAddresses := cfg.FilterGossipBootstrapAddresses(context.Background())
 	return initServerCfg{
-		advertiseAddr:           cfg.AdvertiseAddr,
-		minSupportedVersion:     minSupportedVersion,
-		latestVersion:           latestVersion,
-		defaultSystemZoneConfig: cfg.DefaultSystemZoneConfig,
-		defaultZoneConfig:       cfg.DefaultZoneConfig,
-		getDialOpts:             getDialOpts,
-		bootstrapAddresses:      bootstrapAddresses,
-		testingKnobs:            cfg.TestingKnobs,
+		advertiseAddr:             cfg.AdvertiseAddr,
+		binaryMinSupportedVersion: binaryMinSupportedVersion,
+		binaryVersion:             binaryVersion,
+		defaultSystemZoneConfig:   cfg.DefaultSystemZoneConfig,
+		defaultZoneConfig:         cfg.DefaultZoneConfig,
+		getDialOpts:               getDialOpts,
+		bootstrapAddresses:        bootstrapAddresses,
+		testingKnobs:              cfg.TestingKnobs,
 	}
 }
 
@@ -686,7 +690,9 @@ func newInitServerConfig(
 // been assigned yet (i.e. if none of the engines is initialized). See
 // commentary on initState for the intended usage of inspectEngines.
 func inspectEngines(
-	ctx context.Context, engines []storage.Engine, latestVersion, minSupportedVersion roachpb.Version,
+	ctx context.Context,
+	engines []storage.Engine,
+	binaryVersion, binaryMinSupportedVersion roachpb.Version,
 ) (*initState, error) {
 	var clusterID uuid.UUID
 	var nodeID roachpb.NodeID
@@ -731,7 +737,7 @@ func inspectEngines(
 		initializedEngines = append(initializedEngines, eng)
 	}
 	clusterVersion, err := kvstorage.SynthesizeClusterVersionFromEngines(
-		ctx, initializedEngines, latestVersion, minSupportedVersion,
+		ctx, initializedEngines, binaryVersion, binaryMinSupportedVersion,
 	)
 	if err != nil {
 		return nil, err

@@ -1,12 +1,7 @@
 // Copyright 2021 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package props
 
@@ -17,25 +12,19 @@ import (
 	"github.com/cockroachdb/errors"
 )
 
-// epsilon is the minimum selectivity for normal conditions (that is, conditions
-// that are not contradictions).
+// epsilon is the minimum value Selectivity can hold, since it cannot be 0.
 const epsilon = 1e-10
 
-// Selectivity is a value is within the range of [epsilon, 1.0] representing the
-// estimated fraction of rows that pass a given condition. (Selectivity can be
-// 0.0 for conditions that are always false, i.e. contradictions.)
+// Selectivity is a value is within the range of [epsilon, 1.0] representing
+// the estimated fraction of rows that pass a given condition.
 type Selectivity struct {
 	selectivity float64
 }
 
-// ZeroSelectivity is used in cases where selectivity is known to be zero, i.e.
-// contradictions or other expressions with cardinality zero. Note that zero
-// selectivity will not be propagated through any of the operations below, and
-// must be detected and set as a special case.
+// ZeroSelectivity is used in cases where selectivity is known to be zero.
 var ZeroSelectivity = Selectivity{0}
 
-// OneSelectivity is used in cases where selectivity is known to be one,
-// i.e. tautologies or other expressions that always preserve cardinality.
+// OneSelectivity is used in cases where selectivity is known to be one.
 var OneSelectivity = Selectivity{1.0}
 
 // MakeSelectivity initializes and validates a float64 to ensure it is in a
@@ -125,5 +114,5 @@ func selectivityInRange(sel float64) float64 {
 }
 
 func (s Selectivity) String() string {
-	return fmt.Sprintf("%v", s.selectivity)
+	return fmt.Sprintf("%f", s.selectivity)
 }

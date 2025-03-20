@@ -1,12 +1,7 @@
 // Copyright 2015 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 // Package sqlerrors exports errors which can occur in the sql package.
 package sqlerrors
@@ -157,6 +152,11 @@ func NewInvalidWildcardError(name string) error {
 		"%q does not match any valid database or schema", name)
 }
 
+// NewUndefinedObjectError creates an error that represents a missing object.
+func NewUndefinedObjectError(name tree.NodeFormatter) error {
+	return pgerror.Newf(pgcode.UndefinedObject, "object %q does not exist", tree.ErrString(name))
+}
+
 // NewUndefinedTypeError creates an error that represents a missing type.
 func NewUndefinedTypeError(name tree.NodeFormatter) error {
 	return pgerror.Newf(pgcode.UndefinedObject, "type %q does not exist", tree.ErrString(name))
@@ -168,14 +168,9 @@ func NewUndefinedRelationError(name tree.NodeFormatter) error {
 		"relation %q does not exist", tree.ErrString(name))
 }
 
-// NewColumnAlreadyExistsInRelationError creates an error for a preexisting column in relation.
-func NewColumnAlreadyExistsInRelationError(name, relation string) error {
+// NewColumnAlreadyExistsError creates an error for a preexisting column.
+func NewColumnAlreadyExistsError(name, relation string) error {
 	return pgerror.Newf(pgcode.DuplicateColumn, "column %q of relation %q already exists", name, relation)
-}
-
-// NewColumnAlreadyExistsInIndexError creates an error for a  preexisting column in index.
-func NewColumnAlreadyExistsInIndexError(idxName, colName string) error {
-	return pgerror.Newf(pgcode.DuplicateColumn, "index %q already contains column %q", idxName, colName)
 }
 
 // NewDatabaseAlreadyExistsError creates an error for a preexisting database.
@@ -191,6 +186,13 @@ func NewSchemaAlreadyExistsError(name string) error {
 func NewUnsupportedUnvalidatedConstraintError(constraintType catconstants.ConstraintType) error {
 	return pgerror.Newf(pgcode.FeatureNotSupported,
 		"%v constraints cannot be marked NOT VALID", constraintType)
+}
+
+// WrapErrorWhileConstructingObjectAlreadyExistsErr is used to wrap an error
+// when an error occurs while trying to get the colliding object for an
+// ObjectAlreadyExistsErr.
+func WrapErrorWhileConstructingObjectAlreadyExistsErr(err error) error {
+	return pgerror.WithCandidateCode(errors.Wrap(err, "object already exists"), pgcode.DuplicateObject)
 }
 
 // MakeObjectAlreadyExistsError creates an error for a namespace collision
@@ -444,13 +446,3 @@ func IsDistSQLRetryableError(err error) bool {
 	// `(*DistSQLPlanner).Run`.
 	return strings.Contains(errStr, `rpc error`)
 }
-
-var (
-	ErrEmptyDatabaseName = pgerror.New(pgcode.Syntax, "empty database name")
-	ErrNoDatabase        = pgerror.New(pgcode.InvalidName, "no database specified")
-	ErrNoSchema          = pgerror.Newf(pgcode.InvalidName, "no schema specified")
-	ErrNoTable           = pgerror.New(pgcode.InvalidName, "no table specified")
-	ErrNoType            = pgerror.New(pgcode.InvalidName, "no type specified")
-	ErrNoFunction        = pgerror.New(pgcode.InvalidName, "no function specified")
-	ErrNoMatch           = pgerror.New(pgcode.UndefinedObject, "no object matched")
-)

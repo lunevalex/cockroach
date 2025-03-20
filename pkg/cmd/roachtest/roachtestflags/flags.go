@@ -1,12 +1,7 @@
 // Copyright 2023 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package roachtestflags
 
@@ -81,6 +76,12 @@ var (
 		Name:      "local",
 		Shorthand: "l",
 		Usage:     `Run tests locally (equivalent to --cloud=local)`,
+	})
+
+	SelectiveTests = false
+	_              = registerRunFlag(&SelectiveTests, FlagInfo{
+		Name:  "selective-tests",
+		Usage: `Use selective tests to run based on previous test execution`,
 	})
 
 	Username string = os.Getenv("ROACHPROD_USER")
@@ -248,7 +249,7 @@ var (
 		Usage: `The number of cloud CPUs roachtest is allowed to use at any one time.`,
 	})
 
-	HTTPPort int = 0
+	HTTPPort int = 8080
 	_            = registerRunFlag(&HTTPPort, FlagInfo{
 		Name:  "port",
 		Usage: `The port on which to serve the HTTP interface`,
@@ -304,16 +305,24 @@ var (
 			run at least one test per prefix.`,
 	})
 
-	UseSpotVM bool
-	_         = registerRunFlag(&UseSpotVM, FlagInfo{
-		Name:  "use-spot",
-		Usage: `Use SpotVM to run tests, If the provider does not support spotVM, it will be ignored`,
+	AutoKillThreshold float64 = 1.0
+	_                         = registerRunFlag(&AutoKillThreshold, FlagInfo{
+		Name:  "auto-kill-threshold",
+		Usage: `Percentage of failed tests before all remaining tests are automatically terminated.`,
 	})
 
 	GlobalSeed int64 = randutil.NewPseudoSeed()
 	_                = registerRunFlag(&GlobalSeed, FlagInfo{
 		Name:  "global-seed",
 		Usage: `The global random seed used for all tests.`,
+	})
+
+	AlwaysCollectArtifacts bool = false
+	_                           = registerRunFlag(&AlwaysCollectArtifacts, FlagInfo{
+		Name: "always-collect-artifacts",
+		Usage: `
+						Always collect artifacts during test teardown, even if the test did not
+						time out or fail.`,
 	})
 )
 

@@ -1,12 +1,7 @@
 // Copyright 2022 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package sql_test
 
@@ -47,12 +42,12 @@ func TestValidateTTLScheduledJobs(t *testing.T) {
 
 	testCases := []struct {
 		desc          string
-		setup         func(t *testing.T, sqlDB *gosql.DB, kvDB *kv.DB, s serverutils.TestServerInterface, tableDesc *tabledesc.Mutable, scheduleID jobspb.ScheduleID)
-		expectedErrRe func(tableID descpb.ID, scheduleID jobspb.ScheduleID) string
+		setup         func(t *testing.T, sqlDB *gosql.DB, kvDB *kv.DB, s serverutils.TestServerInterface, tableDesc *tabledesc.Mutable, scheduleID int64)
+		expectedErrRe func(tableID descpb.ID, scheduleID int64) string
 	}{
 		{
 			desc: "not pointing at a valid scheduled job",
-			setup: func(t *testing.T, sqlDB *gosql.DB, kvDB *kv.DB, s serverutils.TestServerInterface, tableDesc *tabledesc.Mutable, scheduleID jobspb.ScheduleID) {
+			setup: func(t *testing.T, sqlDB *gosql.DB, kvDB *kv.DB, s serverutils.TestServerInterface, tableDesc *tabledesc.Mutable, scheduleID int64) {
 				require.NoError(t, sql.TestingDescsTxn(ctx, s, func(ctx context.Context, txn isql.Txn, col *descs.Collection) (err error) {
 					// We need the collection to read the descriptor from storage for
 					// the subsequent write to succeed.
@@ -65,13 +60,13 @@ func TestValidateTTLScheduledJobs(t *testing.T) {
 					return col.WriteDesc(ctx, false /* kvBatch */, tableDesc, txn.KV())
 				}))
 			},
-			expectedErrRe: func(tableID descpb.ID, scheduleID jobspb.ScheduleID) string {
+			expectedErrRe: func(tableID descpb.ID, scheduleID int64) string {
 				return fmt.Sprintf(`table id %d maps to a non-existent schedule id 0`, tableID)
 			},
 		},
 		{
 			desc: "scheduled job points at an different table",
-			setup: func(t *testing.T, sqlDB *gosql.DB, kvDB *kv.DB, s serverutils.TestServerInterface, tableDesc *tabledesc.Mutable, scheduleID jobspb.ScheduleID) {
+			setup: func(t *testing.T, sqlDB *gosql.DB, kvDB *kv.DB, s serverutils.TestServerInterface, tableDesc *tabledesc.Mutable, scheduleID int64) {
 				db := s.InternalDB().(isql.DB)
 				require.NoError(t, db.Txn(ctx, func(ctx context.Context, txn isql.Txn) error {
 					schedules := jobs.ScheduledJobTxn(txn)
@@ -100,7 +95,7 @@ func TestValidateTTLScheduledJobs(t *testing.T) {
 					return schedules.Update(ctx, sj)
 				}))
 			},
-			expectedErrRe: func(tableID descpb.ID, scheduleID jobspb.ScheduleID) string {
+			expectedErrRe: func(tableID descpb.ID, scheduleID int64) string {
 				return fmt.Sprintf(`schedule id %d points to table id 0 instead of table id %d`, scheduleID, tableID)
 			},
 		},

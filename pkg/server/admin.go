@@ -1,12 +1,7 @@
 // Copyright 2014 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package server
 
@@ -76,11 +71,13 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/tracing/tracingui"
 	"github.com/cockroachdb/cockroach/pkg/util/uuid"
 	"github.com/cockroachdb/errors"
+	"github.com/cockroachdb/redact"
 	gwruntime "github.com/grpc-ecosystem/grpc-gateway/runtime"
 	gwutil "github.com/grpc-ecosystem/grpc-gateway/utilities"
 	"golang.org/x/exp/slices"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/metadata"
 	grpcstatus "google.golang.org/grpc/status"
 )
 
@@ -285,13 +282,15 @@ func (s *adminServer) RegisterGateway(
 			http.Error(w, "invalid id", http.StatusBadRequest)
 			return
 		}
-		// Add default user when running in Insecure mode because we don't
-		// retrieve the user from gRPC metadata (which falls back to `root`)
-		// but from HTTP metadata (which does not).
-		if s.sqlServer.cfg.Insecure {
-			ctx := req.Context()
-			ctx = authserver.ContextWithHTTPAuthInfo(ctx, username.RootUser, 0)
-			req = req.WithContext(ctx)
+
+		// The privilege checks in the privilege checker below checks the user in the incoming
+		// gRPC metadata.
+		md := authserver.TranslateHTTPAuthInfoToGRPCMetadata(req.Context(), req)
+		authCtx := metadata.NewIncomingContext(req.Context(), md)
+		authCtx = s.AnnotateCtx(authCtx)
+		if err := s.privilegeChecker.RequireViewActivityAndNoViewActivityRedactedPermission(authCtx); err != nil {
+			http.Error(w, err.Error(), http.StatusForbidden)
+			return
 		}
 		s.getStatementBundle(req.Context(), id, w)
 	})
@@ -1110,14 +1109,14 @@ func (s *adminServer) tableDetailsHelper(
 	row, cols, err = s.internalExecutor.QueryRowExWithCols(
 		ctx, "admin-show-statistics", nil, /* txn */
 		sessiondata.InternalExecutorOverride{User: userName},
-		fmt.Sprintf("SELECT max(created) AS created FROM [SHOW STATISTICS FOR TABLE %s]", escQualTable),
+		fmt.Sprintf("SELECT max(created) AS stats_last_created_at FROM [SHOW STATISTICS FOR TABLE %s]", escQualTable),
 	)
 	if err != nil {
 		return nil, err
 	}
 	if row != nil {
 		scanner := makeResultScanner(cols)
-		const createdCol = "created"
+		const createdCol = "stats_last_created_at"
 		var createdTs *time.Time
 		if err := scanner.Scan(row, createdCol, &createdTs); err != nil {
 			return nil, err
@@ -2125,6 +2124,7 @@ func (s *adminServer) Cluster(
 	// between different features.
 	enterpriseEnabled := base.CheckEnterpriseEnabled(
 		s.st,
+		s.rpcContext.LogicalClusterID.Get(),
 		"BACKUP") == nil
 
 	return &serverpb.ClusterResponse{
@@ -2650,12 +2650,12 @@ func (s *adminServer) QueryPlan(
 }
 
 // getStatementBundle retrieves the statement bundle with the given id and
-// writes it out as an attachment.
+// writes it out as an attachment. Note this function assumes the user has
+// permission to access the statement bundle.
 func (s *adminServer) getStatementBundle(ctx context.Context, id int64, w http.ResponseWriter) {
-	sqlUsername := authserver.UserFromHTTPAuthInfoContext(ctx)
 	row, err := s.internalExecutor.QueryRowEx(
 		ctx, "admin-stmt-bundle", nil, /* txn */
-		sessiondata.InternalExecutorOverride{User: sqlUsername},
+		sessiondata.NodeUserSessionDataOverride,
 		"SELECT bundle_chunks FROM system.statement_diagnostics WHERE id=$1 AND bundle_chunks IS NOT NULL",
 		id,
 	)
@@ -2674,7 +2674,7 @@ func (s *adminServer) getStatementBundle(ctx context.Context, id int64, w http.R
 	for _, chunkID := range chunkIDs {
 		chunkRow, err := s.internalExecutor.QueryRowEx(
 			ctx, "admin-stmt-bundle", nil, /* txn */
-			sessiondata.InternalExecutorOverride{User: sqlUsername},
+			sessiondata.NodeUserSessionDataOverride,
 			"SELECT data FROM system.statement_bundle_chunks WHERE id=$1",
 			chunkID,
 		)
@@ -3245,8 +3245,8 @@ func (s *systemAdminServer) EnqueueRange(
 	}
 
 	if err := timeutil.RunWithTimeout(ctx, "enqueue range", time.Minute, func(ctx context.Context) error {
-		return iterateNodes(
-			ctx, s.serverIterator, s.server.stopper, fmt.Sprintf("enqueue r%d in queue %s", req.RangeID, req.Queue),
+		return s.server.status.iterateNodes(
+			ctx, redact.Sprintf("enqueue r%d in queue %s", req.RangeID, req.Queue),
 			noTimeout,
 			dialFn, nodeFn, responseFn, errorFn,
 		)

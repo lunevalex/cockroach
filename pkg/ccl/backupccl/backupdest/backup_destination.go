@@ -1,10 +1,7 @@
 // Copyright 2020 The Cockroach Authors.
 //
-// Licensed as a CockroachDB Enterprise file under the Cockroach Community
-// License (the "License"); you may not use this file except in compliance with
-// the License. You may obtain a copy of the License at
-//
-//     https://github.com/cockroachdb/cockroach/blob/master/licenses/CCL.txt
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package backupdest
 
@@ -280,13 +277,14 @@ func ReadLatestFile(
 	defer collection.Close()
 
 	latestFile, err := FindLatestFile(ctx, collection)
-
 	if err != nil {
 		if errors.Is(err, cloud.ErrFileDoesNotExist) {
 			return "", pgerror.Wrapf(err, pgcode.UndefinedFile, "path does not contain a completed latest backup")
 		}
 		return "", pgerror.WithCandidateCode(err, pgcode.Io)
 	}
+	defer latestFile.Close(ctx)
+
 	latest, err := ioctx.ReadAll(ctx, latestFile)
 	if err != nil {
 		return "", err
@@ -540,7 +538,7 @@ func ResolveBackupManifests(
 			mem.Shrink(ctx, ownedMemSize)
 		}
 	}()
-	baseManifest, memSize, err := backupinfo.ReadBackupManifestFromStore(ctx, mem, baseStores[0], fullyResolvedBaseDirectory[0],
+	baseManifest, memSize, err := backupinfo.ReadBackupManifestFromStore(ctx, mem, baseStores[0],
 		encryption, kmsEnv)
 	if err != nil {
 		return nil, nil, nil, 0, err
@@ -692,7 +690,7 @@ func DeprecatedResolveBackupManifestsExplicitIncrementals(
 
 		var memSize int64
 		mainBackupManifests[i], memSize, err = backupinfo.ReadBackupManifestFromStore(ctx, mem,
-			stores[0], uris[0], encryption, kmsEnv)
+			stores[0], encryption, kmsEnv)
 		if err != nil {
 			return nil, nil, nil, 0, err
 		}

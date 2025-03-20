@@ -1,12 +1,7 @@
 // Copyright 2019 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package kvserver
 
@@ -296,7 +291,7 @@ func (r *Replica) evalAndPropose(
 			Cmd:        proposal.command,
 			QuotaAlloc: proposal.quotaAlloc,
 			CmdID:      idKey,
-			Req:        ba,
+			Req:        *ba,
 			// SeedID not set, since this is not a reproposal.
 		}
 		if pErr = filter(filterArgs); pErr != nil {
@@ -507,8 +502,8 @@ func checkReplicationChangeAllowed(
 	return nil
 }
 
-func (r *Replica) numPendingProposalsRLocked() int {
-	return len(r.mu.proposals) + r.mu.proposalBuf.AllocatedIdx()
+func (r *Replica) numPendingProposalsRLocked() int64 {
+	return int64(len(r.mu.proposals) + r.mu.proposalBuf.AllocatedIdx())
 }
 
 // hasPendingProposalsRLocked is part of the quiescer interface.
@@ -695,6 +690,12 @@ func (s handleRaftReadyStats) SafeFormat(p redact.SafePrinter, _ rune) {
 			p.Printf(" in %d batches", c)
 		}
 		p.SafeString(")")
+	}
+	if n := s.apply.numAddSST; n > 0 {
+		p.Printf(", apply-sst=%d", n)
+		if c := s.apply.numAddSSTCopies; c > 0 {
+			p.Printf(" (copies=%d)", c)
+		}
 	}
 	p.SafeString("]")
 
@@ -2613,7 +2614,7 @@ func handleTruncatedStateBelowRaftPreApply(
 		prefixBuf.RaftTruncatedStateKey(),
 		hlc.Timestamp{},
 		suggestedTruncatedState,
-		storage.MVCCWriteOptions{Category: storage.ReplicationReadCategory},
+		storage.MVCCWriteOptions{},
 	); err != nil {
 		return false, errors.Wrap(err, "unable to write RaftTruncatedState")
 	}
@@ -2635,7 +2636,7 @@ func ComputeRaftLogSize(
 ) (int64, error) {
 	prefix := keys.RaftLogPrefix(rangeID)
 	prefixEnd := prefix.PrefixEnd()
-	ms, err := storage.ComputeStats(ctx, reader, prefix, prefixEnd, 0 /* nowNanos */)
+	ms, err := storage.ComputeStats(reader, prefix, prefixEnd, 0 /* nowNanos */)
 	if err != nil {
 		return 0, err
 	}
@@ -2722,8 +2723,7 @@ func (r *Replica) printRaftTail(
 	end := keys.RaftLogPrefix(r.RangeID).PrefixEnd()
 
 	// NB: raft log does not have intents.
-	it, err := r.store.TODOEngine().NewEngineIterator(
-		ctx, storage.IterOptions{LowerBound: start, UpperBound: end})
+	it, err := r.store.TODOEngine().NewEngineIterator(storage.IterOptions{LowerBound: start, UpperBound: end})
 	if err != nil {
 		return "", err
 	}

@@ -1,12 +1,7 @@
 // Copyright 2018 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package kvserver
 
@@ -16,11 +11,11 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/keys"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvpb"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/concurrency/lock"
-	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/kvserverpb"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/readsummary/rspb"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/tscache"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/server/telemetry"
+	"github.com/cockroachdb/cockroach/pkg/util/buildutil"
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/cockroach/pkg/util/uuid"
@@ -33,7 +28,6 @@ import (
 // performs a few assertions to check for proper use of the timestamp cache.
 func (r *Replica) addToTSCacheChecked(
 	ctx context.Context,
-	st *kvserverpb.LeaseStatus,
 	ba *kvpb.BatchRequest,
 	br *kvpb.BatchResponse,
 	pErr *kvpb.Error,
@@ -42,15 +36,23 @@ func (r *Replica) addToTSCacheChecked(
 	txnID uuid.UUID,
 ) {
 	// All updates to the timestamp cache must be performed below the expiration
-	// time of the leaseholder. This ensures correctness if the lease expires
-	// and is acquired by a new replica that begins serving writes immediately
-	// to the same keys at the next lease's start time.
-	if exp := st.Expiration(); exp.LessEq(ts) {
-		log.Fatalf(ctx, "Unsafe timestamp cache update! Cannot add timestamp %s to timestamp "+
-			"cache after evaluating %v (resp=%v; err=%v) with lease expiration %v. The timestamp "+
-			"cache update could be lost of a non-cooperative lease change.", ts, ba, br, pErr, exp)
+	// time of the leaseholder. This ensures correctness if the lease expires and
+	// is acquired by a new replica that begins serving writes immediately to the
+	// same keys at the next lease's start time.
+	//
+	// We skip the assertion if the lease is not valid or is no longer held by
+	// this replica, assuming optimistically that the timestamp cache update was
+	// safe. We could also just skip the timestamp cache update in this case, but
+	// choose not to do in order to avoid test-only logic drifting too far from
+	// production logic.
+	if st := r.CurrentLeaseStatus(ctx); st.IsValid() && st.OwnedBy(r.StoreID()) {
+		if exp := st.Expiration(); exp.LessEq(ts) {
+			log.Fatalf(ctx, "Unsafe timestamp cache update! Cannot add timestamp %s to timestamp "+
+				"cache after evaluating %v (resp=%v; err=%v) with lease expiration %v. The timestamp "+
+				"cache update could be lost on a non-cooperative lease change.", ts, ba, br, pErr, exp)
+		}
 	}
-	r.store.tsCache.Add(ctx, start, end, ts, txnID)
+	r.store.tsCache.Add(start, end, ts, txnID)
 }
 
 // updateTimestampCache updates the timestamp cache in order to set a low
@@ -59,14 +61,17 @@ func (r *Replica) addToTSCacheChecked(
 // called before or after a batch is done evaluating. A nil `br` indicates that
 // this method is being called before the batch is done evaluating.
 func (r *Replica) updateTimestampCache(
-	ctx context.Context,
-	st *kvserverpb.LeaseStatus,
-	ba *kvpb.BatchRequest,
-	br *kvpb.BatchResponse,
-	pErr *kvpb.Error,
+	ctx context.Context, ba *kvpb.BatchRequest, br *kvpb.BatchResponse, pErr *kvpb.Error,
 ) {
+	// Only call the more expensive addToTSCacheChecked function in test builds.
+	// Otherwise, just add to the timestamp cache without checking the lease.
 	addToTSCache := func(start, end roachpb.Key, ts hlc.Timestamp, txnID uuid.UUID) {
-		r.addToTSCacheChecked(ctx, st, ba, br, pErr, start, end, ts, txnID)
+		r.store.tsCache.Add(start, end, ts, txnID)
+	}
+	if buildutil.CrdbTestBuild {
+		addToTSCache = func(start, end roachpb.Key, ts hlc.Timestamp, txnID uuid.UUID) {
+			r.addToTSCacheChecked(ctx, ba, br, pErr, start, end, ts, txnID)
+		}
 	}
 	// Update the timestamp cache using the timestamp at which the batch
 	// was executed. Note this may have moved forward from ba.Timestamp,
@@ -346,7 +351,7 @@ func init() {
 // adjust the batch's timestamp.
 func (r *Replica) applyTimestampCache(
 	ctx context.Context, ba *kvpb.BatchRequest, minReadTS hlc.Timestamp,
-) (*kvpb.BatchRequest, bool) {
+) bool {
 	// bumpedDueToMinReadTS is set to true if the highest timestamp bump encountered
 	// below is due to the minReadTS.
 	var bumpedDueToMinReadTS bool
@@ -359,7 +364,7 @@ func (r *Replica) applyTimestampCache(
 			header := args.Header()
 
 			// Forward the timestamp if there's been a more recent read (by someone else).
-			rTS, rTxnID := r.store.tsCache.GetMax(ctx, header.Key, header.EndKey)
+			rTS, rTxnID := r.store.tsCache.GetMax(header.Key, header.EndKey)
 			var forwardedToMinReadTS bool
 			if rTS.Forward(minReadTS) {
 				forwardedToMinReadTS = true
@@ -371,18 +376,12 @@ func (r *Replica) applyTimestampCache(
 				if ba.Txn.ID != rTxnID {
 					if ba.Txn.WriteTimestamp.Less(nextRTS) {
 						txn := ba.Txn.Clone()
-						txn.WriteTimestamp = nextRTS
-						ba = ba.ShallowCopy()
+						bumpedCurReq = txn.WriteTimestamp.Forward(nextRTS)
 						ba.Txn = txn
-						bumpedCurReq = true
 					}
 				}
 			} else {
-				if ba.Timestamp.Less(nextRTS) {
-					ba = ba.ShallowCopy()
-					ba.Timestamp = nextRTS
-					bumpedCurReq = true
-				}
+				bumpedCurReq = ba.Timestamp.Forward(nextRTS)
 			}
 			if bumpedCurReq && (rTxnID != uuid.Nil) {
 				conflictingTxn = rTxnID
@@ -390,7 +389,7 @@ func (r *Replica) applyTimestampCache(
 			// Preserve bumpedDueToMinReadTS if we did not just bump or set it
 			// appropriately if we did.
 			bumpedDueToMinReadTS = (!bumpedCurReq && bumpedDueToMinReadTS) || (bumpedCurReq && forwardedToMinReadTS)
-			bumped = bumped || bumpedCurReq
+			bumped, bumpedCurReq = bumped || bumpedCurReq, false
 		}
 	}
 	if bumped {
@@ -410,7 +409,7 @@ func (r *Replica) applyTimestampCache(
 			log.VEventf(ctx, 2, "bumped write timestamp to %s; %s", bumpedTS, redact.Safe(conflictMsg))
 		}
 	}
-	return ba, bumped
+	return bumped
 }
 
 // CanCreateTxnRecord determines whether a transaction record can be created for
@@ -563,7 +562,7 @@ func (r *Replica) CanCreateTxnRecord(
 	// error: if this is a re-evaluation, then the error will be transformed into
 	// an ambiguous one higher up. Otherwise, if the client is still waiting for
 	// a result, then this cannot be a "replay" of any sort.
-	tombstoneTimestamp, tombstoneTxnID := r.store.tsCache.GetMax(ctx, tombstoneKey, nil /* end */)
+	tombstoneTimestamp, tombstoneTxnID := r.store.tsCache.GetMax(tombstoneKey, nil /* end */)
 	// Compare against the minimum timestamp that the transaction could have
 	// written intents at.
 	if txnMinTS.LessEq(tombstoneTimestamp) {
@@ -626,7 +625,7 @@ func (r *Replica) MinTxnCommitTS(
 	// commit at. This is used by pushers to push the timestamp of a transaction
 	// without writing to the pushee's transaction record.
 	pushKey := transactionPushMarker(txnKey, txnID)
-	minCommitTS, _ := r.store.tsCache.GetMax(ctx, pushKey, nil /* end */)
+	minCommitTS, _ := r.store.tsCache.GetMax(pushKey, nil /* end */)
 	return minCommitTS
 }
 
@@ -660,7 +659,7 @@ func transactionPushMarker(key roachpb.Key, txnID uuid.UUID) roachpb.Key {
 // GetCurrentReadSummary returns a new ReadSummary reflecting all reads served
 // by the range to this point.
 func (r *Replica) GetCurrentReadSummary(ctx context.Context) rspb.ReadSummary {
-	sum := collectReadSummaryFromTimestampCache(ctx, r.store.tsCache, r.Desc())
+	sum := collectReadSummaryFromTimestampCache(r.store.tsCache, r.Desc())
 	// Forward the read summary by the range's closed timestamp, because any
 	// replica could have served reads below this time. We also return the
 	// closed timestamp separately, in case callers want it split out.
@@ -672,17 +671,15 @@ func (r *Replica) GetCurrentReadSummary(ctx context.Context) rspb.ReadSummary {
 // collectReadSummaryFromTimestampCache constucts a read summary for the range
 // with the specified descriptor using the timestamp cache.
 func collectReadSummaryFromTimestampCache(
-	ctx context.Context, tc tscache.Cache, desc *roachpb.RangeDescriptor,
+	tc tscache.Cache, desc *roachpb.RangeDescriptor,
 ) rspb.ReadSummary {
 	var s rspb.ReadSummary
 	s.Local.LowWater, _ = tc.GetMax(
-		ctx,
 		keys.MakeRangeKeyPrefix(desc.StartKey),
 		keys.MakeRangeKeyPrefix(desc.EndKey),
 	)
 	userKeys := desc.KeySpan()
 	s.Global.LowWater, _ = tc.GetMax(
-		ctx,
 		userKeys.Key.AsRawKey(),
 		userKeys.EndKey.AsRawKey(),
 	)
@@ -695,10 +692,9 @@ func collectReadSummaryFromTimestampCache(
 // writes in either the local or global keyspace are allowed to invalidate
 // ("write underneath") prior reads.
 func applyReadSummaryToTimestampCache(
-	ctx context.Context, tc tscache.Cache, desc *roachpb.RangeDescriptor, s rspb.ReadSummary,
+	tc tscache.Cache, desc *roachpb.RangeDescriptor, s rspb.ReadSummary,
 ) {
 	tc.Add(
-		ctx,
 		keys.MakeRangeKeyPrefix(desc.StartKey),
 		keys.MakeRangeKeyPrefix(desc.EndKey),
 		s.Local.LowWater,
@@ -706,7 +702,6 @@ func applyReadSummaryToTimestampCache(
 	)
 	userKeys := desc.KeySpan()
 	tc.Add(
-		ctx,
 		userKeys.Key.AsRawKey(),
 		userKeys.EndKey.AsRawKey(),
 		s.Global.LowWater,

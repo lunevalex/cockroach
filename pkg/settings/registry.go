@@ -1,12 +1,7 @@
 // Copyright 2017 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package settings
 
@@ -227,16 +222,6 @@ var retiredSettings = map[InternalKey]struct{}{
 	"trace.jaeger.agent":                                       {},
 	"bulkio.restore.use_simple_import_spans":                   {},
 	"bulkio.restore.remove_regions.enabled":                    {},
-
-	// removed as of 24.1
-	"storage.mvcc.range_tombstones.enabled":                {},
-	"changefeed.balance_range_distribution.enable":         {},
-	"changefeed.mux_rangefeed.enabled":                     {},
-	"kv.rangefeed.catchup_scan_concurrency":                {},
-	"kv.rangefeed.scheduler.enabled":                       {},
-	"physical_replication.producer.mux_rangefeeds.enabled": {},
-	"kv.rangefeed.use_dedicated_connection_class.enabled":  {},
-	"sql.trace.session_eventlog.enabled":                   {},
 }
 
 // sqlDefaultSettings is the list of "grandfathered" existing sql.defaults
@@ -375,7 +360,6 @@ var allConsoleKeys = []InternalKey{
 	"keyvisualizer.sample_interval",
 	"sql.index_recommendation.drop_unused_duration",
 	"sql.insights.anomaly_detection.latency_threshold",
-	"sql.insights.export.enabled",
 	"sql.insights.high_retry_count.threshold",
 	"sql.insights.latency_threshold",
 	"sql.stats.automatic_collection.enabled",
@@ -511,11 +495,15 @@ var ReadableTypes = map[string]string{
 }
 
 // RedactedValue returns:
-//   - a string representation of the value, if the setting is reportable (or it
-//     is a string setting with an empty value);
-//   - "<redacted>" if the setting is not reportable;
+//   - a string representation of the value, if the setting is reportable;
+//   - "<redacted>" if the setting is not reportable, sensitive, or a string;
 //   - "<unknown>" if there is no setting with this name.
 func RedactedValue(key InternalKey, values *Values, forSystemTenant bool) string {
+	if k, ok := registry[key]; ok {
+		if k.Typ() == "s" || k.isSensitive() || !k.isReportable() {
+			return "<redacted>"
+		}
+	}
 	if setting, ok := LookupForReportingByKey(key, forSystemTenant); ok {
 		return setting.String(values)
 	}

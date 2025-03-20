@@ -7,13 +7,8 @@
 //
 // Copyright 2015 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 // This code was derived from https://github.com/youtube/vitess.
 
@@ -97,7 +92,6 @@ const (
 	CreateProcedureTag     = "CREATE PROCEDURE"
 	CreateSchemaTag        = "CREATE SCHEMA"
 	CreateSequenceTag      = "CREATE SEQUENCE"
-	CreateDatabaseTag      = "CREATE DATABASE"
 	CommentOnColumnTag     = "COMMENT ON COLUMN"
 	CommentOnConstraintTag = "COMMENT ON CONSTRAINT"
 	CommentOnDatabaseTag   = "COMMENT ON DATABASE"
@@ -184,6 +178,7 @@ func CanWriteData(stmt Statement) bool {
 
 // ReturnsAtMostOneRow returns true if the statement returns either no rows or
 // a single row.
+// TODO(harding): Expand this list.
 func ReturnsAtMostOneRow(stmt Statement) bool {
 	switch stmt.(type) {
 	// Import operations.
@@ -545,17 +540,6 @@ func (*AlterTenantRename) StatementType() StatementType { return TypeDCL }
 func (*AlterTenantRename) StatementTag() string { return "ALTER VIRTUAL CLUSTER RENAME" }
 
 // StatementReturnType implements the Statement interface.
-func (*AlterTenantReset) StatementReturnType() StatementReturnType { return Ack }
-
-// StatementType implements the Statement interface.
-func (*AlterTenantReset) StatementType() StatementType { return TypeDCL }
-
-// StatementTag returns a short string identifying the type of statement.
-func (*AlterTenantReset) StatementTag() string { return "ALTER VIRTUAL CLUSTER RESET" }
-
-func (*AlterTenantReset) cclOnlyStatement() {}
-
-// StatementReturnType implements the Statement interface.
 func (*AlterTenantService) StatementReturnType() StatementReturnType { return Ack }
 
 // StatementType implements the Statement interface.
@@ -747,7 +731,7 @@ func (*CannedOptPlan) StatementTag() string { return "PREPARE AS OPT PLAN" }
 func (*CloseCursor) StatementReturnType() StatementReturnType { return Ack }
 
 // StatementType implements the Statement interface.
-func (*CloseCursor) StatementType() StatementType { return TypeDCL }
+func (*CloseCursor) StatementType() StatementType { return TypeDML }
 
 // StatementTag returns a short string identifying the type of statement.
 func (*CloseCursor) StatementTag() string { return "CLOSE" }
@@ -2269,7 +2253,6 @@ func (n *AlterTableOwner) String() string                     { return AsString(
 func (n *AlterTableSetSchema) String() string                 { return AsString(n) }
 func (n *AlterTenantCapability) String() string               { return AsString(n) }
 func (n *AlterTenantSetClusterSetting) String() string        { return AsString(n) }
-func (n *AlterTenantReset) String() string                    { return AsString(n) }
 func (n *AlterTenantRename) String() string                   { return AsString(n) }
 func (n *AlterTenantReplication) String() string              { return AsString(n) }
 func (n *AlterTenantService) String() string                  { return AsString(n) }

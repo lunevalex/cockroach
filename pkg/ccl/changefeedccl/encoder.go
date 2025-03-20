@@ -1,10 +1,7 @@
 // Copyright 2018 The Cockroach Authors.
 //
-// Licensed as a CockroachDB Enterprise file under the Cockroach Community
-// License (the "License"); you may not use this file except in compliance with
-// the License. You may obtain a copy of the License at
-//
-//     https://github.com/cockroachdb/cockroach/blob/master/licenses/CCL.txt
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package changefeedccl
 
@@ -25,7 +22,7 @@ type Encoder interface {
 	// `TableDescriptor`, but only the primary key fields will be used. The
 	// returned bytes are only valid until the next call to Encode*.
 	EncodeKey(context.Context, cdcevent.Row) ([]byte, error)
-	// EncodeValue encodes the primary key of the given row. The columns of the
+	// EncodeValue encodes the values of the given row. The columns of the
 	// datums are expected to match 1:1 with the `Columns` field of the
 	// `TableDescriptor`. The returned bytes are only valid until the next call
 	// to Encode*.
@@ -64,4 +61,11 @@ func getEncoder(
 	default:
 		return nil, errors.AssertionFailedf(`unknown format: %s`, opts.Format)
 	}
+}
+
+// timestampToString converts an internal timestamp to the string form used in
+// all encoders. This could be made more efficient. And/or it could be configurable
+// to include the Synthetic flag when present, but that's unlikely to be needed.
+func timestampToString(t hlc.Timestamp) string {
+	return t.WithSynthetic(false).AsOfSystemTime()
 }

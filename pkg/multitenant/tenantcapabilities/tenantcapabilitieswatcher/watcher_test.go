@@ -1,12 +1,7 @@
 // Copyright 2023 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package tenantcapabilitieswatcher_test
 
@@ -216,19 +211,19 @@ func TestDataDriven(t *testing.T) {
 
 			case "upsert":
 				t.Logf("%v: processing upsert", d.Pos)
-				entry, err := tenantcapabilitiestestutils.ParseTenantCapabilityUpsert(t, d)
+				tenID, caps, err := tenantcapabilitiestestutils.ParseTenantCapabilityUpsert(t, d)
 				require.NoError(t, err)
 				name, dataState, serviceMode, err := tenantcapabilitiestestutils.ParseTenantInfo(t, d)
 				require.NoError(t, err)
 				info := mtinfopb.ProtoInfo{
-					Capabilities: *entry.TenantCapabilities,
+					Capabilities: *caps,
 				}
 				buf, err := protoutil.Marshal(&info)
 				require.NoError(t, err)
 				tdb.Exec(
 					t,
 					fmt.Sprintf("UPSERT INTO %s (id, active, info, name, data_state, service_mode) VALUES ($1, $2, $3, $4, $5, $6)", dummyTableName),
-					entry.TenantID.ToUint64(),
+					tenID.ToUint64(),
 					true, /* active */
 					buf,
 					name, dataState, serviceMode,

@@ -1,12 +1,7 @@
 // Copyright 2022 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package schematelemetry
 
@@ -30,6 +25,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/metric"
 	"github.com/cockroachdb/cockroach/pkg/util/uuid"
 	"github.com/cockroachdb/errors"
+	"github.com/cockroachdb/redact"
 )
 
 type Metrics struct {
@@ -75,7 +71,7 @@ func (t schemaTelemetryResumer) Resume(ctx context.Context, execCtx interface{})
 	if knobs.AOSTDuration != nil {
 		aostDuration = *knobs.AOSTDuration
 	} else if fn := builtins.EvalFollowerReadOffset; fn != nil {
-		if d, err := fn(p.ExecCfg().Settings); err == nil {
+		if d, err := fn(p.ExtendedEvalContext().ClusterID, p.ExecCfg().Settings); err == nil {
 			aostDuration = d
 		}
 	}
@@ -116,7 +112,11 @@ func processInvalidObjects(
 			return err
 		}
 
-		rows, err := txn.QueryIteratorEx(ctx, "sql-telemetry-invalid-objects", txn.KV(), sessiondata.NodeUserSessionDataOverride, `SELECT id, error FROM "".crdb_internal.invalid_objects LIMIT $1`, maxRecords)
+		rows, err := txn.QueryIteratorEx(
+			ctx, "sql-telemetry-invalid-objects", txn.KV(), sessiondata.NodeUserSessionDataOverride,
+			`SELECT id, error_redactable FROM "".crdb_internal.invalid_objects LIMIT $1`,
+			maxRecords,
+		)
 		if err != nil {
 			return err
 		}
@@ -148,10 +148,17 @@ func processInvalidObjects(
 				return errors.AssertionFailedf("expected err to be string (was %T)", row[1])
 			}
 
-			log.Warningf(ctx, "found invalid object with ID %d: %q", descID, validationErr)
+			// IDs are always non-sensitive, and the validationErr is written to the
+			// table with redact.Sprint, so it's a RedactableString.
+			log.Warningf(ctx, "found invalid object with ID %d: %s",
+				redact.SafeInt(*descID), redact.RedactableString(*validationErr),
+			)
 		}
 
 		metrics.InvalidObjects.Update(count)
+		if count == 0 {
+			log.Infof(ctx, "schema telemetry job found no invalid objects")
+		}
 
 		return nil
 	})

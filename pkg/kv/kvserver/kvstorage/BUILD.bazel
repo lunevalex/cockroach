@@ -38,12 +38,9 @@ go_test(
         "cluster_version_test.go",
         "datadriven_test.go",
     ],
+    args = ["-test.timeout=295s"],
     data = glob(["testdata/**"]),
     embed = [":kvstorage"],
-    exec_properties = select({
-        "//build/toolchains:is_heavy": {"Pool": "heavy"},
-        "//conditions:default": {"Pool": "default"},
-    }),
     deps = [
         "//pkg/clusterversion",
         "//pkg/keys",

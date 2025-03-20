@@ -1,12 +1,7 @@
 // Copyright 2022 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package scbuildstmt
 
@@ -26,11 +21,9 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/schemachanger/screl"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/catid"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
-	"github.com/cockroachdb/cockroach/pkg/sql/sqlclustersettings"
 	"github.com/cockroachdb/cockroach/pkg/sql/sqlerrors"
 	"github.com/cockroachdb/cockroach/pkg/util/protoutil"
 	"github.com/cockroachdb/errors"
-	"github.com/cockroachdb/redact"
 )
 
 func qualifiedName(b BuildCtx, id catid.DescID) string {
@@ -74,9 +67,7 @@ func dropRestrictDescriptor(b BuildCtx, id catid.DescID) (hasChanged bool) {
 		return false
 	}
 	undropped.ForEach(func(_ scpb.Status, _ scpb.TargetStatus, e scpb.Element) {
-		if err := b.CheckPrivilege(e, privilege.DROP); err != nil {
-			panic(err)
-		}
+		b.CheckPrivilege(e, privilege.DROP)
 		b.Drop(e)
 	})
 	return true
@@ -189,9 +180,7 @@ func dropCascadeDescriptor(b BuildCtx, id catid.DescID) {
 		default:
 			return
 		}
-		if err := b.CheckPrivilege(e, privilege.DROP); err != nil {
-			panic(err)
-		}
+		b.CheckPrivilege(e, privilege.DROP)
 	})
 	// Mark element targets as ABSENT.
 	next := b.WithNewSourceElementID()
@@ -1580,26 +1569,4 @@ func getInflatedPrimaryIndexChain(b BuildCtx, tableID catid.DescID) (chain *prim
 	chain = getPrimaryIndexChain(b, tableID)
 	chain.inflate(b)
 	return chain
-}
-
-// shouldRestrictAccessToSystemInterface decides whether to restrict
-// access to certain SQL features from the system tenant/interface.
-// This restriction exists to prevent UX surprise. See the docstring
-// on the RestrictAccessToSystemInterface cluster setting for details.
-//
-// It is copied from legacy schema changer.
-func shouldRestrictAccessToSystemInterface(
-	b BuildCtx, operation, alternateAction redact.RedactableString,
-) error {
-	if b.Codec().ForSystemTenant() &&
-		!b.SessionData().Internal && // We only restrict access for external SQL sessions.
-		sqlclustersettings.RestrictAccessToSystemInterface.Get(&b.ClusterSettings().SV) {
-		return errors.WithHintf(
-			pgerror.Newf(pgcode.InsufficientPrivilege, "blocked %s from the system interface", operation),
-			"Access blocked via %s to prevent likely user errors.\n"+
-				"Try %s from a virtual cluster instead.",
-			sqlclustersettings.RestrictAccessToSystemInterface.Name(),
-			alternateAction)
-	}
-	return nil
 }

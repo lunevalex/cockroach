@@ -20,12 +20,9 @@ go_library(
 go_test(
     name = "circuit_test",
     srcs = ["circuitbreaker_test.go"],
+    args = ["-test.timeout=295s"],
     data = glob(["testdata/**"]),
     embed = [":circuit"],
-    exec_properties = select({
-        "//build/toolchains:is_heavy": {"Pool": "heavy"},
-        "//conditions:default": {"Pool": "default"},
-    }),
     deps = [
         "//pkg/testutils",
         "//pkg/testutils/datapathutils",

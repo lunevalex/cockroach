@@ -1,12 +1,7 @@
 // Copyright 2022 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package rangefeed
 
@@ -156,7 +151,7 @@ func TestCatchupScan(t *testing.T) {
 		testutils.RunTrueAndFalse(t, "withDiff", func(t *testing.T, withDiff bool) {
 			testutils.RunTrueAndFalse(t, "withFiltering", func(t *testing.T, withFiltering bool) {
 				span := roachpb.Span{Key: testKey1, EndKey: roachpb.KeyMax}
-				iter, err := NewCatchUpIterator(ctx, eng, span, ts1, nil, nil)
+				iter, err := NewCatchUpIterator(eng, span, ts1, nil, nil)
 				require.NoError(t, err)
 				defer iter.Close()
 				var events []kvpb.RangeFeedValue
@@ -214,7 +209,7 @@ func TestCatchupScanInlineError(t *testing.T) {
 
 	// Run a catchup scan across the span and watch it error.
 	span := roachpb.Span{Key: keys.LocalMax, EndKey: keys.MaxKey}
-	iter, err := NewCatchUpIterator(ctx, eng, span, hlc.Timestamp{}, nil, nil)
+	iter, err := NewCatchUpIterator(eng, span, hlc.Timestamp{}, nil, nil)
 	require.NoError(t, err)
 	defer iter.Close()
 
@@ -258,7 +253,7 @@ func TestCatchupScanSeesOldIntent(t *testing.T) {
 
 	// Run a catchup scan across the span and watch it succeed.
 	span := roachpb.Span{Key: keys.LocalMax, EndKey: keys.MaxKey}
-	iter, err := NewCatchUpIterator(ctx, eng, span, tsCutoff, nil, nil)
+	iter, err := NewCatchUpIterator(eng, span, tsCutoff, nil, nil)
 	require.NoError(t, err)
 	defer iter.Close()
 

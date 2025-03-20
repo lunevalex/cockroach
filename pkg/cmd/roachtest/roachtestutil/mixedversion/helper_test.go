@@ -1,17 +1,11 @@
 // Copyright 2023 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package mixedversion
 
 import (
-	"math/rand"
 	"sync/atomic"
 	"testing"
 
@@ -20,7 +14,7 @@ import (
 )
 
 func TestClusterVersionAtLeast(t *testing.T) {
-	rng := rand.New(rand.NewSource(seed))
+	rng := newRand()
 
 	testCases := []struct {
 		name           string
@@ -33,7 +27,7 @@ func TestClusterVersionAtLeast(t *testing.T) {
 			name:           "invalid minVersion",
 			currentVersion: "23.1",
 			minVersion:     "v23.1",
-			expectedErr:    `invalid version v23.1`,
+			expectedErr:    `invalid version v23.1: strconv.ParseInt: parsing "v23": invalid syntax`,
 		},
 		{
 			name:           "cluster version is behind",
@@ -75,9 +69,9 @@ func TestClusterVersionAtLeast(t *testing.T) {
 			var clusterVersions atomic.Value
 			clusterVersions.Store([]roachpb.Version{currentVersion})
 			runner := testTestRunner()
-			runner.clusterVersions = clusterVersions
+			runner.systemService.clusterVersions = &clusterVersions
 
-			h := runner.newHelper(ctx, nilLogger, Context{Finalizing: false})
+			h := runner.newHelper(ctx, nilLogger, Context{System: &ServiceContext{Finalizing: false}})
 
 			supportedFeature, err := h.ClusterVersionAtLeast(rng, tc.minVersion)
 			if tc.expectedErr == "" {

@@ -1,12 +1,7 @@
 // Copyright 2015 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package tabledesc
 
@@ -36,7 +31,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/schemachanger/scpb"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/catid"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
-	"github.com/cockroachdb/cockroach/pkg/sql/sqlerrors"
 	"github.com/cockroachdb/cockroach/pkg/sql/types"
 	"github.com/cockroachdb/cockroach/pkg/util/errorutil/unimplemented"
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
@@ -741,13 +735,16 @@ func (desc *Mutable) allocateIndexIDs(columnNames map[string]descpb.ColumnID) er
 			if primaryColIDs.Contains(col.GetID()) && idx.GetEncodingType() == catenumpb.SecondaryIndexEncoding {
 				// If the primary index contains a stored column, we don't need to
 				// store it - it's already part of the index.
-				err = errors.WithDetailf(
-					sqlerrors.NewColumnAlreadyExistsInIndexError(idx.GetName(), col.GetName()),
+				err = pgerror.Newf(pgcode.DuplicateColumn,
+					"index %q already contains column %q", idx.GetName(), col.GetName())
+				err = errors.WithDetailf(err,
 					"column %q is part of the primary index and therefore implicit in all indexes", col.GetName())
 				return err
 			}
 			if colIDs.Contains(col.GetID()) {
-				return sqlerrors.NewColumnAlreadyExistsInIndexError(idx.GetName(), col.GetName())
+				return pgerror.Newf(
+					pgcode.DuplicateColumn,
+					"index %q already contains column %q", idx.GetName(), col.GetName())
 			}
 			if indexHasOldStoredColumns {
 				idx.IndexDesc().KeySuffixColumnIDs = append(idx.IndexDesc().KeySuffixColumnIDs, col.GetID())
@@ -1452,8 +1449,17 @@ func (desc *Mutable) MakeMutationComplete(m descpb.DescriptorMutation) error {
 			desc.AddColumn(t.Column)
 
 		case *descpb.DescriptorMutation_Index:
-			if err := desc.AddSecondaryIndex(*t.Index); err != nil {
-				return err
+			// If a primary index is being made public, then we only need set the
+			// index inside the descriptor directly. Only the declarative schema
+			// changer will use index mutations like this.
+			isPrimaryIndexToPublic := desc.IsPrimaryKeySwapMutation(&m)
+			if isPrimaryIndexToPublic {
+				desc.SetPrimaryIndex(*t.Index)
+			} else {
+				// Otherwise, we need to add this index as a secondary index.
+				if err := desc.AddSecondaryIndex(*t.Index); err != nil {
+					return err
+				}
 			}
 
 		case *descpb.DescriptorMutation_Constraint:
@@ -2065,9 +2071,9 @@ func (desc *wrapper) MakeFirstMutationPublic(
 		}
 		i++
 		switch {
-		case policy.shouldSkip(&mutation):
+		case policy.shouldSkip(desc, &mutation):
 			// Don't add to clone.
-		case policy.shouldRetain(&mutation):
+		case policy.shouldRetain(desc, &mutation):
 			mutation.Direction = descpb.DescriptorMutation_ADD
 			fallthrough
 		default:
@@ -2099,9 +2105,11 @@ func (p mutationPublicationPolicy) includes(f catalog.MutationPublicationFilter)
 	return p.policy.Contains(int(f))
 }
 
-func (p mutationPublicationPolicy) shouldSkip(m *descpb.DescriptorMutation) bool {
+func (p mutationPublicationPolicy) shouldSkip(
+	desc catalog.TableDescriptor, m *descpb.DescriptorMutation,
+) bool {
 	switch {
-	case m.GetPrimaryKeySwap() != nil:
+	case desc.IsPrimaryKeySwapMutation(m):
 		return p.includes(catalog.IgnorePKSwaps)
 	case m.GetConstraint() != nil:
 		return p.includes(catalog.IgnoreConstraints)
@@ -2110,7 +2118,9 @@ func (p mutationPublicationPolicy) shouldSkip(m *descpb.DescriptorMutation) bool
 	}
 }
 
-func (p mutationPublicationPolicy) shouldRetain(m *descpb.DescriptorMutation) bool {
+func (p mutationPublicationPolicy) shouldRetain(
+	desc catalog.TableDescriptor, m *descpb.DescriptorMutation,
+) bool {
 	switch {
 	case m.GetColumn() != nil && m.Direction == descpb.DescriptorMutation_DROP:
 		return p.includes(catalog.RetainDroppingColumns)

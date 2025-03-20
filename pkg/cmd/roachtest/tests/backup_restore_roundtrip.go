@@ -1,18 +1,14 @@
 // Copyright 2023 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package tests
 
 import (
 	"context"
 	gosql "database/sql"
+	"fmt"
 	"math/rand"
 	"time"
 
@@ -34,18 +30,18 @@ var (
 	// sizes that may get set for all user databases.
 	maxRangeSizeBytes = []int64{4 << 20 /* 4 MiB*/, 32 << 20 /* 32 MiB */, 128 << 20}
 
-	// SystemSettingsValuesBoundOnRangeSize defines the cluster settings that
+	// clusterSettingsValuesBoundOnRangeSize defines the cluster settings that
 	// should scale in proportion to the range size. For example, if the range
 	// size is halved, all the values of these cluster settings should also be
 	// halved.
-	systemSettingsScaledOnRangeSize = []string{
+	clusterSettingsScaledOnRangeSize = []string{
 		"backup.restore_span.target_size",
 		"bulkio.backup.file_size",
 		"kv.bulk_sst.target_size",
 	}
 )
 
-const numFullBackups = 5
+const numFullBackups = 3
 
 type roundTripSpecs struct {
 	name                 string
@@ -73,15 +69,17 @@ func registerBackupRestoreRoundTrip(r registry.Registry) {
 	} {
 		sp := sp
 		r.Add(registry.TestSpec{
-			Name:              sp.name,
-			Timeout:           4 * time.Hour,
-			Owner:             registry.OwnerDisasterRecovery,
-			Cluster:           r.MakeClusterSpec(4),
-			EncryptionSupport: registry.EncryptionMetamorphic,
-			RequiresLicense:   true,
-			CompatibleClouds:  registry.OnlyGCE,
-			Suites:            registry.Suites(registry.Nightly),
-			Skip:              sp.skip,
+			Name:                      sp.name,
+			Timeout:                   4 * time.Hour,
+			Owner:                     registry.OwnerDisasterRecovery,
+			Cluster:                   r.MakeClusterSpec(4),
+			EncryptionSupport:         registry.EncryptionMetamorphic,
+			RequiresLicense:           true,
+			CompatibleClouds:          registry.OnlyGCE,
+			Suites:                    registry.Suites(registry.Nightly),
+			TestSelectionOptOutSuites: registry.Suites(registry.Nightly),
+			Randomized:                true,
+			Skip:                      sp.skip,
 			Run: func(ctx context.Context, t test.Test, c cluster.Cluster) {
 				backupRestoreRoundTrip(ctx, t, c, sp)
 			},
@@ -110,11 +108,19 @@ func backupRestoreRoundTrip(
 		"COCKROACH_MIN_RANGE_MAX_BYTES=1",
 	})
 
-	c.Start(ctx, t.L(), maybeUseMemoryBudget(t, 50), install.MakeClusterSettings(install.SecureOption(true), envOption), roachNodes)
+	c.Start(ctx, t.L(), maybeUseMemoryBudget(t, 50), install.MakeClusterSettings(envOption), roachNodes)
 	m := c.NewMonitor(ctx, roachNodes)
 
 	m.Go(func(ctx context.Context) error {
-		testUtils, err := newCommonTestUtils(ctx, t, c, roachNodes, sp.mock)
+		connectFunc := func(node int) (*gosql.DB, error) {
+			conn, err := c.ConnE(ctx, t.L(), node)
+			if err != nil {
+				return nil, fmt.Errorf("failed to connect to node %d: %w", node, err)
+			}
+
+			return conn, err
+		}
+		testUtils, err := newCommonTestUtils(ctx, t, c, connectFunc, roachNodes, sp.mock)
 		if err != nil {
 			return err
 		}
@@ -136,7 +142,7 @@ func backupRestoreRoundTrip(
 		if err := testUtils.setShortJobIntervals(ctx, testRNG); err != nil {
 			return err
 		}
-		if err := testUtils.setClusterSettings(ctx, t.L(), testRNG); err != nil {
+		if err := testUtils.setClusterSettings(ctx, t.L(), c, testRNG); err != nil {
 			return err
 		}
 		if sp.metamorphicRangeSize {
@@ -160,7 +166,10 @@ func backupRestoreRoundTrip(
 
 			// Run backups.
 			t.L().Printf("starting backup %d", i+1)
-			collection, err := d.createBackupCollection(ctx, t.L(), testRNG, bspec, bspec, "round-trip-test-backup", true)
+			collection, err := d.createBackupCollection(
+				ctx, t.L(), testRNG, bspec, bspec, "round-trip-test-backup",
+				true /* internalSystemsJobs */, false, /* isMultitenant */
+			)
 			if err != nil {
 				return err
 			}
@@ -175,7 +184,7 @@ func backupRestoreRoundTrip(
 					m.ExpectDeaths(int32(n))
 				}
 
-				if err := testUtils.resetCluster(ctx, t.L(), clusterupgrade.CurrentVersion(), expectDeathsFn); err != nil {
+				if err := testUtils.resetCluster(ctx, t.L(), clusterupgrade.CurrentVersion(), expectDeathsFn, []install.ClusterSettingOption{}); err != nil {
 					return err
 				}
 			}
@@ -229,16 +238,16 @@ func startBackgroundWorkloads(
 		return nil, err
 	}
 
-	err := c.RunE(ctx, option.WithNodes(workloadNode), bankInit.String())
+	err := c.RunE(ctx, workloadNode, bankInit.String())
 	if err != nil {
 		return nil, err
 	}
 
-	err = c.RunE(ctx, option.WithNodes(workloadNode), tpccInit.String())
+	err = c.RunE(ctx, workloadNode, tpccInit.String())
 	if err != nil {
 		return nil, err
 	}
-	err = c.RunE(ctx, option.WithNodes(workloadNode), scInit.String())
+	err = c.RunE(ctx, workloadNode, scInit.String())
 	if err != nil {
 		return nil, err
 	}
@@ -250,14 +259,14 @@ func startBackgroundWorkloads(
 		}
 
 		stopBank := workloadWithCancel(m, func(ctx context.Context) error {
-			return c.RunE(ctx, option.WithNodes(workloadNode), bankRun.String())
+			return c.RunE(ctx, workloadNode, bankRun.String())
 		})
 
 		stopTPCC := workloadWithCancel(m, func(ctx context.Context) error {
-			return c.RunE(ctx, option.WithNodes(workloadNode), tpccRun.String())
+			return c.RunE(ctx, workloadNode, tpccRun.String())
 		})
 		stopSC := workloadWithCancel(m, func(ctx context.Context) error {
-			return c.RunE(ctx, option.WithNodes(workloadNode), scRun.String())
+			return c.RunE(ctx, workloadNode, scRun.String())
 		})
 
 		stopSystemWriter := workloadWithCancel(m, func(ctx context.Context) error {

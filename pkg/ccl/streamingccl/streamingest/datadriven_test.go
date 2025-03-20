@@ -1,10 +1,7 @@
 // Copyright 2022 The Cockroach Authors.
 //
-// Licensed as a CockroachDB Enterprise file under the Cockroach Community
-// License (the "License"); you may not use this file except in compliance with
-// the License. You may obtain a copy of the License at
-//
-//     https://github.com/cockroachdb/cockroach/blob/master/licenses/CCL.txt
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package streamingest
 
@@ -156,8 +153,8 @@ func TestDataDriven(t *testing.T) {
 					jobspb.JobID(ds.ingestionJobID))
 			case "start-replicated-tenant":
 				testingKnobs := replicationtestutils.DefaultAppTenantTestingKnobs()
-				cleanupTenant := ds.replicationClusters.StartDestTenant(ctx, &testingKnobs, 0)
-				ds.cleanupFns = append(ds.cleanupFns, func() error { cleanupTenant(); return nil })
+				cleanupTenant := ds.replicationClusters.StartDestTenant(ctx, &testingKnobs)
+				ds.cleanupFns = append(ds.cleanupFns, cleanupTenant)
 			case "let":
 				if len(d.CmdArgs) == 0 {
 					t.Fatalf("Must specify at least one variable name.")
@@ -239,17 +236,14 @@ func TestDataDriven(t *testing.T) {
 					from = varValue
 				}
 				allRevisions := d.HasArg("with_revisions")
-				fingerprintQuery := `SELECT fingerprint FROM [SHOW EXPERIMENTAL_FINGERPRINTS FROM TENANT '%s'] AS OF SYSTEM TIME '%s'`
-				if allRevisions {
-					fingerprintQuery = `SELECT fingerprint FROM [SHOW EXPERIMENTAL_FINGERPRINTS FROM TENANT '%s' WITH START TIMESTAMP = '%s'] AS OF SYSTEM TIME '%s'`
-				}
+				fingerprintQuery := `SELECT * FROM crdb_internal.fingerprint(crdb_internal.tenant_span('%s'), '%s'::TIMESTAMPTZ, %t) AS OF SYSTEM TIME '%s'`
 				var fingerprintSrcTenant int64
 				ds.replicationClusters.SrcSysSQL.QueryRow(t, fmt.Sprintf(fingerprintQuery,
-					ds.replicationClusters.Args.SrcTenantName, from, to)).Scan(&fingerprintSrcTenant)
+					ds.replicationClusters.Args.SrcTenantName, from, allRevisions, to)).Scan(&fingerprintSrcTenant)
 				require.NotZero(t, fingerprintSrcTenant)
 				var fingerprintDestTenant int64
 				ds.replicationClusters.DestSysSQL.QueryRow(t, fmt.Sprintf(fingerprintQuery,
-					ds.replicationClusters.Args.DestTenantName, from, to)).Scan(&fingerprintDestTenant)
+					ds.replicationClusters.Args.DestTenantName, from, allRevisions, to)).Scan(&fingerprintDestTenant)
 				require.NotZero(t, fingerprintDestTenant)
 				if fingerprintSrcTenant != fingerprintDestTenant {
 					require.NoError(t, replicationutils.InvestigateFingerprints(ctx,

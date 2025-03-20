@@ -1,12 +1,7 @@
 // Copyright 2023 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package rangefeed
 
@@ -29,6 +24,7 @@ import (
 )
 
 type benchmarkRangefeedOpts struct {
+	procType         procType
 	opType           opType
 	numRegistrations int
 	budget           int64
@@ -45,16 +41,19 @@ const (
 // BenchmarkRangefeed benchmarks the processor and registrations, by submitting
 // a set of events and waiting until they are all emitted.
 func BenchmarkRangefeed(b *testing.B) {
-	for _, opType := range []opType{writeOpType, commitOpType, closedTSOpType} {
-		for _, numRegistrations := range []int{1, 10, 100} {
-			name := fmt.Sprintf("procType=scheduler/opType=%s/numRegs=%d", opType, numRegistrations)
-			b.Run(name, func(b *testing.B) {
-				runBenchmarkRangefeed(b, benchmarkRangefeedOpts{
-					opType:           opType,
-					numRegistrations: numRegistrations,
-					budget:           math.MaxInt64,
+	for _, procType := range testTypes {
+		for _, opType := range []opType{writeOpType, commitOpType, closedTSOpType} {
+			for _, numRegistrations := range []int{1, 10, 100} {
+				name := fmt.Sprintf("procType=%s/opType=%s/numRegs=%d", procType, opType, numRegistrations)
+				b.Run(name, func(b *testing.B) {
+					runBenchmarkRangefeed(b, benchmarkRangefeedOpts{
+						procType:         procType,
+						opType:           opType,
+						numRegistrations: numRegistrations,
+						budget:           math.MaxInt64,
+					})
 				})
-			})
+			}
 		}
 	}
 }
@@ -91,7 +90,7 @@ func runBenchmarkRangefeed(b *testing.B, opts benchmarkRangefeedOpts) {
 	span := roachpb.RSpan{Key: roachpb.RKey("a"), EndKey: roachpb.RKey("z")}
 
 	p, h, stopper := newTestProcessor(b, withSpan(span), withBudget(budget), withChanCap(b.N),
-		withEventTimeout(time.Hour))
+		withEventTimeout(time.Hour), withProcType(opts.procType))
 	defer stopper.Stop(ctx)
 
 	// Add registrations.

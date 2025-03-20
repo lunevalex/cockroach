@@ -166,7 +166,7 @@ SHOW CLUSTER SETTING diagnostics.reporting.enabled
 ----
 true
 
-user root 
+user root
 
 statement ok
 REVOKE SYSTEM MODIFYSQLCLUSTERSETTING FROM testuser
@@ -415,15 +415,50 @@ user root
 query B noticetrace
 SHOW CLUSTER SETTING sql.trace.log_statement_execute
 ----
-NOTICE: the name "sql.trace.log_statement_execute" is deprecated; use "sql.log.all_statements.enabled" instead
+NOTICE: "sql.trace.log_statement_execute" is now an alias for "sql.log.all_statements.enabled", the preferred setting name
 
 query T noticetrace
 RESET CLUSTER SETTING sql.trace.log_statement_execute
 ----
-NOTICE: the name "sql.trace.log_statement_execute" is deprecated; use "sql.log.all_statements.enabled" instead
+NOTICE: "sql.trace.log_statement_execute" is now an alias for "sql.log.all_statements.enabled", the preferred setting name
 
 skipif config 3node-tenant-default-configs
 query T noticetrace
 ALTER TENANT ALL RESET CLUSTER SETTING sql.trace.log_statement_execute
 ----
-NOTICE: the name "sql.trace.log_statement_execute" is deprecated; use "sql.log.all_statements.enabled" instead
+NOTICE: "sql.trace.log_statement_execute" is now an alias for "sql.log.all_statements.enabled", the preferred setting name
+
+
+subtest show_renamed_setting_for_tenant
+
+skipif config 3node-tenant-default-configs
+statement ok
+ALTER TENANT "cluster-10" SET CLUSTER SETTING sql.explain_analyze.include_ru_estimation.enabled=false;
+
+skipif config 3node-tenant-default-configs
+query B
+SHOW CLUSTER SETTING sql.explain_analyze.include_ru_estimation.enabled FOR TENANT "cluster-10"
+----
+false
+
+subtest notice_on_ttl_default_rate_limit
+
+query T noticetrace
+SET CLUSTER SETTING sql.ttl.default_delete_rate_limit = 90;
+----
+NOTICE: The TTL rate limit is per leaseholder per table.
+DETAIL: See the documentation for additional details: https://www.cockroachlabs.com/docs/v23.2/row-level-ttl#ttl-storage-parameters
+
+statement ok
+SET CLUSTER SETTING sql.ttl.default_delete_rate_limit = 100;
+
+query T noticetrace
+SET CLUSTER SETTING sql.ttl.default_select_rate_limit = 100;
+----
+NOTICE: The TTL rate limit is per leaseholder per table.
+DETAIL: See the documentation for additional details: https://www.cockroachlabs.com/docs/v23.2/row-level-ttl#ttl-storage-parameters
+
+statement ok
+SET CLUSTER SETTING sql.ttl.default_select_rate_limit = 0;
+
+subtest end

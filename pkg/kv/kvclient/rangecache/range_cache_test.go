@@ -1,12 +1,7 @@
 // Copyright 2014 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package rangecache
 
@@ -114,18 +109,17 @@ func (db *testDescriptorDB) getDescriptors(
 	return rs, preRs, nil
 }
 
+func (db *testDescriptorDB) FirstRange() (*roachpb.RangeDescriptor, error) {
+	rs, _, err := db.getDescriptors(roachpb.RKeyMin, false /* useReverseScan */)
+	if err != nil {
+		return nil, err
+	}
+	return &rs[0], nil
+}
+
 func (db *testDescriptorDB) RangeLookup(
 	ctx context.Context, key roachpb.RKey, _ RangeLookupConsistency, useReverseScan bool,
 ) ([]roachpb.RangeDescriptor, []roachpb.RangeDescriptor, error) {
-	// Special case the FirstRange.
-	if keys.RangeMetaKey(key).Equal(roachpb.RKeyMin) {
-		rs, _, err := db.getDescriptors(roachpb.RKeyMin, false /* useReverseScan */)
-		if err != nil {
-			return nil, nil, err
-		}
-		return rs, nil, nil
-	}
-
 	// Notify the test of the lookup, if the test wants notifications.
 	if ch, ok := db.listeners[key.String()]; ok {
 		close(ch)
@@ -1553,7 +1547,7 @@ func TestRangeCacheEvictAndReplace(t *testing.T) {
 
 	// EvictAndReplace() with a speculative descriptor. Should update decriptor,
 	// remove lease, and retain closed timestamp policy.
-	tok.entry.speculativeDesc = &desc3
+	tok.speculativeDesc = &desc3
 	tok.EvictAndReplace(ctx)
 	tok, err = cache.LookupWithEvictionToken(ctx, startKey, tok, false /* useReverseScan */)
 	require.NoError(t, err)
@@ -1706,9 +1700,8 @@ func TestRangeCacheSyncTokenAndMaybeUpdateCache(t *testing.T) {
 
 				// Update the cache.
 				cache.Insert(ctx, roachpb.RangeInfo{
-					Desc:                  desc2,
-					Lease:                 roachpb.Lease{},
-					ClosedTimestampPolicy: lead,
+					Desc:  desc2,
+					Lease: roachpb.Lease{},
 				})
 				updatedLeaseholder := tok.SyncTokenAndMaybeUpdateCache(
 					ctx, &roachpb.Lease{Replica: rep2, Sequence: 3}, &staleRangeDescriptor,
@@ -1717,7 +1710,7 @@ func TestRangeCacheSyncTokenAndMaybeUpdateCache(t *testing.T) {
 				require.NotNil(t, tok)
 				require.Equal(t, &desc2, tok.Desc())
 				require.Equal(t, &rep2, tok.Leaseholder())
-				require.Equal(t, tok.Lease().Replica, rep2)
+				require.Equal(t, tok.lease.Replica, rep2)
 				require.Equal(t, lead, tok.ClosedTimestampPolicy(lag))
 			},
 		},
@@ -1752,7 +1745,7 @@ func TestRangeCacheSyncTokenAndMaybeUpdateCache(t *testing.T) {
 				require.NotNil(t, tok)
 				require.Equal(t, &desc3, tok.Desc())
 				require.Equal(t, &rep2, tok.Leaseholder())
-				require.Equal(t, tok.Lease().Replica, rep2)
+				require.Equal(t, tok.lease.Replica, rep2)
 				require.Equal(t, lead, tok.ClosedTimestampPolicy(lag))
 			},
 		},
@@ -1781,7 +1774,7 @@ func TestRangeCacheSyncTokenAndMaybeUpdateCache(t *testing.T) {
 				require.NotNil(t, tok)
 				require.Equal(t, &desc2, tok.Desc())
 				require.Equal(t, &rep3, tok.Leaseholder())
-				require.Equal(t, tok.Lease().Replica, rep3)
+				require.Equal(t, tok.lease.Replica, rep3)
 				require.Equal(t, lead, tok.ClosedTimestampPolicy(lag))
 			},
 		},
@@ -1810,7 +1803,7 @@ func TestRangeCacheSyncTokenAndMaybeUpdateCache(t *testing.T) {
 				require.NotNil(t, tok)
 				require.Equal(t, &desc2, tok.Desc())
 				require.Equal(t, &rep3, tok.Leaseholder())
-				require.Equal(t, tok.Lease().Replica, rep3)
+				require.Equal(t, tok.lease.Replica, rep3)
 				require.Equal(t, lead, tok.ClosedTimestampPolicy(lag))
 			},
 		},
@@ -1933,8 +1926,8 @@ func TestRangeCacheSyncTokenAndMaybeUpdateCache(t *testing.T) {
 				)
 				require.NoError(t, err)
 
-				updatedLeaseholder := tok.SyncTokenAndMaybeUpdateCache(
-					ctx, &roachpb.Lease{Replica: rep2}, &desc2,
+				updatedLeaseholder := tok.SyncTokenAndMaybeUpdateCacheWithSpeculativeLease(
+					ctx, rep2, &desc2,
 				)
 				require.True(t, updatedLeaseholder)
 				require.Equal(t, &desc2, tok.Desc())

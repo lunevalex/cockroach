@@ -1,4 +1,4 @@
-# LogicTest: cockroach-go-testserver-23.1
+# LogicTest: cockroach-go-testserver-upgrade-to-master
 
 # ----------------------------------------------------------------------
 # Test PLpgSQL routines with all nodes running old binaries.

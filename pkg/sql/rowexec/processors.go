@@ -1,12 +1,7 @@
 // Copyright 2019 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package rowexec
 
@@ -372,7 +367,7 @@ func NewProcessor(
 		if err := checkNumIn(inputs, 0); err != nil {
 			return nil, err
 		}
-		return backfill.NewIndexBackfillMerger(ctx, flowCtx, processorID, *core.IndexBackfillMerger)
+		return backfill.NewIndexBackfillMerger(flowCtx, processorID, *core.IndexBackfillMerger), nil
 	}
 	if core.Ttl != nil {
 		if err := checkNumIn(inputs, 0); err != nil {

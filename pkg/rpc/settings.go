@@ -1,12 +1,7 @@
 // Copyright 2023 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package rpc
 
@@ -81,6 +76,8 @@ type windowSizeSettings struct {
 		initialWindowSize int32
 		// initialConnWindowSize is the initial window size for a connection.
 		initialConnWindowSize int32
+		// rangefeedInitialWindowSize is the initial window size for a RangeFeed RPC.
+		rangefeedInitialWindowSize int32
 	}
 }
 
@@ -92,6 +89,8 @@ func (s *windowSizeSettings) maybeInit(ctx context.Context) {
 		if s.values.initialConnWindowSize > maximumWindowSize {
 			s.values.initialConnWindowSize = maximumWindowSize
 		}
+		s.values.rangefeedInitialWindowSize = getWindowSize(ctx,
+			"COCKROACH_RANGEFEED_RPC_INITIAL_WINDOW_SIZE", RangefeedClass, 2*defaultWindowSize /* 128KB */)
 	})
 }
 
@@ -105,6 +104,12 @@ func (s *windowSizeSettings) initialWindowSize(ctx context.Context) int32 {
 func (s *windowSizeSettings) initialConnWindowSize(ctx context.Context) int32 {
 	s.maybeInit(ctx)
 	return s.values.initialConnWindowSize
+}
+
+// For a RangeFeed RPC.
+func (s *windowSizeSettings) rangefeedInitialWindowSize(ctx context.Context) int32 {
+	s.maybeInit(ctx)
+	return s.values.rangefeedInitialWindowSize
 }
 
 // sourceAddr is the environment-provided local address for outgoing

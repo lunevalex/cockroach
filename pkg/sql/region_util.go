@@ -1,12 +1,7 @@
 // Copyright 2020 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package sql
 
@@ -16,6 +11,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/cockroachdb/cockroach/pkg/clusterversion"
 	"github.com/cockroachdb/cockroach/pkg/config/zonepb"
 	"github.com/cockroachdb/cockroach/pkg/keys"
 	"github.com/cockroachdb/cockroach/pkg/kv"
@@ -29,6 +25,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/descs"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/multiregion"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/resolver"
+	"github.com/cockroachdb/cockroach/pkg/sql/catalog/systemschema"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/tabledesc"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/typedesc"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/zone"
@@ -38,6 +35,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/catconstants"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/eval"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
+	"github.com/cockroachdb/cockroach/pkg/sql/sqlerrors"
 	"github.com/cockroachdb/cockroach/pkg/sql/sqltelemetry"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/cockroach/pkg/util/rangedesc"
@@ -1749,9 +1747,9 @@ type zoneConfigForMultiRegionValidator interface {
 	getExpectedTableZoneConfig(desc catalog.TableDescriptor) (zonepb.ZoneConfig, error)
 	transitioningRegions() catpb.RegionNames
 
-	newMismatchFieldError(descType string, descName string, mismatch zonepb.DiffWithZoneMismatch) error
-	newMissingSubzoneError(descType string, descName string, mismatch zonepb.DiffWithZoneMismatch) error
-	newExtraSubzoneError(descType string, descName string, mismatch zonepb.DiffWithZoneMismatch) error
+	newMismatchFieldError(descType string, descName string, field string) error
+	newMissingSubzoneError(descType string, descName string, field string) error
+	newExtraSubzoneError(descType string, descName string, field string) error
 }
 
 // zoneConfigForMultiRegionValidatorSetInitialRegion implements
@@ -1793,23 +1791,21 @@ func (v *zoneConfigForMultiRegionValidatorSetInitialRegion) wrapErr(err error) e
 }
 
 func (v *zoneConfigForMultiRegionValidatorSetInitialRegion) newMismatchFieldError(
-	descType string, descName string, mismatch zonepb.DiffWithZoneMismatch,
+	descType string, descName string, field string,
 ) error {
 	return v.wrapErr(
 		pgerror.Newf(
 			pgcode.InvalidObjectDefinition,
-			"zone configuration for %s %s has field %q set which will be overwritten when setting the the initial PRIMARY REGION (expected=%s actual=%s)",
+			"zone configuration for %s %s has field %q set which will be overwritten when setting the the initial PRIMARY REGION",
 			descType,
 			descName,
-			mismatch.Field,
-			mismatch.Expected,
-			mismatch.Actual,
+			field,
 		),
 	)
 }
 
 func (v *zoneConfigForMultiRegionValidatorSetInitialRegion) newMissingSubzoneError(
-	descType string, descName string, _ zonepb.DiffWithZoneMismatch,
+	descType string, descName string, field string,
 ) error {
 	// There can never be a missing subzone as we only compare against
 	// blank zone configs.
@@ -1821,17 +1817,15 @@ func (v *zoneConfigForMultiRegionValidatorSetInitialRegion) newMissingSubzoneErr
 }
 
 func (v *zoneConfigForMultiRegionValidatorSetInitialRegion) newExtraSubzoneError(
-	descType string, descName string, mismatch zonepb.DiffWithZoneMismatch,
+	descType string, descName string, field string,
 ) error {
 	return v.wrapErr(
 		pgerror.Newf(
 			pgcode.InvalidObjectDefinition,
-			"zone configuration for %s %s has field %q set which will be overwritten when setting the initial PRIMARY REGION (expected=%s actual=%s)",
+			"zone configuration for %s %s has field %q set which will be overwritten when setting the initial PRIMARY REGION",
 			descType,
 			descName,
-			mismatch.Field,
-			mismatch.Expected,
-			mismatch.Actual,
+			field,
 		),
 	)
 }
@@ -1876,17 +1870,15 @@ type zoneConfigForMultiRegionValidatorModifiedByUser struct {
 var _ zoneConfigForMultiRegionValidator = (*zoneConfigForMultiRegionValidatorModifiedByUser)(nil)
 
 func (v *zoneConfigForMultiRegionValidatorModifiedByUser) newMismatchFieldError(
-	descType string, descName string, mismatch zonepb.DiffWithZoneMismatch,
+	descType string, descName string, field string,
 ) error {
 	return v.wrapErr(
 		pgerror.Newf(
 			pgcode.InvalidObjectDefinition,
-			"attempting to update zone configuration for %s %s which contains modified field %q (expected=%s actual=%s)",
+			"attempting to update zone configuration for %s %s which contains modified field %q",
 			descType,
 			descName,
-			mismatch.Field,
-			mismatch.Expected,
-			mismatch.Actual,
+			field,
 		),
 	)
 }
@@ -1904,7 +1896,7 @@ func (v *zoneConfigForMultiRegionValidatorModifiedByUser) wrapErr(err error) err
 }
 
 func (v *zoneConfigForMultiRegionValidatorModifiedByUser) newMissingSubzoneError(
-	descType string, descName string, _ zonepb.DiffWithZoneMismatch,
+	descType string, descName string, field string,
 ) error {
 	return v.wrapErr(
 		pgerror.Newf(
@@ -1917,17 +1909,15 @@ func (v *zoneConfigForMultiRegionValidatorModifiedByUser) newMissingSubzoneError
 }
 
 func (v *zoneConfigForMultiRegionValidatorModifiedByUser) newExtraSubzoneError(
-	descType string, descName string, mismatch zonepb.DiffWithZoneMismatch,
+	descType string, descName string, field string,
 ) error {
 	return v.wrapErr(
 		pgerror.Newf(
 			pgcode.InvalidObjectDefinition,
-			"attempting to update zone config which contains an extra zone configuration for %s %s with field %s populated (expected=%s actual=%s)",
+			"attempting to update zone config which contains an extra zone configuration for %s %s with field %s populated",
 			descType,
 			descName,
-			mismatch.Field,
-			mismatch.Expected,
-			mismatch.Actual,
+			field,
 		),
 	)
 }
@@ -1941,21 +1931,19 @@ type zoneConfigForMultiRegionValidatorValidation struct {
 var _ zoneConfigForMultiRegionValidator = (*zoneConfigForMultiRegionValidatorValidation)(nil)
 
 func (v *zoneConfigForMultiRegionValidatorValidation) newMismatchFieldError(
-	descType string, descName string, mismatch zonepb.DiffWithZoneMismatch,
+	descType string, descName string, field string,
 ) error {
 	return pgerror.Newf(
 		pgcode.InvalidObjectDefinition,
-		"zone configuration for %s %s contains incorrectly configured field %q (expected=%s actual=%s)",
+		"zone configuration for %s %s contains incorrectly configured field %q",
 		descType,
 		descName,
-		mismatch.Field,
-		mismatch.Expected,
-		mismatch.Actual,
+		field,
 	)
 }
 
 func (v *zoneConfigForMultiRegionValidatorValidation) newMissingSubzoneError(
-	descType string, descName string, _ zonepb.DiffWithZoneMismatch,
+	descType string, descName string, field string,
 ) error {
 	return pgerror.Newf(
 		pgcode.InvalidObjectDefinition,
@@ -1966,16 +1954,14 @@ func (v *zoneConfigForMultiRegionValidatorValidation) newMissingSubzoneError(
 }
 
 func (v *zoneConfigForMultiRegionValidatorValidation) newExtraSubzoneError(
-	descType string, descName string, mismatch zonepb.DiffWithZoneMismatch,
+	descType string, descName string, field string,
 ) error {
 	return pgerror.Newf(
 		pgcode.InvalidObjectDefinition,
-		"extraneous zone configuration for %s %s with field %s populated (expected=%s actual=%s)",
+		"extraneous zone configuration for %s %s with field %s populated",
 		descType,
 		descName,
-		mismatch.Field,
-		mismatch.Expected,
-		mismatch.Actual,
+		field,
 	)
 }
 
@@ -2054,7 +2040,7 @@ func (p *planner) validateZoneConfigForMultiRegionDatabase(
 		return zoneConfigForMultiRegionValidator.newMismatchFieldError(
 			"database",
 			dbName.String(),
-			mismatch,
+			mismatch.Field,
 		)
 	}
 	return nil
@@ -2285,21 +2271,21 @@ func (p *planner) validateZoneConfigForMultiRegionTable(
 			return zoneConfigForMultiRegionValidator.newMissingSubzoneError(
 				descType,
 				name,
-				mismatch,
+				mismatch.Field,
 			)
 		}
 		if mismatch.IsExtraSubzone {
 			return zoneConfigForMultiRegionValidator.newExtraSubzoneError(
 				descType,
 				name,
-				mismatch,
+				mismatch.Field,
 			)
 		}
 
 		return zoneConfigForMultiRegionValidator.newMismatchFieldError(
 			descType,
 			name,
-			mismatch,
+			mismatch.Field,
 		)
 	}
 
@@ -2469,26 +2455,53 @@ func (p *planner) GetRangeDescByID(
 // global and regional by row. The locality changes reduce how long it
 // takes a server to start up in a multi-region deployment.
 func (p *planner) optimizeSystemDatabase(ctx context.Context) error {
-	globalTables := []string{
-		"users",
-		"zones",
-		"privileges",
-		"comments",
-		"role_options",
-		"role_members",
-		"database_role_settings",
-		"settings",
-		"descriptor",
-		"namespace",
-		"table_statistics",
-		"web_sessions",
-		"region_liveness",
+	systemTables := systemschema.MakeSystemTables()
+	globalTables := map[catconstants.SystemTableName]clusterversion.Key{
+		catconstants.UsersTableName:                clusterversion.BinaryMinSupportedVersionKey,
+		catconstants.ZonesTableName:                clusterversion.BinaryMinSupportedVersionKey,
+		catconstants.SystemPrivilegeTableName:      clusterversion.BinaryMinSupportedVersionKey,
+		catconstants.CommentsTableName:             clusterversion.BinaryMinSupportedVersionKey,
+		catconstants.RoleOptionsTableName:          clusterversion.BinaryMinSupportedVersionKey,
+		catconstants.RoleMembersTableName:          clusterversion.BinaryMinSupportedVersionKey,
+		catconstants.DatabaseRoleSettingsTableName: clusterversion.BinaryMinSupportedVersionKey,
+		catconstants.SettingsTableName:             clusterversion.BinaryMinSupportedVersionKey,
+		catconstants.DescriptorTableName:           clusterversion.BinaryMinSupportedVersionKey,
+		catconstants.NamespaceTableName:            clusterversion.BinaryMinSupportedVersionKey,
+		catconstants.TableStatisticsTableName:      clusterversion.BinaryMinSupportedVersionKey,
+		catconstants.WebSessionsTableName:          clusterversion.BinaryMinSupportedVersionKey,
+		catconstants.RegionalLiveness:              clusterversion.V23_2_RegionaLivenessTable,
 	}
 
-	rbrTables := []string{
-		"sqlliveness",
-		"sql_instances",
-		"lease",
+	rbrTables := map[catconstants.SystemTableName]clusterversion.Key{
+		catconstants.SqllivenessTableName:  clusterversion.BinaryMinSupportedVersionKey,
+		catconstants.SQLInstancesTableName: clusterversion.BinaryMinSupportedVersionKey,
+		catconstants.LeaseTableName:        clusterversion.BinaryMinSupportedVersionKey,
+	}
+
+	regionByTableVersions := map[catconstants.SystemTableName]clusterversion.Key{
+		catconstants.StmtExecInsightsTableName: clusterversion.V23_2_AddSystemExecInsightsTable,
+		catconstants.TxnExecInsightsTableName:  clusterversion.V23_2_AddSystemExecInsightsTable,
+	}
+
+	// Configure all ohter tables are region tables, with the system database
+	// primary region as the region.
+	regionTables := make([]string, 0, len(systemTables))
+	for _, table := range systemTables {
+		if !table.IsTable() {
+			continue
+		}
+		name := catconstants.SystemTableName(table.GetName())
+		if _, ok := rbrTables[name]; ok {
+			continue
+		}
+		if _, ok := globalTables[name]; ok {
+			continue
+		}
+		version, hasVersion := regionByTableVersions[name]
+		if !hasVersion ||
+			p.ExecCfg().Settings.Version.IsActive(ctx, version) {
+			regionTables = append(regionTables, string(name))
+		}
 	}
 
 	// Retrieve the system database descriptor and ensure it supports
@@ -2593,8 +2606,11 @@ func (p *planner) optimizeSystemDatabase(ctx context.Context) error {
 	}
 
 	// Configure global system tables
-	for _, tableName := range globalTables {
-		descriptor, err := getDescriptor(tableName)
+	for tableName, version := range globalTables {
+		if !p.ExecCfg().Settings.Version.IsActive(ctx, version) {
+			continue
+		}
+		descriptor, err := getDescriptor(string(tableName))
 		if err != nil {
 			return err
 		}
@@ -2614,9 +2630,30 @@ func (p *planner) optimizeSystemDatabase(ctx context.Context) error {
 		}
 	}
 
-	// Configure regional by row system tables
-	for _, tableName := range rbrTables {
+	// Configure by region tables next.
+	primaryRegionName, err := systemDB.PrimaryRegionName()
+	if err != nil {
+		return err
+	}
+	for _, tableName := range regionTables {
 		descriptor, err := getDescriptor(tableName)
+		// Some system tables only come into effect once the
+		// version changes, so skip over those.
+		if sqlerrors.IsUndefinedRelationError(err) {
+			continue
+		}
+		if err != nil {
+			return err
+		}
+		descriptor.SetTableLocalityRegionalByTable(tree.Name(primaryRegionName))
+		if err := applyLocalityChange(descriptor, "global"); err != nil {
+			return err
+		}
+	}
+
+	// Configure regional by row system tables
+	for tableName := range rbrTables {
+		descriptor, err := getDescriptor(string(tableName))
 		if err != nil {
 			return err
 		}

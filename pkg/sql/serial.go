@@ -1,12 +1,7 @@
 // Copyright 2018 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package sql
 
@@ -18,6 +13,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/server/telemetry"
 	"github.com/cockroachdb/cockroach/pkg/settings"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog"
+	"github.com/cockroachdb/cockroach/pkg/sql/catalog/resolver"
 	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/pgcode"
 	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/pgerror"
 	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/pgnotice"
@@ -88,11 +84,17 @@ func (p *planner) generateSequenceForSerial(
 
 	// Now skip over all names that are already taken.
 	nameBase := seqName.ObjectName
+	flags := tree.ObjectLookupFlags{
+		Required:          false,
+		RequireMutable:    false,
+		IncludeOffline:    true,
+		DesiredObjectKind: tree.AnyObject,
+	}
 	for i := 0; ; i++ {
 		if i > 0 {
 			seqName.ObjectName = tree.Name(fmt.Sprintf("%s%d", nameBase, i))
 		}
-		res, err := p.resolveUncachedTableDescriptor(ctx, seqName, false /*required*/, tree.ResolveAnyTableKind)
+		res, _, err := resolver.ResolveExistingObject(ctx, p, seqName.ToUnresolvedObjectName(), flags)
 		if err != nil {
 			return nil, nil, nil, nil, err
 		}

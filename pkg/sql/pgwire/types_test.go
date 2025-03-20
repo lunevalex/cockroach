@@ -1,12 +1,7 @@
 // Copyright 2016 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package pgwire
 
@@ -33,7 +28,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/duration"
 	"github.com/cockroachdb/cockroach/pkg/util/leaktest"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
-	"github.com/cockroachdb/cockroach/pkg/util/metric"
 	"github.com/cockroachdb/cockroach/pkg/util/randutil"
 	"github.com/cockroachdb/cockroach/pkg/util/timeutil"
 	"github.com/cockroachdb/cockroach/pkg/util/timeutil/pgdate"
@@ -56,7 +50,7 @@ func TestWriteTextDatumMatchesFmtPgwireText(t *testing.T) {
 			tree.FmtLocation(loc),
 		)
 		d := randgen.RandDatum(rng, typ, false)
-		writeBuf := newWriteBuffer(nil /* bytecount */)
+		writeBuf := newWriteBuffer(nilStat)
 		writeBuf.writeTextDatum(context.Background(), d, conv, loc, typ)
 
 		ctx.FormatNode(d)
@@ -188,14 +182,14 @@ func TestWriteBinaryArray(t *testing.T) {
 
 	defaultConv, defaultLoc := makeTestingConvCfg()
 
-	writeBuf1 := newWriteBuffer(nil /* bytecount */)
+	writeBuf1 := newWriteBuffer(nilStat)
 	writeBuf1.writeTextDatum(context.Background(), ary, defaultConv, defaultLoc, nil /* t */)
 	writeBuf1.writeBinaryDatum(context.Background(), ary, time.UTC, nil /* t */)
 
-	writeBuf2 := newWriteBuffer(nil /* bytecount */)
+	writeBuf2 := newWriteBuffer(nilStat)
 	writeBuf2.writeTextDatum(context.Background(), ary, defaultConv, defaultLoc, nil /* t */)
 
-	writeBuf3 := newWriteBuffer(nil /* bytecount */)
+	writeBuf3 := newWriteBuffer(nilStat)
 	writeBuf3.writeBinaryDatum(context.Background(), ary, defaultLoc, nil /* t */)
 
 	concatted := bytes.Join([][]byte{writeBuf2.wrapped.Bytes(), writeBuf3.wrapped.Bytes()}, nil)
@@ -209,8 +203,7 @@ func TestIntArrayRoundTrip(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
 
-	buf := newWriteBuffer(nil /* bytecount */)
-	buf.bytecount = metric.NewCounter(metric.Metadata{})
+	buf := newWriteBuffer(nilStat)
 	d := tree.NewDArray(types.Int)
 	for i := 0; i < 10; i++ {
 		if err := d.Append(tree.NewDInt(tree.DInt(i))); err != nil {
@@ -261,8 +254,7 @@ func TestFloatConversion(t *testing.T) {
 
 	for _, test := range testData {
 		t.Run(fmt.Sprintf("%g/%d", test.val, test.extraFloatDigits), func(t *testing.T) {
-			buf := newWriteBuffer(nil /* bytecount */)
-			buf.bytecount = metric.NewCounter(metric.Metadata{})
+			buf := newWriteBuffer(nilStat)
 
 			defaultConv, defaultLoc := makeTestingConvCfg()
 			defaultConv.ExtraFloatDigits = int32(test.extraFloatDigits)
@@ -300,8 +292,7 @@ func TestByteArrayRoundTrip(t *testing.T) {
 				t.Run(fmt.Sprintf("%d", i), func(t *testing.T) {
 					t.Logf("byte array: %q", d.String())
 
-					buf := newWriteBuffer(nil /* bytecount */)
-					buf.bytecount = metric.NewCounter(metric.Metadata{})
+					buf := newWriteBuffer(nilStat)
 
 					defaultConv, defaultLoc := makeTestingConvCfg()
 					defaultConv.BytesEncodeFormat = be
@@ -336,7 +327,7 @@ func TestCanWriteAllDatums(t *testing.T) {
 	defaultConv, defaultLoc := makeTestingConvCfg()
 
 	for _, typ := range types.Scalar {
-		buf := newWriteBuffer(nil /* bytecount */)
+		buf := newWriteBuffer(nilStat)
 
 		for i := 0; i < 10; i++ {
 			d := randgen.RandDatum(rng, typ, true)
@@ -357,8 +348,7 @@ func TestCanWriteAllDatums(t *testing.T) {
 func benchmarkWriteType(b *testing.B, d tree.Datum, format pgwirebase.FormatCode) {
 	ctx := context.Background()
 
-	buf := newWriteBuffer(nil /* bytecount */)
-	buf.bytecount = metric.NewCounter(metric.Metadata{Name: ""})
+	buf := newWriteBuffer(nilStat)
 
 	writeMethod := func(ctx context.Context, d tree.Datum, loc *time.Location) {
 		defaultConv, _ := makeTestingConvCfg()
@@ -390,8 +380,7 @@ func benchmarkWriteType(b *testing.B, d tree.Datum, format pgwirebase.FormatCode
 func benchmarkWriteColumnar(b *testing.B, batch coldata.Batch, format pgwirebase.FormatCode) {
 	ctx := context.Background()
 
-	buf := newWriteBuffer(nil /* bytecount */)
-	buf.bytecount = metric.NewCounter(metric.Metadata{Name: ""})
+	buf := newWriteBuffer(nilStat)
 	var vecs coldata.TypedVecs
 
 	writeMethod := func(ctx context.Context, batch coldata.Batch, loc *time.Location) {
@@ -735,8 +724,7 @@ func BenchmarkWriteTextColumnarArray(b *testing.B) {
 }
 
 func BenchmarkDecodeBinaryDecimal(b *testing.B) {
-	wbuf := newWriteBuffer(nil /* bytecount */)
-	wbuf.bytecount = metric.NewCounter(metric.Metadata{})
+	wbuf := newWriteBuffer(nilStat)
 
 	expected := new(tree.DDecimal)
 	s := "-1728718718271827121233.1212121212"

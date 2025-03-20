@@ -1,12 +1,7 @@
 // Copyright 2019 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package kvserver
 
@@ -46,7 +41,7 @@ import (
 // the input slice, or has been shallow-copied appropriately to avoid
 // mutating the original requests).
 func optimizePuts(
-	ctx context.Context, reader storage.Reader, origReqs []kvpb.RequestUnion, distinctSpans bool,
+	reader storage.Reader, origReqs []kvpb.RequestUnion, distinctSpans bool,
 ) ([]kvpb.RequestUnion, error) {
 	var minKey, maxKey roachpb.Key
 	var unique map[string]struct{}
@@ -100,12 +95,11 @@ func optimizePuts(
 	// iter is being used to find the parts of the key range that is empty. We
 	// don't need to see intents for this purpose since intents also have
 	// provisional values that we will see.
-	iter, err := reader.NewMVCCIterator(ctx, storage.MVCCKeyIterKind, storage.IterOptions{
+	iter, err := reader.NewMVCCIterator(storage.MVCCKeyIterKind, storage.IterOptions{
 		KeyTypes: storage.IterKeyTypePointsAndRanges,
 		// We want to include maxKey in our scan. Since UpperBound is exclusive, we
 		// need to set it to the key after maxKey.
-		UpperBound:   maxKey.Next(),
-		ReadCategory: storage.BatchEvalReadCategory,
+		UpperBound: maxKey.Next(),
 	})
 	if err != nil {
 		return nil, err
@@ -192,7 +186,7 @@ func evaluateBatch(
 
 	// Optimize any contiguous sequences of put and conditional put ops.
 	if len(baReqs) >= optimizePutThreshold && evalPath == readWrite {
-		baReqs, err = optimizePuts(ctx, readWriter, baReqs, baHeader.DistinctSpans)
+		baReqs, err = optimizePuts(readWriter, baReqs, baHeader.DistinctSpans)
 	}
 	if err != nil {
 		pErr := kvpb.NewErrorWithTxn(err, baHeader.Txn)

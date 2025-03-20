@@ -1,13 +1,8 @@
 // Copyright 2013 Google Inc. All Rights Reserved.
 // Copyright 2017 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 // This code originated in the github.com/golang/glog package.
 
@@ -827,26 +822,5 @@ func BenchmarkEventf_WithVerboseTraceSpan(b *testing.B) {
 				Eventf(ctx, "%s %s %s", "foo", "bar", "baz")
 			}
 		})
-	}
-}
-
-// BenchmarkExpensiveLogEnabled measures the overhead of checking whether
-// expensive logging is enabled.
-//
-// Results with go1.21.4 on a Mac with an Apple M1 Pro processor:
-//
-// name                    time/op
-// ExpensiveLogEnabled-10  13.5ns ± 1%
-func BenchmarkExpensiveLogEnabled(b *testing.B) {
-	ctx := context.Background()
-	// Add a few values to the context, to make sure ctx.Value is not
-	// unrealistically cheap.
-	for i := 0; i < 10; i++ {
-		type key int // avoid lint warning
-		ctx = context.WithValue(ctx, key(i), i)
-	}
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		_ = ExpensiveLogEnabled(ctx, 2)
 	}
 }

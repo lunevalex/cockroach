@@ -1,19 +1,13 @@
 // Copyright 2018 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package flowinfra_test
 
 import (
 	"context"
 	"fmt"
-	"strings"
 	"testing"
 
 	"github.com/cockroachdb/cockroach/pkg/base"
@@ -47,82 +41,6 @@ func BenchmarkFlowSetup(b *testing.B) {
 	execCfg := s.ExecutorConfig().(sql.ExecutorConfig)
 	dsp := execCfg.DistSQLPlanner
 	stmt, err := parser.ParseOne("SELECT k FROM b.test WHERE k=1")
-	if err != nil {
-		b.Fatal(err)
-	}
-	for _, vectorize := range []bool{true, false} {
-		for _, distribute := range []bool{true, false} {
-			b.Run(fmt.Sprintf("vectorize=%t/distribute=%t", vectorize, distribute), func(b *testing.B) {
-				vectorizeMode := sessiondatapb.VectorizeOff
-				if vectorize {
-					vectorizeMode = sessiondatapb.VectorizeOn
-				}
-				sd := sql.NewInternalSessionData(ctx, execCfg.Settings, "test")
-				sd.VectorizeMode = vectorizeMode
-				b.ResetTimer()
-				for i := 0; i < b.N; i++ {
-					// NB: planner cannot be reset and can only be used for
-					// a single statement, so we create a new one on every
-					// iteration.
-					planner, cleanup := sql.NewInternalPlanner(
-						"test",
-						kv.NewTxn(ctx, s.DB(), s.NodeID()),
-						username.RootUserName(),
-						&sql.MemoryMetrics{},
-						&execCfg,
-						sd,
-					)
-					b.StartTimer()
-					err := dsp.Exec(
-						ctx,
-						planner,
-						stmt,
-						distribute,
-					)
-					b.StopTimer()
-					if err != nil {
-						b.Fatal(err)
-					}
-					cleanup()
-				}
-			})
-		}
-	}
-}
-
-// BenchmarkFlowRenderSetup sets up a flow for a scan that is dominated by the
-// setup cost of many render expressions.
-func BenchmarkFlowRenderSetup(b *testing.B) {
-	defer leaktest.AfterTest(b)()
-	defer log.Scope(b).Close(b)
-	ctx := context.Background()
-
-	s, conn, _ := serverutils.StartServer(b, base.TestServerArgs{})
-	defer s.Stopper().Stop(ctx)
-
-	r := sqlutils.MakeSQLRunner(conn)
-	var sb strings.Builder
-	sb.WriteString("CREATE DATABASE b;")
-	sb.WriteString("CREATE TABLE b.test (k INT")
-	const numCols = 500
-	for i := 0; i < numCols; i++ {
-		sb.WriteString(fmt.Sprintf(", col%d STRING", i))
-	}
-	sb.WriteString(");")
-	r.Exec(b, sb.String())
-
-	execCfg := s.ExecutorConfig().(sql.ExecutorConfig)
-	dsp := execCfg.DistSQLPlanner
-
-	sb.Reset()
-	sb.WriteString("SELECT k")
-	const numRenders = 500
-	for i := 0; i < numRenders; i++ {
-		sb.WriteString(fmt.Sprintf(", col%d || 'foo'", i))
-	}
-	sb.WriteString("FROM b.test")
-	stmt, err := parser.ParseOne(sb.String())
-
 	if err != nil {
 		b.Fatal(err)
 	}

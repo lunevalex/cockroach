@@ -1,12 +1,7 @@
 // Copyright 2014 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package server
 
@@ -27,6 +22,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/keys"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvpb"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver"
+	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/kvstorage"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/server/status"
 	"github.com/cockroachdb/cockroach/pkg/server/status/statuspb"
@@ -67,12 +63,13 @@ func TestBootstrapCluster(t *testing.T) {
 	ctx := context.Background()
 	e := storage.NewDefaultInMemForTesting()
 	defer e.Close()
+	require.NoError(t, kvstorage.WriteClusterVersion(ctx, e, clusterversion.TestingClusterVersion))
 
 	initCfg := initServerCfg{
-		minSupportedVersion:     clusterversion.MinSupported.Version(),
-		latestVersion:           clusterversion.Latest.Version(),
-		defaultSystemZoneConfig: *zonepb.DefaultZoneConfigRef(),
-		defaultZoneConfig:       *zonepb.DefaultSystemZoneConfigRef(),
+		binaryMinSupportedVersion: clusterversion.TestingBinaryMinSupportedVersion,
+		binaryVersion:             clusterversion.TestingBinaryVersion,
+		defaultSystemZoneConfig:   *zonepb.DefaultZoneConfigRef(),
+		defaultZoneConfig:         *zonepb.DefaultSystemZoneConfigRef(),
 	}
 	if _, err := bootstrapCluster(ctx, []storage.Engine{e}, initCfg); err != nil {
 		t.Fatal(err)
@@ -175,65 +172,6 @@ func TestBootstrapNewStore(t *testing.T) {
 	})
 }
 
-// TestStartManyStores starts a cluster with 20 stores and verifies all stores
-// are started correctly.
-func TestStartManyStores(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-	defer log.Scope(t).Close(t)
-	ctx := context.Background()
-
-	path, cleanup := testutils.TempDir(t)
-	defer cleanup()
-
-	specs := []base.StoreSpec{
-		{Path: path},
-		{InMemory: true},
-		{InMemory: true},
-		{InMemory: true},
-		{InMemory: true},
-		{InMemory: true},
-		{InMemory: true},
-		{InMemory: true},
-		{InMemory: true},
-		{InMemory: true},
-		{InMemory: true},
-		{InMemory: true},
-		{InMemory: true},
-		{InMemory: true},
-		{InMemory: true},
-		{InMemory: true},
-		{InMemory: true},
-		{InMemory: true},
-		{InMemory: true},
-		{InMemory: true},
-		{InMemory: true},
-	}
-
-	s := serverutils.StartServerOnly(t, base.TestServerArgs{
-		StoreSpecs: specs,
-	})
-	defer s.Stopper().Stop(ctx)
-
-	// Check whether all stores are started properly.
-	testutils.SucceedsSoon(t, func() error {
-		var n int
-		err := s.GetStores().(*kvserver.Stores).VisitStores(func(s *kvserver.Store) error {
-			if !s.IsStarted() {
-				return fmt.Errorf("not started: %s", s)
-			}
-			n++
-			return nil
-		})
-		if err != nil {
-			return err
-		}
-		if exp := len(specs); exp != n {
-			return fmt.Errorf("found only %d of %d stores", n, exp)
-		}
-		return nil
-	})
-}
-
 // TestNodeJoin verifies a new node is able to join a bootstrapped
 // cluster consisting of one node.
 func TestNodeJoin(t *testing.T) {
@@ -310,11 +248,13 @@ func TestCorruptedClusterID(t *testing.T) {
 	defer e.Close()
 
 	cv := clusterversion.TestingClusterVersion
+	require.NoError(t, kvstorage.WriteClusterVersion(ctx, e, cv))
+
 	initCfg := initServerCfg{
-		minSupportedVersion:     clusterversion.MinSupported.Version(),
-		latestVersion:           clusterversion.Latest.Version(),
-		defaultSystemZoneConfig: *zonepb.DefaultZoneConfigRef(),
-		defaultZoneConfig:       *zonepb.DefaultSystemZoneConfigRef(),
+		binaryMinSupportedVersion: clusterversion.TestingBinaryMinSupportedVersion,
+		binaryVersion:             clusterversion.TestingBinaryVersion,
+		defaultSystemZoneConfig:   *zonepb.DefaultZoneConfigRef(),
+		defaultZoneConfig:         *zonepb.DefaultSystemZoneConfigRef(),
 	}
 	if _, err := bootstrapCluster(ctx, []storage.Engine{e}, initCfg); err != nil {
 		t.Fatal(err)

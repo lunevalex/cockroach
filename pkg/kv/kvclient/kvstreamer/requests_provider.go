@@ -1,12 +1,7 @@
 // Copyright 2022 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package kvstreamer
 
@@ -107,40 +102,6 @@ type singleRangeBatch struct {
 
 var _ sort.Interface = &singleRangeBatch{}
 
-// deepCopyRequests updates the singleRangeBatch to have deep-copies of all KV
-// requests (Gets and Scans).
-func (r *singleRangeBatch) deepCopyRequests(s *Streamer) {
-	gets := make([]struct {
-		req   kvpb.GetRequest
-		union kvpb.RequestUnion_Get
-	}, r.numGetsInReqs)
-	scans := make([]struct {
-		req   kvpb.ScanRequest
-		union kvpb.RequestUnion_Scan
-	}, len(r.reqs)-int(r.numGetsInReqs))
-	for i := range r.reqs {
-		switch req := r.reqs[i].GetInner().(type) {
-		case *kvpb.GetRequest:
-			newGet := gets[0]
-			gets = gets[1:]
-			newGet.req.SetSpan(req.Span())
-			newGet.req.KeyLockingStrength = s.lockStrength
-			newGet.req.KeyLockingDurability = s.lockDurability
-			newGet.union.Get = &newGet.req
-			r.reqs[i].Value = &newGet.union
-		case *kvpb.ScanRequest:
-			newScan := scans[0]
-			scans = scans[1:]
-			newScan.req.SetSpan(req.Span())
-			newScan.req.ScanFormat = kvpb.BATCH_RESPONSE
-			newScan.req.KeyLockingStrength = s.lockStrength
-			newScan.req.KeyLockingDurability = s.lockDurability
-			newScan.union.Scan = &newScan.req
-			r.reqs[i].Value = &newScan.union
-		}
-	}
-}
-
 func (r *singleRangeBatch) Len() int {
 	return len(r.reqs)
 }
@@ -188,6 +149,7 @@ func (r singleRangeBatch) String() string {
 	// We try to limit the size based on the number of requests ourselves, so
 	// this is just a sane upper-bound.
 	maxBytes := 10 << 10 /* 10KiB */
+	numScansInReqs := int64(len(r.reqs)) - r.numGetsInReqs
 	if len(r.reqs) > 10 {
 		// To keep the size of this log message relatively small, if we have
 		// more than 10 requests, then we only include the information about the
@@ -199,17 +161,17 @@ func (r singleRangeBatch) String() string {
 			subIdx = fmt.Sprintf("%v...%v", r.subRequestIdx[:headEndIdx], r.subRequestIdx[tailStartIdx:])
 		}
 		return fmt.Sprintf(
-			"{reqs:%v...%v pos:%v...%v subIdx:%s start:%v gets:%v reserved:%v overhead:%v minTarget:%v}",
+			"{reqs:%v...%v pos:%v...%v subIdx:%s gets:%v scans:%v reserved:%v overhead:%v minTarget:%v}",
 			kvpb.TruncatedRequestsString(r.reqs[:headEndIdx], maxBytes),
 			kvpb.TruncatedRequestsString(r.reqs[tailStartIdx:], maxBytes),
-			r.positions[:headEndIdx], r.positions[tailStartIdx:],
-			subIdx, r.isScanStarted, r.numGetsInReqs, r.reqsReservedBytes, r.overheadAccountedFor, r.minTargetBytes,
+			r.positions[:headEndIdx], r.positions[tailStartIdx:], subIdx, r.numGetsInReqs,
+			numScansInReqs, r.reqsReservedBytes, r.overheadAccountedFor, r.minTargetBytes,
 		)
 	}
 	return fmt.Sprintf(
-		"{reqs:%v pos:%v subIdx:%v start:%v gets:%v reserved:%v overhead:%v minTarget:%v}",
+		"{reqs:%v pos:%v subIdx:%v gets:%v scans:%v reserved:%v overhead:%v minTarget:%v}",
 		kvpb.TruncatedRequestsString(r.reqs, maxBytes), r.positions, r.subRequestIdx,
-		r.isScanStarted, r.numGetsInReqs, r.reqsReservedBytes, r.overheadAccountedFor, r.minTargetBytes,
+		r.numGetsInReqs, numScansInReqs, r.reqsReservedBytes, r.overheadAccountedFor, r.minTargetBytes,
 	)
 }
 

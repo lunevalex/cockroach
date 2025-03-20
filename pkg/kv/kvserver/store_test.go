@@ -1,12 +1,7 @@
 // Copyright 2014 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package kvserver
 
@@ -256,10 +251,13 @@ func createTestStoreWithoutStart(
 		Settings:           cfg.Settings,
 		Clock:              cfg.Clock,
 		NodeDescs:          mockNodeStore{desc: nodeDesc},
-		Stopper:            stopper,
+		RPCContext:         rpcContext,
 		RPCRetryOptions:    &retry.Options{},
-		TransportFactory:   kvcoord.SenderTransportFactory(cfg.AmbientCtx.Tracer, &storeSender),
+		NodeDialer:         cfg.NodeDialer,
 		FirstRangeProvider: rangeProv,
+		TestingKnobs: kvcoord.ClientTestingKnobs{
+			TransportFactory: kvcoord.SenderTransportFactory(cfg.AmbientCtx.Tracer, &storeSender),
+		},
 	})
 
 	txnCoordSenderFactory := kvcoord.NewTxnCoordSenderFactory(kvcoord.TxnCoordSenderFactoryConfig{
@@ -467,26 +465,31 @@ func TestStoreConfigSetDefaultsNumStores(t *testing.T) {
 	defer log.Scope(t).Close(t)
 
 	testcases := map[string]struct {
-		conc        int
-		defaultConc int
-		numStores   int
-		expectConc  int
+		conc                   int
+		defaultConc            int
+		defaultMinConcPerStore int
+		numStores              int
+		expectConc             int
 	}{
-		"zero default is retained":         {defaultConc: 0, numStores: 4, expectConc: 0},
-		"negative default is retained":     {defaultConc: -1, numStores: 4, expectConc: -1},
-		"zero stores retains default":      {defaultConc: 4, expectConc: 4},
-		"explicit value not distributed":   {conc: 4, numStores: 2, expectConc: 4},
-		"explicit value overrides default": {conc: 4, defaultConc: 16, numStores: 2, expectConc: 4},
-		"default value is distributed":     {defaultConc: 16, numStores: 4, expectConc: 4},
-		"default value uses ceil division": {defaultConc: 16, numStores: 5, expectConc: 4},
-		"all stores have at least 1":       {defaultConc: 4, numStores: 10, expectConc: 1},
+		"zero default is retained":                            {defaultConc: 0, numStores: 4, expectConc: 0},
+		"negative default is retained":                        {defaultConc: -1, numStores: 4, expectConc: -1},
+		"zero stores retains default":                         {defaultConc: 4, expectConc: 4},
+		"explicit value not distributed":                      {conc: 4, numStores: 2, expectConc: 4},
+		"explicit value overrides default":                    {conc: 4, defaultConc: 16, numStores: 2, expectConc: 4},
+		"default value is distributed":                        {defaultConc: 16, numStores: 4, expectConc: 4},
+		"default value is distributed with per-store min":     {defaultConc: 16, defaultMinConcPerStore: 8, numStores: 4, expectConc: 8},
+		"default value uses ceil division":                    {defaultConc: 16, numStores: 5, expectConc: 4},
+		"default value uses ceil division with per-store min": {defaultConc: 16, defaultMinConcPerStore: 8, numStores: 5, expectConc: 8},
+		"all stores have at least 1":                          {defaultConc: 4, numStores: 10, expectConc: 1},
 	}
 	for name, tc := range testcases {
 		t.Run(name, func(t *testing.T) {
-			defer func(original int) {
-				defaultRaftSchedulerConcurrency = original // restore global default
-			}(defaultRaftSchedulerConcurrency)
+			defer func(originalConc, originalMinConcPerStore int) {
+				defaultRaftSchedulerConcurrency = originalConc // restore global default
+				defaultRaftSchedulerMinConcurrencyPerStore = originalMinConcPerStore
+			}(defaultRaftSchedulerConcurrency, defaultRaftSchedulerMinConcurrencyPerStore)
 			defaultRaftSchedulerConcurrency = tc.defaultConc
+			defaultRaftSchedulerMinConcurrencyPerStore = tc.defaultMinConcPerStore
 			cfg := StoreConfig{RaftSchedulerConcurrency: tc.conc}
 			cfg.SetDefaults(tc.numStores)
 			require.Equal(t, tc.expectConc, cfg.RaftSchedulerConcurrency)
@@ -518,7 +521,7 @@ func TestStoreInitAndBootstrap(t *testing.T) {
 		memMS := repl.GetMVCCStats()
 		// Stats should agree with a recomputation.
 		now := store.Clock().Now()
-		diskMS, err := rditer.ComputeStatsForRange(ctx, repl.Desc(), store.TODOEngine(), now.WallTime)
+		diskMS, err := rditer.ComputeStatsForRange(repl.Desc(), store.TODOEngine(), now.WallTime)
 		require.NoError(t, err)
 		memMS.AgeTo(diskMS.LastUpdateNanos)
 		require.Equal(t, memMS, diskMS)
@@ -2034,11 +2037,11 @@ func TestStoreScanResumeTSCache(t *testing.T) {
 	}
 
 	// Verify the timestamp cache has been set for "b".Next(), but not for "c".
-	rTS, _ := store.tsCache.GetMax(ctx, roachpb.Key("b").Next(), nil)
+	rTS, _ := store.tsCache.GetMax(roachpb.Key("b").Next(), nil)
 	if a, e := rTS, makeTS(t1.UnixNano(), 0); a != e {
 		t.Errorf("expected timestamp cache for \"b\".Next() set to %s; got %s", e, a)
 	}
-	rTS, _ = store.tsCache.GetMax(ctx, roachpb.Key("c"), nil)
+	rTS, _ = store.tsCache.GetMax(roachpb.Key("c"), nil)
 	if a, lt := rTS, makeTS(t1.UnixNano(), 0); lt.LessEq(a) {
 		t.Errorf("expected timestamp cache for \"c\" set less than %s; got %s", lt, a)
 	}
@@ -2062,11 +2065,11 @@ func TestStoreScanResumeTSCache(t *testing.T) {
 	}
 
 	// Verify the timestamp cache has been set for "a".Next(), but not for "a".
-	rTS, _ = store.tsCache.GetMax(ctx, roachpb.Key("a").Next(), nil)
+	rTS, _ = store.tsCache.GetMax(roachpb.Key("a").Next(), nil)
 	if a, e := rTS, makeTS(t2.UnixNano(), 0); a != e {
 		t.Errorf("expected timestamp cache for \"a\".Next() set to %s; got %s", e, a)
 	}
-	rTS, _ = store.tsCache.GetMax(ctx, roachpb.Key("a"), nil)
+	rTS, _ = store.tsCache.GetMax(roachpb.Key("a"), nil)
 	if a, lt := rTS, makeTS(t2.UnixNano(), 0); lt.LessEq(a) {
 		t.Errorf("expected timestamp cache for \"a\" set less than %s; got %s", lt, a)
 	}
@@ -2096,11 +2099,11 @@ func TestStoreScanResumeTSCache(t *testing.T) {
 	}
 
 	// Verify the timestamp cache has been set for "a" and "b", but not for "c".
-	rTS, _ = store.tsCache.GetMax(ctx, roachpb.Key("a"), nil)
+	rTS, _ = store.tsCache.GetMax(roachpb.Key("a"), nil)
 	require.Equal(t, makeTS(t3.UnixNano(), 0), rTS)
-	rTS, _ = store.tsCache.GetMax(ctx, roachpb.Key("b"), nil)
+	rTS, _ = store.tsCache.GetMax(roachpb.Key("b"), nil)
 	require.Equal(t, makeTS(t3.UnixNano(), 0), rTS)
-	rTS, _ = store.tsCache.GetMax(ctx, roachpb.Key("c"), nil)
+	rTS, _ = store.tsCache.GetMax(roachpb.Key("c"), nil)
 	require.Equal(t, makeTS(t2.UnixNano(), 0), rTS)
 }
 
@@ -2168,11 +2171,11 @@ func TestStoreSkipLockedTSCache(t *testing.T) {
 
 			// Verify the timestamp cache has been set for "a" and "c", but not for "b".
 			t2TS := makeTS(t2.UnixNano(), 0)
-			rTS, _ := store.tsCache.GetMax(ctx, roachpb.Key("a"), nil)
+			rTS, _ := store.tsCache.GetMax(roachpb.Key("a"), nil)
 			require.True(t, rTS.EqOrdering(t2TS))
-			rTS, _ = store.tsCache.GetMax(ctx, roachpb.Key("b"), nil)
+			rTS, _ = store.tsCache.GetMax(roachpb.Key("b"), nil)
 			require.True(t, rTS.Less(t2TS))
-			rTS, _ = store.tsCache.GetMax(ctx, roachpb.Key("c"), nil)
+			rTS, _ = store.tsCache.GetMax(roachpb.Key("c"), nil)
 			require.True(t, rTS.EqOrdering(t2TS))
 		})
 	}

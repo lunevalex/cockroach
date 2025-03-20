@@ -1,12 +1,7 @@
 // Copyright 2016 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package rowenc
 
@@ -186,15 +181,27 @@ func EncDatumValueFromBufferWithOffsetsAndType(
 
 // DatumToEncDatum initializes an EncDatum with the given Datum.
 func DatumToEncDatum(ctyp *types.T, d tree.Datum) EncDatum {
+	ed, err := DatumToEncDatumEx(ctyp, d)
+	if err != nil {
+		panic(err)
+	}
+	return ed
+}
+
+// DatumToEncDatumEx is the same as DatumToEncDatum that returns an error
+// instead of panicking under unexpected circumstances.
+// TODO(yuzefovich): we should probably get rid of DatumToEncDatum in favor of
+// this method altogether.
+func DatumToEncDatumEx(ctyp *types.T, d tree.Datum) (EncDatum, error) {
 	if d == nil {
-		panic(errors.AssertionFailedf("cannot convert nil datum to EncDatum"))
+		return EncDatum{}, errors.AssertionFailedf("cannot convert nil datum to EncDatum")
 	}
 
 	dTyp := d.ResolvedType()
 	if d != tree.DNull && !ctyp.Equivalent(dTyp) && !dTyp.IsAmbiguous() {
-		panic(errors.AssertionFailedf("invalid datum type given: %s, expected %s", dTyp.SQLStringForError(), ctyp.SQLStringForError()))
+		return EncDatum{}, errors.AssertionFailedf("invalid datum type given: %s, expected %s", dTyp.SQLStringForError(), ctyp.SQLStringForError())
 	}
-	return EncDatum{Datum: d}
+	return EncDatum{Datum: d}, nil
 }
 
 // UnsetDatum ensures subsequent IsUnset() calls return false.
@@ -301,6 +308,33 @@ func (ed *EncDatum) Encode(
 	}
 }
 
+func mustUseValueEncodingForFingerprinting(t *types.T) bool {
+	switch t.Family() {
+	// Both TSQuery and TSVector types don't have key-encoding, so we must use
+	// the value encoding for them. JSON type now (as of 23.2) has key-encoding
+	// available, but for historical reasons we will keep on using the
+	// value-encoding (Fingerprint is used by hash routers, so changing its
+	// behavior can result in incorrect results in mixed version clusters).
+	case types.JsonFamily, types.TSQueryFamily, types.TSVectorFamily:
+		return true
+	case types.ArrayFamily:
+		// Note that at time of this writing we don't support arrays of JSON
+		// (tracked via #23468) nor of TSQuery / TSVector types (tracked by
+		// #90886), so technically we don't need to do a recursive call here,
+		// but we choose to be on the safe side, so we do it anyway.
+		return mustUseValueEncodingForFingerprinting(t.ArrayContents())
+	case types.TupleFamily:
+		for _, tupleT := range t.TupleContents() {
+			if mustUseValueEncodingForFingerprinting(tupleT) {
+				return true
+			}
+		}
+		return false
+	default:
+		return false
+	}
+}
+
 // Fingerprint appends a unique hash of ed to the given slice. If datums are intended
 // to be deduplicated or grouped with hashes, this function should be used
 // instead of encode. Additionally, Fingerprint has the property that if the
@@ -321,20 +355,14 @@ func (ed *EncDatum) Fingerprint(
 	var fingerprint []byte
 	var err error
 	memUsageBefore := ed.Size()
-	switch typ.Family() {
-	// Both TSQuery and TSVector types don't have key-encoding, so we must use
-	// the value encoding for them. JSON type now (as of 23.2) has key-encoding
-	// available, but for historical reasons we will keep on using the
-	// value-encoding (Fingerprint is used by hash routers, so changing its
-	// behavior can result in incorrect results in mixed version clusters).
-	case types.JsonFamily, types.TSQueryFamily, types.TSVectorFamily:
+	if mustUseValueEncodingForFingerprinting(typ) {
 		if err = ed.EnsureDecoded(typ, a); err != nil {
 			return nil, err
 		}
 		// We must use value encodings without a column ID even if the EncDatum already
 		// is encoded with the value encoding so that the hashes are indeed unique.
 		fingerprint, err = valueside.Encode(appendTo, valueside.NoColumnID, ed.Datum, nil /* scratch */)
-	default:
+	} else {
 		// For values that are key encodable, using the ascending key.
 		// Note that using a value encoding will not easily work in case when
 		// there already exists the encoded representation because that
@@ -359,6 +387,15 @@ func (ed *EncDatum) Fingerprint(
 func (ed *EncDatum) Compare(
 	typ *types.T, a *tree.DatumAlloc, evalCtx *eval.Context, rhs *EncDatum,
 ) (int, error) {
+	return ed.CompareEx(typ, a, evalCtx, rhs, typ)
+}
+
+// CompareEx is the same as Compare but allows specifying the type of RHS
+// EncDatum in case it's different from ed (e.g. we might be comparing Oid
+// family types with different Oids).
+func (ed *EncDatum) CompareEx(
+	typ *types.T, a *tree.DatumAlloc, evalCtx *eval.Context, rhs *EncDatum, rhsTyp *types.T,
+) (int, error) {
 	// TODO(radu): if we have both the Datum and a key encoding available, which
 	// one would be faster to use?
 	if ed.encoding == rhs.encoding && ed.encoded != nil && rhs.encoded != nil {
@@ -372,7 +409,7 @@ func (ed *EncDatum) Compare(
 	if err := ed.EnsureDecoded(typ, a); err != nil {
 		return 0, err
 	}
-	if err := rhs.EnsureDecoded(typ, a); err != nil {
+	if err := rhs.EnsureDecoded(rhsTyp, a); err != nil {
 		return 0, err
 	}
 	return ed.Datum.CompareError(evalCtx, rhs.Datum)
@@ -515,11 +552,27 @@ func (r EncDatumRow) Compare(
 	evalCtx *eval.Context,
 	rhs EncDatumRow,
 ) (int, error) {
-	if len(r) != len(types) || len(rhs) != len(types) {
-		panic(errors.AssertionFailedf("length mismatch: %d types, %d lhs, %d rhs\n%+v\n%+v\n%+v", len(types), len(r), len(rhs), types, r, rhs))
+	return r.CompareEx(types, a, ordering, evalCtx, rhs, types)
+}
+
+// CompareEx is the same as Compare but allows specifying a different type
+// schema for RHS row.
+func (r EncDatumRow) CompareEx(
+	types []*types.T,
+	a *tree.DatumAlloc,
+	ordering colinfo.ColumnOrdering,
+	evalCtx *eval.Context,
+	rhs EncDatumRow,
+	rhsTypes []*types.T,
+) (int, error) {
+	if len(r) != len(types) || len(rhs) != len(rhsTypes) || len(r) != len(rhs) {
+		panic(errors.AssertionFailedf(
+			"length mismatch: %d types, %d rhs types, %d lhs, %d rhs\n%+v\n%+v\n%+v",
+			len(types), len(rhsTypes), len(r), len(rhs), types, r, rhs,
+		))
 	}
 	for _, c := range ordering {
-		cmp, err := r[c.ColIdx].Compare(types[c.ColIdx], a, evalCtx, &rhs[c.ColIdx])
+		cmp, err := r[c.ColIdx].CompareEx(types[c.ColIdx], a, evalCtx, &rhs[c.ColIdx], rhsTypes[c.ColIdx])
 		if err != nil {
 			return 0, err
 		}

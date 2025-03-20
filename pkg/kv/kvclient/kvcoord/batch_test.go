@@ -1,12 +1,7 @@
 // Copyright 2015 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package kvcoord
 
@@ -376,7 +371,7 @@ func TestTruncate(t *testing.T) {
 				}
 
 				for i, test := range testCases {
-					goldenOriginal := &kvpb.BatchRequest{}
+					goldenOriginal := kvpb.BatchRequest{}
 					for _, ks := range test.keys {
 						if len(ks[1]) > 0 {
 							goldenOriginal.Add(&kvpb.ResolveIntentRangeRequest{
@@ -392,7 +387,7 @@ func TestTruncate(t *testing.T) {
 						}
 					}
 
-					original := &kvpb.BatchRequest{Requests: make([]kvpb.RequestUnion, len(goldenOriginal.Requests))}
+					original := kvpb.BatchRequest{Requests: make([]kvpb.RequestUnion, len(goldenOriginal.Requests))}
 					for i, request := range goldenOriginal.Requests {
 						original.Requests[i].MustSetInner(request.GetInner().ShallowCopy())
 					}

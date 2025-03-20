@@ -26,10 +26,7 @@ go_test(
         "hot_ranges_log_test.go",
         "main_test.go",
     ],
-    exec_properties = select({
-        "//build/toolchains:is_heavy": {"Pool": "heavy"},
-        "//conditions:default": {"Pool": "default"},
-    }),
+    args = ["-test.timeout=295s"],
     deps = [
         ":structlogging",
         "//pkg/base",

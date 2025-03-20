@@ -1,12 +1,7 @@
 // Copyright 2017 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package sql
 
@@ -14,13 +9,16 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/cockroachdb/cockroach/pkg/sql/catalog/catenumpb"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/colinfo"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/descs"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/typedesc"
+	"github.com/cockroachdb/cockroach/pkg/sql/rowenc"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
 	"github.com/cockroachdb/cockroach/pkg/sql/sessiondata"
 	"github.com/cockroachdb/cockroach/pkg/sql/stats"
 	"github.com/cockroachdb/cockroach/pkg/sql/types"
+	"github.com/cockroachdb/cockroach/pkg/util/errorutil"
 	"github.com/cockroachdb/cockroach/pkg/util/protoutil"
 	"github.com/cockroachdb/errors"
 )
@@ -42,7 +40,7 @@ func (p *planner) ShowHistogram(ctx context.Context, n *tree.ShowHistogram) (pla
 		name:    fmt.Sprintf("SHOW HISTOGRAM %d", n.HistogramID),
 		columns: showHistogramColumns,
 
-		constructor: func(ctx context.Context, p *planner) (planNode, error) {
+		constructor: func(ctx context.Context, p *planner) (_ planNode, err error) {
 			row, err := p.InternalSQLTxn().QueryRowEx(
 				ctx,
 				"read-histogram",
@@ -67,6 +65,22 @@ func (p *planner) ShowHistogram(ctx context.Context, n *tree.ShowHistogram) (pla
 				return nil, fmt.Errorf("histogram %d not found", n.HistogramID)
 			}
 
+			// Guard against crashes in the code below .
+			defer func() {
+				if r := recover(); r != nil {
+					// Avoid crashing the process in case of a "safe" panic. This is only
+					// possible because the code does not update shared state and does not
+					// manipulate locks.
+					if ok, e := errorutil.ShouldCatch(r); ok {
+						err = e
+					} else {
+						// Other panic objects can't be considered "safe" and thus are
+						// propagated as crashes that terminate the session.
+						panic(r)
+					}
+				}
+			}()
+
 			histogram := &stats.HistogramData{}
 			histData := *row[0].(*tree.DBytes)
 			if err := protoutil.Unmarshal([]byte(histData), histogram); err != nil {
@@ -78,17 +92,16 @@ func (p *planner) ShowHistogram(ctx context.Context, n *tree.ShowHistogram) (pla
 			if err := typedesc.EnsureTypeIsHydrated(ctx, histogram.ColumnType, &resolver); err != nil {
 				return nil, err
 			}
-			var a tree.DatumAlloc
 			for _, b := range histogram.Buckets {
-				var upperBound string
-				datum, err := stats.DecodeUpperBound(histogram.Version, histogram.ColumnType, &a, b.UpperBound)
+				ed, _, err := rowenc.EncDatumFromBuffer(
+					catenumpb.DatumEncoding_ASCENDING_KEY, b.UpperBound,
+				)
 				if err != nil {
-					upperBound = fmt.Sprintf("<error: %v>", err)
-				} else {
-					upperBound = datum.String()
+					v.Close(ctx)
+					return nil, err
 				}
 				row := tree.Datums{
-					tree.NewDString(upperBound),
+					tree.NewDString(ed.String(histogram.ColumnType)),
 					tree.NewDInt(tree.DInt(b.NumRange)),
 					tree.NewDFloat(tree.DFloat(b.DistinctRange)),
 					tree.NewDInt(tree.DInt(b.NumEq)),

@@ -1,12 +1,7 @@
 // Copyright 2019 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package kvcoord
 
@@ -22,7 +17,6 @@ type TxnMetrics struct {
 	Aborts                    *metric.Counter
 	Commits                   *metric.Counter
 	Commits1PC                *metric.Counter // Commits which finished in a single phase
-	CommitsReadOnly           *metric.Counter // Commits which finished without acquiring locks
 	ParallelCommits           *metric.Counter // Commits which entered the STAGING state
 	ParallelCommitAutoRetries *metric.Counter // Commits which were retried after entering the STAGING state
 	CommitWaits               *metric.Counter // Commits that waited for linearizability
@@ -74,19 +68,13 @@ var (
 	}
 	metaCommits1PCRates = metric.Metadata{
 		Name:        "txn.commits1PC",
-		Help:        "Number of KV transaction one-phase commits",
-		Measurement: "KV Transactions",
-		Unit:        metric.Unit_COUNT,
-	}
-	metaCommitsReadOnly = metric.Metadata{
-		Name:        "txn.commits_read_only",
-		Help:        "Number of read only KV transaction commits",
+		Help:        "Number of KV transaction one-phase commit attempts",
 		Measurement: "KV Transactions",
 		Unit:        metric.Unit_COUNT,
 	}
 	metaParallelCommitsRates = metric.Metadata{
 		Name:        "txn.parallelcommits",
-		Help:        "Number of KV transaction parallel commits",
+		Help:        "Number of KV transaction parallel commit attempts",
 		Measurement: "KV Transactions",
 		Unit:        metric.Unit_COUNT,
 	}
@@ -282,7 +270,6 @@ func MakeTxnMetrics(histogramWindow time.Duration) TxnMetrics {
 		Aborts:                              metric.NewCounter(metaAbortsRates),
 		Commits:                             metric.NewCounter(metaCommitsRates),
 		Commits1PC:                          metric.NewCounter(metaCommits1PCRates),
-		CommitsReadOnly:                     metric.NewCounter(metaCommitsReadOnly),
 		ParallelCommits:                     metric.NewCounter(metaParallelCommitsRates),
 		ParallelCommitAutoRetries:           metric.NewCounter(metaParallelCommitAutoRetries),
 		CommitWaits:                         metric.NewCounter(metaCommitWaitCount),

@@ -1,12 +1,7 @@
 // Copyright 2021 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package kvcoord
 
@@ -19,10 +14,10 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/gossip"
 	"github.com/cockroachdb/cockroach/pkg/keys"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvclient/rangecache/rangecachemock"
-	"github.com/cockroachdb/cockroach/pkg/kv/kvpb"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvpb/kvpbmock"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/rpc"
+	"github.com/cockroachdb/cockroach/pkg/rpc/nodedialer"
 	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
 	"github.com/cockroachdb/cockroach/pkg/util/leaktest"
@@ -34,6 +29,16 @@ import (
 	"google.golang.org/grpc/codes"
 	grpcstatus "google.golang.org/grpc/status"
 )
+
+// TestingSetEnableMuxRangeFeed adjusts enable rangefeed env variable
+// for testing.
+func TestingSetEnableMuxRangeFeed(enabled bool) func() {
+	old := enableMuxRangeFeed
+	enableMuxRangeFeed = enabled
+	return func() {
+		enableMuxRangeFeed = old
+	}
+}
 
 // Tests that the range feed handles transport errors appropriately. In
 // particular, that when encountering other decommissioned nodes it will refresh
@@ -104,7 +109,7 @@ func TestDistSenderRangeFeedRetryOnTransportErrors(t *testing.T) {
 
 					// Once all replicas have failed, it should try to refresh the lease using
 					// the range cache. We let this succeed once.
-					rangeDB.EXPECT().RangeLookup(gomock.Any(), roachpb.RKeyMin, kvpb.INCONSISTENT, false).Return([]roachpb.RangeDescriptor{desc}, nil, nil)
+					rangeDB.EXPECT().FirstRange().Return(&desc, nil)
 
 					// It then tries the replicas again. This time we just report the
 					// transport as exhausted immediately.
@@ -112,13 +117,13 @@ func TestDistSenderRangeFeedRetryOnTransportErrors(t *testing.T) {
 					transport.EXPECT().Release()
 
 					// This invalidates the cache yet again. This time we error.
-					rangeDB.EXPECT().RangeLookup(gomock.Any(), roachpb.RKeyMin, kvpb.INCONSISTENT, false).Return(nil, nil, grpcstatus.Error(spec.errorCode, ""))
+					rangeDB.EXPECT().FirstRange().Return(nil, grpcstatus.Error(spec.errorCode, ""))
 
 					// If we expect a range lookup retry, allow the retry to succeed by
 					// returning a range descriptor and a client that immediately
 					// cancels the context and closes the range feed stream.
 					if spec.expectRetry {
-						rangeDB.EXPECT().RangeLookup(gomock.Any(), roachpb.RKeyMin, kvpb.INCONSISTENT, false).MinTimes(1).Return([]roachpb.RangeDescriptor{desc}, nil, nil) //.FirstRange().Return(&desc, nil)
+						rangeDB.EXPECT().FirstRange().MinTimes(1).Return(&desc, nil)
 						client := kvpbmock.NewMockInternalClient(ctrl)
 
 						if useMuxRangeFeed {
@@ -145,11 +150,14 @@ func TestDistSenderRangeFeedRetryOnTransportErrors(t *testing.T) {
 						Clock:           clock,
 						NodeDescs:       g,
 						RPCRetryOptions: &retry.Options{MaxRetries: 10},
-						Stopper:         stopper,
-						TransportFactory: func(options SendOptions, slice ReplicaSlice) (Transport, error) {
-							return transport, nil
+						RPCContext:      rpcContext,
+						TestingKnobs: ClientTestingKnobs{
+							TransportFactory: func(SendOptions, *nodedialer.Dialer, ReplicaSlice) (Transport, error) {
+								return transport, nil
+							},
 						},
 						RangeDescriptorDB: rangeDB,
+						NodeDialer:        nodedialer.New(rpcContext, gossip.AddressResolver(g)),
 						Settings:          cluster.MakeTestingClusterSettings(),
 					})
 					ds.rangeCache.Insert(ctx, roachpb.RangeInfo{
@@ -158,8 +166,8 @@ func TestDistSenderRangeFeedRetryOnTransportErrors(t *testing.T) {
 					})
 
 					var opts []RangeFeedOption
-					if !useMuxRangeFeed {
-						opts = append(opts, WithoutMuxRangeFeed())
+					if useMuxRangeFeed {
+						opts = append(opts, WithMuxRangeFeed())
 					}
 					err := ds.RangeFeed(ctx, []roachpb.Span{{Key: keys.MinKey, EndKey: keys.MaxKey}}, hlc.Timestamp{}, nil, opts...)
 					require.Error(t, err)

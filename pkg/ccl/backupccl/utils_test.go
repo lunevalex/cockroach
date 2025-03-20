@@ -1,10 +1,7 @@
 // Copyright 2020 The Cockroach Authors.
 //
-// Licensed as a CockroachDB Enterprise file under the Cockroach Community
-// License (the "License"); you may not use this file except in compliance with
-// the License. You may obtain a copy of the License at
-//
-//     https://github.com/cockroachdb/cockroach/blob/master/licenses/CCL.txt
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package backupccl
 
@@ -44,6 +41,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
 	"github.com/cockroachdb/cockroach/pkg/testutils"
 	"github.com/cockroachdb/cockroach/pkg/testutils/serverutils"
+	"github.com/cockroachdb/cockroach/pkg/testutils/skip"
 	"github.com/cockroachdb/cockroach/pkg/testutils/sqlutils"
 	"github.com/cockroachdb/cockroach/pkg/testutils/testcluster"
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
@@ -87,7 +85,12 @@ func backupRestoreTestSetupWithParams(
 func backupRestoreTestSetup(
 	t testing.TB, clusterSize int, numAccounts int, init func(*testcluster.TestCluster),
 ) (tc *testcluster.TestCluster, sqlDB *sqlutils.SQLRunner, tempDir string, cleanup func()) {
-	return backupRestoreTestSetupWithParams(t, clusterSize, numAccounts, init, base.TestClusterArgs{})
+	// TODO (msbutler): The DefaultTestTenant should be disabled by the caller of this function
+	return backupRestoreTestSetupWithParams(t, clusterSize, numAccounts, init,
+		base.TestClusterArgs{
+			ServerArgs: base.TestServerArgs{
+				DefaultTestTenant: base.TODOTestTenantDisabled,
+			}})
 }
 
 func backupRestoreTestSetupEmpty(
@@ -97,6 +100,8 @@ func backupRestoreTestSetupEmpty(
 	init func(*testcluster.TestCluster),
 	params base.TestClusterArgs,
 ) (*testcluster.TestCluster, *sqlutils.SQLRunner, func()) {
+	// TODO (msbutler): this should be disabled by callers of this function
+	params.ServerArgs.DefaultTestTenant = base.TODOTestTenantDisabled
 	tc, sqlDB, _, cleanup := backuptestutils.StartBackupRestoreTestCluster(t, clusterSize,
 		backuptestutils.WithTempDir(tempDir),
 		backuptestutils.WithInitFunc(init),
@@ -315,7 +320,7 @@ func getFirstStoreReplica(
 	t *testing.T, s serverutils.TestServerInterface, key roachpb.Key,
 ) (*kvserver.Store, *kvserver.Replica) {
 	t.Helper()
-	store, err := s.StorageLayer().GetStores().(*kvserver.Stores).GetStore(s.GetFirstStoreID())
+	store, err := s.GetStores().(*kvserver.Stores).GetStore(s.GetFirstStoreID())
 	require.NoError(t, err)
 	var repl *kvserver.Replica
 	testutils.SucceedsSoon(t, func() error {
@@ -573,6 +578,7 @@ func requireRecoveryEvent(
 //
 //lint:ignore U1000 unused
 func runTestRestoreMemoryMonitoring(t *testing.T, numSplits, numInc, restoreProcessorMaxFiles int) {
+	skip.WithIssue(t, 119836, "this functionality was never enabled and will likely be removed rather than enabled")
 	const splitSize = 10
 	numAccounts := numSplits * splitSize
 	var expectedNumFiles int

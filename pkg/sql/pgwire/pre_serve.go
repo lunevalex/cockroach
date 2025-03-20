@@ -1,12 +1,7 @@
 // Copyright 2022 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package pgwire
 
@@ -227,7 +222,7 @@ func (s *PreServeConnHandler) sendErr(
 ) error {
 	w := errWriter{
 		sv:         &st.SV,
-		msgBuilder: newWriteBuffer(s.tenantIndependentMetrics.PreServeBytesOutCount),
+		msgBuilder: newWriteBuffer(s.tenantIndependentMetrics.PreServeBytesOutCount.Inc),
 	}
 	// We could, but do not, report server-side network errors while
 	// trying to send the client error. This is because clients that
@@ -280,7 +275,7 @@ type PreServeStatus struct {
 
 	// Reserved is a memory account of the memory overhead for the
 	// connection. Defined only if State == PreServeReady.
-	Reserved mon.BoundAccount
+	Reserved *mon.BoundAccount
 
 	// clientParameters is the set of client-provided status parameters.
 	clientParameters tenantIndependentClientParameters
@@ -289,6 +284,14 @@ type PreServeStatus struct {
 // GetTenantName retrieves the selected tenant name.
 func (st PreServeStatus) GetTenantName() string {
 	return st.clientParameters.tenantName
+}
+
+// ReleaseMemory releases memory reserved for the "pre-serve" phase of a
+// connection.
+func (st PreServeStatus) ReleaseMemory(ctx context.Context) {
+	if st.State == PreServeReady {
+		st.Reserved.Clear(ctx)
+	}
 }
 
 // PreServe serves a single connection, up to and including the
@@ -392,7 +395,8 @@ func (s *PreServeConnHandler) PreServe(
 	// reduces pressure on the shared pool because the server monitor allocates in
 	// chunks from the shared pool and these chunks should be larger than
 	// baseSQLMemoryBudget.
-	st.Reserved = s.tenantIndependentConnMonitor.MakeBoundAccount()
+	connBoundAccount := s.tenantIndependentConnMonitor.MakeBoundAccount()
+	st.Reserved = &connBoundAccount
 	if err := st.Reserved.Grow(ctx, baseSQLMemoryBudget); err != nil {
 		return conn, st, errors.Wrapf(err, "unable to pre-allocate %d bytes for this connection",
 			baseSQLMemoryBudget)
@@ -402,7 +406,7 @@ func (s *PreServeConnHandler) PreServe(
 	st.clientParameters, err = parseClientProvidedSessionParameters(
 		ctx, &buf, conn.RemoteAddr(), s.trustClientProvidedRemoteAddr.Get(), s.acceptTenantName, s.acceptSystemIdentityOption.Get())
 	if err != nil {
-		st.Reserved.Close(ctx)
+		st.Reserved.Clear(ctx)
 		return conn, st, s.sendErr(ctx, s.st, conn, err)
 	}
 	st.clientParameters.IsSSL = st.ConnType == hba.ConnHostSSL

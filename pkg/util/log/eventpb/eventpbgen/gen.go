@@ -1,12 +1,7 @@
 // Copyright 2020 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package main
 
@@ -84,6 +79,7 @@ type fieldInfo struct {
 	Inherited           bool
 	IsEnum              bool
 	AllowZeroValue      bool
+	NotNullable         bool
 }
 
 var (
@@ -380,6 +376,8 @@ func readInput(
 				return errors.Newf("unknown field definition syntax: %q", line)
 			}
 
+			notNullable := notNullableRe.MatchString(line)
+
 			// Allow zero values if the field is annotated with 'includeempty'.
 			allowZeroValue := strings.Contains(line, "includeempty")
 
@@ -461,6 +459,7 @@ func readInput(
 					MixedRedactable:     mixed,
 					IsEnum:              isEnum,
 					AllowZeroValue:      allowZeroValue,
+					NotNullable:         notNullable,
 				}
 				curMsg.Fields = append(curMsg.Fields, fi)
 				curMsg.AllFields = append(curMsg.AllFields, fi)
@@ -491,6 +490,8 @@ var fieldDefRe = regexp.MustCompile(`\s*(?P<typ>[a-z._A-Z0-9]+)` +
 	`).*$`)
 
 var reservedDefRe = regexp.MustCompile(`\s*(reserved ([1-9][0-9]*);)`)
+
+var notNullableRe = regexp.MustCompile(`\s*\(\s*gogoproto\.nullable\s*\)\s*=\s*false`)
 
 func camelToSnake(typeName string) string {
 	var res strings.Builder
@@ -712,13 +713,17 @@ func (m *{{.GoType}}) AppendJSONFields(printComma bool, b redact.RedactableBytes
      }
    }
    {{- else if eq .FieldType "nestedMessage"}}
-if m.{{.FieldName}} != nil {
+   {{ if not .NotNullable -}}
+   if m.{{.FieldName}} != nil {
+   {{- end }}
      if printComma { b = append(b, ',')}; printComma = true
      b = append(b, "\"{{.FieldName}}\":"...)
      b = append(b, '{')
      printComma, b = m.{{.FieldName}}.AppendJSONFields(false, b)
      b = append(b, '}')
+   {{ if not .NotNullable -}}
    }
+   {{- end }}
    {{- else}}
    {{ error  .FieldType }}
    {{- end}}

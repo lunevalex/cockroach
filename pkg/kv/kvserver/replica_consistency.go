@@ -1,12 +1,7 @@
 // Copyright 2014 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package kvserver
 
@@ -30,8 +25,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/stateloader"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/rpc"
-	"github.com/cockroachdb/cockroach/pkg/settings"
-	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
 	"github.com/cockroachdb/cockroach/pkg/storage"
 	"github.com/cockroachdb/cockroach/pkg/storage/enginepb"
 	"github.com/cockroachdb/cockroach/pkg/storage/fs"
@@ -57,15 +50,6 @@ type replicaChecksum struct {
 	// INVARIANT: result is written to or closed only if started is closed.
 	result chan CollectChecksumResponse
 }
-
-// TestingFastEFOSAcquisition speeds up EFOS WaitForFileOnly() to speed up
-// node-wide replica consistency check calls in roachtests.
-var TestingFastEFOSAcquisition = settings.RegisterBoolSetting(
-	settings.SystemOnly,
-	"kv.consistency_queue.testing_fast_efos_acquisition.enabled",
-	"set to true to speed up EventuallyFileOnlySnapshot acquisition/transition for tests at the expense of excessive flushes",
-	false, /* defaultValue */
-	settings.WithPublic)
 
 // CheckConsistency runs a consistency check on the range. It first applies a
 // ComputeChecksum through Raft and then issues CollectChecksum commands to the
@@ -490,13 +474,12 @@ func CalcReplicaDigest(
 	snap storage.Reader,
 	mode kvpb.ChecksumMode,
 	limiter *quotapool.RateLimiter,
-	settings *cluster.Settings,
 ) (*ReplicaDigest, error) {
 	statsOnly := mode == kvpb.ChecksumMode_CHECK_STATS
 
 	// Iterate over all the data in the range.
 	var intBuf [8]byte
-	var timestamp hlc.Timestamp
+	var legacyTimestamp hlc.LegacyTimestamp
 	var timestampBuf []byte
 	var uuidBuf [uuid.Size]byte
 	hasher := sha512.New()
@@ -512,13 +495,7 @@ func CalcReplicaDigest(
 		// both requests are likely sharing the same `limiter` so if too many
 		// requests run concurrently, some of them could time out due to a
 		// combination of this wait and the limiter-induced wait.
-		efosWait := storage.MaxEFOSWait
-		if settings != nil && TestingFastEFOSAcquisition.Get(&settings.SV) {
-			if efosWait > 10*time.Millisecond {
-				efosWait = 10 * time.Millisecond
-			}
-		}
-		if err := efos.WaitForFileOnly(ctx, efosWait); err != nil {
+		if err := efos.WaitForFileOnly(ctx); err != nil {
 			return nil, err
 		}
 	}
@@ -556,13 +533,13 @@ func CalcReplicaDigest(
 		if _, err := hasher.Write(unsafeKey.Key); err != nil {
 			return err
 		}
-		timestamp = unsafeKey.Timestamp
-		if size := timestamp.Size(); size > cap(timestampBuf) {
+		legacyTimestamp = unsafeKey.Timestamp.ToLegacyTimestamp()
+		if size := legacyTimestamp.Size(); size > cap(timestampBuf) {
 			timestampBuf = make([]byte, size)
 		} else {
 			timestampBuf = timestampBuf[:size]
 		}
-		if _, err := protoutil.MarshalToSizedBuffer(&timestamp, timestampBuf); err != nil {
+		if _, err := protoutil.MarshalToSizedBuffer(&legacyTimestamp, timestampBuf); err != nil {
 			return err
 		}
 		if _, err := hasher.Write(timestampBuf); err != nil {
@@ -600,13 +577,13 @@ func CalcReplicaDigest(
 		if _, err := hasher.Write(rangeKV.RangeKey.EndKey); err != nil {
 			return err
 		}
-		timestamp = rangeKV.RangeKey.Timestamp
-		if size := timestamp.Size(); size > cap(timestampBuf) {
+		legacyTimestamp = rangeKV.RangeKey.Timestamp.ToLegacyTimestamp()
+		if size := legacyTimestamp.Size(); size > cap(timestampBuf) {
 			timestampBuf = make([]byte, size)
 		} else {
 			timestampBuf = timestampBuf[:size]
 		}
-		if _, err := protoutil.MarshalToSizedBuffer(&timestamp, timestampBuf); err != nil {
+		if _, err := protoutil.MarshalToSizedBuffer(&legacyTimestamp, timestampBuf); err != nil {
 			return err
 		}
 		if _, err := hasher.Write(timestampBuf); err != nil {
@@ -660,8 +637,7 @@ func CalcReplicaDigest(
 	// all of the replicated key space.
 	var result ReplicaDigest
 	if !statsOnly {
-		ms, err := rditer.ComputeStatsForRangeWithVisitors(
-			ctx, &desc, snap, 0 /* nowNanos */, visitors)
+		ms, err := rditer.ComputeStatsForRangeWithVisitors(&desc, snap, 0 /* nowNanos */, visitors)
 		// Consume the remaining quota borrowed in the visitors. Do it even on
 		// iteration error, but prioritize returning the latter if it occurs.
 		if wErr := limiter.WaitN(ctx, batchSize); wErr != nil && err == nil {
@@ -791,7 +767,7 @@ func (r *Replica) computeChecksumPostApply(
 		); err != nil {
 			log.Errorf(ctx, "checksum collection did not join: %v", err)
 		} else {
-			result, err := CalcReplicaDigest(ctx, desc, snap, cc.Mode, r.store.consistencyLimiter, r.ClusterSettings())
+			result, err := CalcReplicaDigest(ctx, desc, snap, cc.Mode, r.store.consistencyLimiter)
 			if err != nil {
 				log.Errorf(ctx, "checksum computation failed: %v", err)
 				result = nil

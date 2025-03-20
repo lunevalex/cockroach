@@ -1,12 +1,7 @@
 // Copyright 2018 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package sql
 
@@ -263,17 +258,6 @@ func (tu *optTableUpserter) updateConflictingRow(
 	pm row.PartialIndexUpdateHelper,
 	traceKV bool,
 ) error {
-	// Enforce the column constraints.
-	// Note: the column constraints are already enforced for fetchRow,
-	// because:
-	// - for the insert part, they were checked upstream in upsertNode
-	//   via GenerateInsertRow().
-	// - for the fetched part, we assume that the data in the table is
-	//   correct already.
-	if err := enforceLocalColumnConstraints(updateValues, tu.updateCols); err != nil {
-		return err
-	}
-
 	// Queue the update in KV. This also returns an "update row"
 	// containing the updated values for every column in the
 	// table. This is useful for RETURNING, which we collect below.

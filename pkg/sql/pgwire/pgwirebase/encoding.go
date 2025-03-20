@@ -1,12 +1,7 @@
 // Copyright 2015 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package pgwirebase
 
@@ -215,8 +210,10 @@ func (b *ReadBuffer) ReadTypedMsg(rd BufferedReader) (ClientMessageType, int, er
 	return ClientMessageType(typ), n, err
 }
 
-// GetString reads a null-terminated string.
-func (b *ReadBuffer) GetString() (string, error) {
+// GetUnsafeString reads a null-terminated string as a reference.
+// Note: The underlying buffer will be prevented from GCing, so long lived
+// objects should never use this.
+func (b *ReadBuffer) GetUnsafeString() (string, error) {
 	pos := bytes.IndexByte(b.Msg, 0)
 	if pos == -1 {
 		return "", NewProtocolViolationErrorf("NUL terminator not found")
@@ -227,6 +224,16 @@ func (b *ReadBuffer) GetString() (string, error) {
 	s := b.Msg[:pos]
 	b.Msg = b.Msg[pos+1:]
 	return *((*string)(unsafe.Pointer(&s))), nil
+}
+
+// GetSafeString reads a null-terminated string as a copy of the original data
+// out.
+func (b *ReadBuffer) GetSafeString() (string, error) {
+	s, err := b.GetUnsafeString()
+	if err != nil {
+		return "", err
+	}
+	return strings.Clone(s), nil
 }
 
 // GetPrepareType returns the buffer's contents as a PrepareType.

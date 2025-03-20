@@ -127,6 +127,10 @@ exec-sql
 CREATE INDEX foo_new_idx ON foo (s);
 ----
 
+
+# Ensure incremental backups backup the newly online spans from ts=0, as the
+# import was rolled back via non-mvcc clear range. So, backup 0 rows from foo
+# (it was empty pre-import), and 1 row from foo (had 1 row pre-import);
 exec-sql
 BACKUP INTO LATEST IN 'nodelocal://1/cluster/' with revision_history;
 ----
@@ -152,8 +156,8 @@ ORDER BY
 ----
 d foo table 3 full
 d foofoo table 4 full
-d foo table 0 incremental
-d foofoo table 3 incremental
+d foo table 3 incremental
+d foofoo table 7 incremental
 
 query-sql
 SELECT
@@ -167,8 +171,8 @@ ORDER BY
 ----
 d foo table 3 full
 d foofoo table 4 full
-d foo table 0 incremental
-d foofoo table 3 incremental
+d foo table 3 incremental
+d foofoo table 7 incremental
 
 
 query-sql
@@ -183,8 +187,8 @@ ORDER BY
 ----
 d foo table 3 full
 d foofoo table 4 full
-d foo table 0 incremental
-d foofoo table 3 incremental
+d foo table 3 incremental
+d foofoo table 7 incremental
 
 
 # To verify the incremental backed up the pre-import state table, restore d and ensure all tables
@@ -332,8 +336,8 @@ ORDER BY
 ----
 d foo2 table 3 full
 d foofoo2 table 4 full
-d foo2 table 0 incremental
-d foofoo2 table 3 incremental
+d foo2 table 3 incremental
+d foofoo2 table 7 incremental
 
 query-sql
 SELECT
@@ -347,8 +351,8 @@ ORDER BY
 ----
 d foo2 table 3 full
 d foofoo2 table 4 full
-d foo2 table 0 incremental
-d foofoo2 table 3 incremental
+d foo2 table 3 incremental
+d foofoo2 table 7 incremental
 
 
 query-sql
@@ -363,8 +367,8 @@ ORDER BY
 ----
 d foo2 table 3 full
 d foofoo2 table 4 full
-d foo2 table 0 incremental
-d foofoo2 table 3 incremental
+d foo2 table 3 incremental
+d foofoo2 table 7 incremental
 
 # To verify the incremental backup captured the tombstones, restore d and ensure all tables
 # are in their pre-import state.
@@ -391,3 +395,59 @@ select DISTINCT index_name FROM [SHOW INDEXES FROM d2.foo2];
 foo2_pkey
 foo2_idx
 foo2_new_idx
+
+
+exec-sql
+CREATE DATABASE re_restore_test;
+USE re_restore_test;
+CREATE TABLE tab1 (i INT PRIMARY KEY, s STRING);
+INSERT INTO tab1 VALUES (42, 'pre-import');
+----
+
+query-sql
+SELECT * FROM re_restore_test.tab1;
+----
+42 pre-import
+
+exec-sql
+SET CLUSTER SETTING jobs.debug.pausepoints = 'import.after_ingest';
+----
+
+# Pause the import job, in order to back up the importing data.
+import expect-pausepoint
+IMPORT INTO re_restore_test.tab1 (i,s) CSV DATA ('nodelocal://1/export1/export*-n*.0.csv')
+----
+job paused at pausepoint
+
+exec-sql
+BACKUP DATABASE re_restore_test INTO 'nodelocal://1/with-paused-import';
+----
+
+exec-sql
+RESTORE DATABASE re_restore_test FROM LATEST IN 'nodelocal://1//with-paused-import' WITH new_db_name=re_restore_test2;
+----
+
+# Should have the pre-import state
+query-sql
+SELECT * FROM re_restore_test2.tab1;
+----
+42 pre-import
+
+# Add another row
+exec-sql
+INSERT INTO re_restore_test2.tab1 VALUES (43, 'post-import-post-restore');
+----
+
+exec-sql
+BACKUP DATABASE re_restore_test2 INTO 'nodelocal://1/after-restore';
+----
+
+exec-sql
+RESTORE DATABASE re_restore_test2 FROM LATEST IN 'nodelocal://1//after-restore' WITH new_db_name=re_restore_test3;
+----
+
+query-sql
+SELECT * FROM re_restore_test3.tab1;
+----
+42 pre-import
+43 post-import-post-restore

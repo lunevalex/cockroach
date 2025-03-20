@@ -1,12 +1,7 @@
 // Copyright 2014 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package batcheval
 
@@ -121,7 +116,7 @@ func TruncateLog(
 	// are not tracked in the raft log delta. The delta will be adjusted below
 	// raft.
 	// We can pass zero as nowNanos because we're only interested in SysBytes.
-	ms, err := storage.ComputeStats(ctx, readWriter, start, end, 0 /* nowNanos */)
+	ms, err := storage.ComputeStats(readWriter, start, end, 0 /* nowNanos */)
 	if err != nil {
 		return result.Result{}, errors.Wrap(err, "while computing stats of Raft log freed by truncation")
 	}

@@ -1,18 +1,12 @@
 // Copyright 2023 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package storage
 
 import (
 	"bytes"
-	"context"
 	"sync"
 
 	"github.com/cockroachdb/cockroach/pkg/keys"
@@ -89,9 +83,6 @@ type LockTableIteratorOptions struct {
 	// If set, return locks held by any transaction with this strength or
 	// stronger.
 	MatchMinStr lock.Strength
-	// ReadCategory is used to map to a user-understandable category string, for
-	// stats aggregation and metrics, and a Pebble-understandable QoS.
-	ReadCategory ReadCategory
 }
 
 // validate validates the LockTableIteratorOptions.
@@ -126,12 +117,12 @@ var lockTableIteratorPool = sync.Pool{
 
 // NewLockTableIterator creates a new LockTableIterator.
 func NewLockTableIterator(
-	ctx context.Context, reader Reader, opts LockTableIteratorOptions,
+	reader Reader, opts LockTableIteratorOptions,
 ) (*LockTableIterator, error) {
 	if err := opts.validate(); err != nil {
 		return nil, err
 	}
-	iter, err := reader.NewEngineIterator(ctx, opts.toIterOptions())
+	iter, err := reader.NewEngineIterator(opts.toIterOptions())
 	if err != nil {
 		return nil, err
 	}

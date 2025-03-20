@@ -1,12 +1,7 @@
 // Copyright 2014 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package allocatorimpl
 
@@ -16,6 +11,7 @@ import (
 	"fmt"
 	"math"
 	"math/rand"
+	"strings"
 	"time"
 
 	"github.com/cockroachdb/cockroach/pkg/kv/kvpb"
@@ -31,7 +27,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/metric"
 	"github.com/cockroachdb/cockroach/pkg/util/syncutil"
 	"github.com/cockroachdb/errors"
-	"github.com/cockroachdb/redact"
 	"go.etcd.io/raft/v3"
 	"go.etcd.io/raft/v3/tracker"
 )
@@ -233,9 +228,6 @@ func (a AllocatorAction) String() string {
 	return allocatorActionNames[a]
 }
 
-// SafeValue implements the redact.SafeValue interface.
-func (a AllocatorAction) SafeValue() {}
-
 // Priority defines the priorities for various repair operations.
 //
 // NB: These priorities only influence the replicateQueue's understanding of
@@ -347,9 +339,6 @@ func (t TargetReplicaType) String() string {
 	}
 }
 
-// SafeValue implements the redact.SafeValue interface.
-func (t TargetReplicaType) SafeValue() {}
-
 func (s ReplicaStatus) String() string {
 	switch s {
 	case Alive:
@@ -362,9 +351,6 @@ func (s ReplicaStatus) String() string {
 		panic(fmt.Sprintf("unknown replicaStatus %d", s))
 	}
 }
-
-// SafeValue implements the redact.SafeValue interface.
-func (t ReplicaStatus) SafeValue() {}
 
 type transferDecision int
 
@@ -388,75 +374,64 @@ type allocatorError struct {
 	throttledStores       int
 }
 
-var _ errors.SafeFormatter = &allocatorError{}
-
 func (ae *allocatorError) Error() string {
-	return redact.Sprint(ae).StripMarkers()
-}
-
-func (ae *allocatorError) SafeFormatError(p errors.Printer) (next error) {
-	var existingVoterStr redact.RedactableString
+	var existingVoterStr string
 	if ae.existingVoterCount == 1 {
 		existingVoterStr = "1 already has a voter"
 	} else {
-		existingVoterStr = redact.Sprintf("%d already have a voter",
-			ae.existingVoterCount)
+		existingVoterStr = fmt.Sprintf("%d already have a voter", ae.existingVoterCount)
 	}
 
-	var existingNonVoterStr redact.RedactableString
+	var existingNonVoterStr string
 	if ae.existingNonVoterCount == 1 {
 		existingNonVoterStr = "1 already has a non-voter"
 	} else {
-		existingNonVoterStr = redact.Sprintf("%d already have a non-voter",
-			ae.existingNonVoterCount)
+		existingNonVoterStr = fmt.Sprintf("%d already have a non-voter", ae.existingNonVoterCount)
 	}
 
-	var baseMsg redact.RedactableString
+	var baseMsg string
 	if ae.throttledStores != 0 {
-		baseMsg = redact.Sprintf(
+		baseMsg = fmt.Sprintf(
 			"0 of %d live stores are able to take a new replica for the range (%d throttled, %s, %s)",
-			ae.aliveStores, ae.throttledStores,
-			existingVoterStr, existingNonVoterStr)
+			ae.aliveStores, ae.throttledStores, existingVoterStr, existingNonVoterStr)
 	} else {
-		baseMsg = redact.Sprintf(
+		baseMsg = fmt.Sprintf(
 			"0 of %d live stores are able to take a new replica for the range (%s, %s)",
 			ae.aliveStores, existingVoterStr, existingNonVoterStr)
 	}
 
 	if len(ae.constraints) == 0 && len(ae.voterConstraints) == 0 {
-		p.Print(baseMsg)
-		if ae.throttledStores == 0 {
-			p.Printf("; likely not enough nodes in cluster")
+		if ae.throttledStores > 0 {
+			return baseMsg
 		}
-		return
+		return baseMsg + "; likely not enough nodes in cluster"
 	}
 
-	var b redact.StringBuilder
-	b.Print(baseMsg)
-	b.Printf("; replicas must match constraints [")
+	var b strings.Builder
+	b.WriteString(baseMsg)
+	b.WriteString("; replicas must match constraints [")
 	for i := range ae.constraints {
 		if i > 0 {
-			b.SafeRune(' ')
+			b.WriteByte(' ')
 		}
-		b.SafeRune('{')
-		b.Print(ae.constraints[i])
-		b.SafeRune('}')
+		b.WriteByte('{')
+		b.WriteString(ae.constraints[i].String())
+		b.WriteByte('}')
 	}
-	b.SafeRune(']')
+	b.WriteString("]")
 
-	b.Printf("; voting replicas must match voter_constraints [")
+	b.WriteString("; voting replicas must match voter_constraints [")
 	for i := range ae.voterConstraints {
 		if i > 0 {
-			b.SafeRune(' ')
+			b.WriteByte(' ')
 		}
-		b.SafeRune('{')
-		b.Print(ae.voterConstraints[i].String())
-		b.SafeRune('}')
+		b.WriteByte('{')
+		b.WriteString(ae.voterConstraints[i].String())
+		b.WriteByte('}')
 	}
-	b.SafeRune(']')
+	b.WriteString("]")
 
-	p.Print(b)
-	return nil
+	return b.String()
 }
 
 func (*allocatorError) AllocationErrorMarker() {}
@@ -2917,13 +2892,14 @@ func excludeReplicasInNeedOfSnapshots(
 ) []roachpb.ReplicaDescriptor {
 	filled := 0
 	for _, repl := range replicas {
-		if raftutil.ReplicaMayNeedSnapshot(st, firstIndex, repl.ReplicaID) != raftutil.NoSnapshotNeeded {
+		snapStatus := raftutil.ReplicaMayNeedSnapshot(st, firstIndex, repl.ReplicaID)
+		if snapStatus != raftutil.NoSnapshotNeeded {
 			log.KvDistribution.VEventf(
 				ctx,
 				5,
-				"not considering [n%d, s%d] as a potential candidate for a lease transfer"+
-					" because the replica may be waiting for a snapshot",
-				repl.NodeID, repl.StoreID,
+				"not considering %s as a potential candidate for a lease transfer"+
+					" because the replica may be waiting for a snapshot: %s",
+				repl, snapStatus,
 			)
 			continue
 		}

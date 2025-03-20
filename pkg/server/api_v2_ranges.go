@@ -1,18 +1,12 @@
 // Copyright 2021 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package server
 
 import (
 	"context"
-	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
@@ -23,6 +17,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/server/serverpb"
 	"github.com/cockroachdb/cockroach/pkg/server/srverrors"
 	"github.com/cockroachdb/cockroach/pkg/util"
+	"github.com/cockroachdb/redact"
 	"github.com/gorilla/mux"
 )
 
@@ -221,7 +216,12 @@ func (a *apiV2Server) listRange(w http.ResponseWriter, r *http.Request) {
 		RangeIDs: []roachpb.RangeID{roachpb.RangeID(rangeID)},
 	}
 
-	nodeFn := func(ctx context.Context, status serverpb.StatusClient, _ roachpb.NodeID) (interface{}, error) {
+	dialFn := func(ctx context.Context, nodeID roachpb.NodeID) (interface{}, error) {
+		client, err := a.status.dialNode(ctx, nodeID)
+		return client, err
+	}
+	nodeFn := func(ctx context.Context, client interface{}, _ roachpb.NodeID) (interface{}, error) {
+		status := client.(serverpb.StatusClient)
 		return status.Ranges(ctx, rangesRequest)
 	}
 	responseFn := func(nodeID roachpb.NodeID, resp interface{}) {
@@ -241,14 +241,11 @@ func (a *apiV2Server) listRange(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	if err := iterateNodes(
+	if err := a.status.iterateNodes(
 		ctx,
-		a.status.serverIterator,
-		a.status.stopper,
-		fmt.Sprintf("details about range %d", rangeID),
+		redact.Sprintf("details about range %d", rangeID),
 		noTimeout,
-		a.status.dialNode,
-		nodeFn,
+		dialFn, nodeFn,
 		responseFn, errorFn,
 	); err != nil {
 		srverrors.APIV2InternalError(ctx, err, w)
@@ -524,8 +521,13 @@ func (a *apiV2Server) listHotRanges(w http.ResponseWriter, r *http.Request) {
 		requestedNodes = []roachpb.NodeID{requestedNodeID}
 	}
 
+	dialFn := func(ctx context.Context, nodeID roachpb.NodeID) (interface{}, error) {
+		client, err := a.status.dialNode(ctx, nodeID)
+		return client, err
+	}
 	remoteRequest := serverpb.HotRangesRequest{NodeID: "local"}
-	nodeFn := func(ctx context.Context, status serverpb.StatusClient, nodeID roachpb.NodeID) ([]hotRangeInfo, error) {
+	nodeFn := func(ctx context.Context, client interface{}, nodeID roachpb.NodeID) (interface{}, error) {
+		status := client.(serverpb.StatusClient)
 		resp, err := status.HotRangesV2(ctx, &remoteRequest)
 		if err != nil || resp == nil {
 			return nil, err
@@ -553,8 +555,8 @@ func (a *apiV2Server) listHotRanges(w http.ResponseWriter, r *http.Request) {
 		}
 		return hotRangeInfos, nil
 	}
-	responseFn := func(nodeID roachpb.NodeID, resp []hotRangeInfo) {
-		response.Ranges = append(response.Ranges, resp...)
+	responseFn := func(nodeID roachpb.NodeID, resp interface{}) {
+		response.Ranges = append(response.Ranges, resp.([]hotRangeInfo)...)
 	}
 	errorFn := func(nodeID roachpb.NodeID, err error) {
 		response.Errors = append(response.Errors, responseError{
@@ -564,8 +566,8 @@ func (a *apiV2Server) listHotRanges(w http.ResponseWriter, r *http.Request) {
 	}
 
 	timeout := HotRangesRequestNodeTimeout.Get(&a.status.st.SV)
-	next, err := paginatedIterateNodes(
-		ctx, a.status, "hot ranges", limit, start, requestedNodes, timeout,
+	next, err := a.status.paginatedIterateNodes(
+		ctx, "hot ranges", limit, start, requestedNodes, timeout, dialFn,
 		nodeFn, responseFn, errorFn)
 
 	if err != nil {

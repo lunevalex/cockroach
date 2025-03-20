@@ -7,16 +7,6 @@ go_library(
         "kv_writer.go",
         "metadata.go",
     ],
-    embedsrcs = [
-        "data/23_1_system.keys",
-        "data/23_1_system.sha256",
-        "data/23_1_tenant.keys",
-        "data/23_1_tenant.sha256",
-        "data/23_2_system.keys",
-        "data/23_2_system.sha256",
-        "data/23_2_tenant.keys",
-        "data/23_2_tenant.sha256",
-    ],
     importpath = "github.com/cockroachdb/cockroach/pkg/sql/catalog/bootstrap",
     visibility = ["//visibility:public"],
     deps = [
@@ -50,12 +40,9 @@ go_test(
         "main_test.go",
         "splits_test.go",
     ],
+    args = ["-test.timeout=295s"],
     data = glob(["testdata/**"]),
     embed = [":bootstrap"],
-    exec_properties = select({
-        "//build/toolchains:is_heavy": {"Pool": "heavy"},
-        "//conditions:default": {"Pool": "default"},
-    }),
     deps = [
         "//pkg/base",
         "//pkg/clusterversion",

@@ -789,4 +789,60 @@ FROM purchase
 
 subtest end
 
+statement ok
+CREATE FUNCTION f113186() RETURNS RECORD AS $$ SELECT 1.99; $$ LANGUAGE SQL;
 
+# Until #113186 is resolved, the internal error is expected.
+statement error pgcode XX000 internal error: invalid datum type given: DECIMAL, expected INT8
+SELECT * FROM f113186() AS foo(x INT);
+
+statement ok
+CREATE FUNCTION f(x ANYELEMENT) RETURNS INT LANGUAGE SQL AS $$ SELECT 1; $$;
+
+statement ok
+SELECT f(0);
+
+statement ok
+SELECT f(0);
+
+statement ok
+DROP FUNCTION f(ANYELEMENT);
+CREATE FUNCTION f(x INT) RETURNS INT LANGUAGE SQL AS $$ SELECT 1; $$;
+
+statement ok
+SELECT f('0');
+
+statement ok
+DROP FUNCTION f(INT);
+CREATE FUNCTION f(x TEXT) RETURNS INT LANGUAGE SQL AS $$ SELECT 1; $$;
+
+statement ok
+SELECT f('0');
+
+statement ok
+DROP FUNCTION f(TEXT);
+
+# Regression test for #104009.
+statement ok
+CREATE TABLE ab104009(a INT PRIMARY KEY, b INT)
+
+statement ok
+CREATE TABLE cd104009(c INT PRIMARY KEY, d INT)
+
+statement ok
+CREATE TABLE e104009(e INT PRIMARY KEY)
+
+statement ok
+CREATE FUNCTION f(o INT) RETURNS STRING STABLE LANGUAGE SQL AS $$
+  SELECT a
+  FROM ab104009
+  JOIN cd104009 ON a = c
+  JOIN e104009 ON b = e
+  WHERE b = $1
+$$
+
+statement ok
+PREPARE p AS SELECT f($1::REGCLASS::INT)
+
+statement ok
+EXECUTE p(10)

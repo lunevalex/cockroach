@@ -1,12 +1,7 @@
 // Copyright 2023 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package logmetrics
 
@@ -15,6 +10,7 @@ import (
 
 	"github.com/cockroachdb/cockroach/pkg/util/leaktest"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
+	"github.com/cockroachdb/cockroach/pkg/util/metric"
 	"github.com/stretchr/testify/require"
 )
 
@@ -23,17 +19,33 @@ func TestIncrementCounter(t *testing.T) {
 	defer log.Scope(t).Close(t)
 
 	l := newLogMetricsRegistry()
-	metrics := l.counters
-	for _, m := range metrics {
-		require.Zero(t, m.Count())
+
+	metrics := map[log.Metric]*metric.Counter{
+		log.FluentSinkConnectionAttempt: l.metricsStruct.FluentSinkConnAttempts,
+		log.FluentSinkConnectionError:   l.metricsStruct.FluentSinkConnErrors,
+		log.FluentSinkWriteAttempt:      l.metricsStruct.FluentSinkWriteAttempts,
+		log.FluentSinkWriteError:        l.metricsStruct.FluentSinkWriteErrors,
+		log.BufferedSinkMessagesDropped: l.metricsStruct.BufferedSinkMessagesDropped,
+		log.LogMessageCount:             l.metricsStruct.LogMessageCount,
 	}
-	for i := range metrics {
-		l.IncrementCounter(log.Metric(i), 1)
-		l.IncrementCounter(log.Metric(i), 2)
+	func() {
+		l.mu.Lock()
+		defer l.mu.Unlock()
+		for _, m := range metrics {
+			require.Zero(t, m.Count())
+		}
+	}()
+	for m := range metrics {
+		l.IncrementCounter(m, 1)
+		l.IncrementCounter(m, 2)
 	}
-	for _, m := range l.counters {
-		require.Equal(t, int64(3), m.Count())
-	}
+	func() {
+		l.mu.Lock()
+		defer l.mu.Unlock()
+		for _, m := range metrics {
+			require.Equal(t, int64(3), m.Count())
+		}
+	}()
 }
 
 func TestNewRegistry(t *testing.T) {
@@ -43,9 +55,15 @@ func TestNewRegistry(t *testing.T) {
 	t.Run("panics when logMetricsReg is nil", func(t *testing.T) {
 		logMetricsReg = nil
 		require.PanicsWithErrorf(t,
-			"logMetricsRegistry was not initialized",
+			"LogMetricsRegistry was not initialized",
 			func() {
 				_ = NewRegistry()
 			}, "expected NewRegistry() to panic with nil logMetricsReg package-level var")
 	})
 }
+
+type fakeLogMetrics struct{}
+
+func (*fakeLogMetrics) IncrementCounter(_ log.Metric, _ int64) {}
+
+var _ log.LogMetrics = (*fakeLogMetrics)(nil)

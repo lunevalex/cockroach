@@ -27,12 +27,9 @@ go_test(
         "issues_test.go",
         "render_test.go",
     ],
+    args = ["-test.timeout=55s"],
     data = glob(["testdata/**"]),
     embed = [":issues"],
-    exec_properties = select({
-        "//build/toolchains:is_heavy": {"Pool": "heavy"},
-        "//conditions:default": {"Pool": "default"},
-    }),
     deps = [
         "//pkg/testutils/datapathutils",
         "//pkg/testutils/skip",

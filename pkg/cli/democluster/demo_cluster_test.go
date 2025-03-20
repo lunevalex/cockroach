@@ -1,12 +1,7 @@
 // Copyright 2021 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package democluster
 
@@ -27,7 +22,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/security/securityassets"
 	"github.com/cockroachdb/cockroach/pkg/security/securitytest"
 	"github.com/cockroachdb/cockroach/pkg/server"
-	"github.com/cockroachdb/cockroach/pkg/sql/sqlclustersettings"
+	"github.com/cockroachdb/cockroach/pkg/sql"
 	"github.com/cockroachdb/cockroach/pkg/testutils"
 	"github.com/cockroachdb/cockroach/pkg/testutils/serverutils/regionlatency"
 	"github.com/cockroachdb/cockroach/pkg/testutils/skip"
@@ -170,7 +165,8 @@ func TestTransientClusterSimulateLatencies(t *testing.T) {
 		}
 	}()
 
-	ctx := context.Background()
+	ctx, cancelCtx := context.WithCancel(context.Background())
+	defer cancelCtx()
 
 	// Setup the transient cluster.
 	c := transientCluster{
@@ -182,16 +178,16 @@ func TestTransientClusterSimulateLatencies(t *testing.T) {
 		warnLog:           log.Warningf,
 		shoutLog:          log.Ops.Shoutf,
 	}
+
+	// Ensure the context gets canceled when the stopper terminates.
+	ctx, _ = c.stopper.WithCancelOnQuiesce(ctx)
+
+	require.NoError(t, c.Start(ctx))
+
 	// Stop the cluster when the test exits, including when it fails.
 	// This also calls the Stop() method on the stopper, and thus
 	// cancels everything controlled by the stopper.
 	defer c.Close(ctx)
-
-	// Also ensure the context gets canceled when the stopper
-	// terminates above.
-	ctx, _ = c.stopper.WithCancelOnQuiesce(ctx)
-
-	require.NoError(t, c.Start(ctx))
 
 	c.SetSimulatedLatency(true)
 
@@ -309,7 +305,7 @@ func TestTransientClusterMultitenant(t *testing.T) {
 	defer cancel()
 
 	// Ensure CREATE TABLE below works properly.
-	sqlclustersettings.RestrictAccessToSystemInterface.Override(ctx, &c.firstServer.SystemLayer().ClusterSettings().SV, false)
+	sql.RestrictAccessToSystemInterface.Override(ctx, &c.firstServer.SystemLayer().ClusterSettings().SV, false)
 
 	testutils.RunTrueAndFalse(t, "forSecondaryTenant", func(t *testing.T, forSecondaryTenant bool) {
 		url, err := c.getNetworkURLForServer(ctx, 0,

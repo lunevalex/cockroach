@@ -1,12 +1,7 @@
 // Copyright 2022 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package execagg
 
@@ -20,6 +15,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/eval"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
 	"github.com/cockroachdb/cockroach/pkg/sql/types"
+	"github.com/cockroachdb/cockroach/pkg/util/intsets"
 	"github.com/cockroachdb/errors"
 )
 
@@ -162,4 +158,23 @@ func GetWindowFunctionInfo(
 	return nil, nil, errors.Errorf(
 		"no builtin aggregate/window function for %s on %v", funcStr, inputTypes,
 	)
+}
+
+// NeedHashAggregator returns whether the given aggregator spec requires hash
+// aggregation.
+func NeedHashAggregator(aggSpec *execinfrapb.AggregatorSpec) (bool, error) {
+	var groupCols, orderedCols intsets.Fast
+	for _, col := range aggSpec.OrderedGroupCols {
+		orderedCols.Add(int(col))
+	}
+	for _, col := range aggSpec.GroupCols {
+		if !orderedCols.Contains(int(col)) {
+			return true, nil
+		}
+		groupCols.Add(int(col))
+	}
+	if !orderedCols.SubsetOf(groupCols) {
+		return false, errors.AssertionFailedf("ordered cols must be a subset of grouping cols")
+	}
+	return false, nil
 }

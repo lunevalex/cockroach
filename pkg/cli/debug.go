@@ -1,12 +1,7 @@
 // Copyright 2016 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package cli
 
@@ -364,15 +359,13 @@ func runDebugKeys(cmd *cobra.Command, args []string) error {
 		splitScan = true
 		endKey = keys.LocalMax
 	}
-	if err := db.MVCCIterate(
-		cmd.Context(), debugCtx.startKey.Key, endKey, storage.MVCCKeyAndIntentsIterKind,
-		storage.IterKeyTypePointsAndRanges, storage.UnknownReadCategory, iterFunc); err != nil {
+	if err := db.MVCCIterate(debugCtx.startKey.Key, endKey, storage.MVCCKeyAndIntentsIterKind,
+		storage.IterKeyTypePointsAndRanges, iterFunc); err != nil {
 		return err
 	}
 	if splitScan {
-		if err := db.MVCCIterate(cmd.Context(), keys.LocalMax, debugCtx.endKey.Key,
-			storage.MVCCKeyAndIntentsIterKind, storage.IterKeyTypePointsAndRanges,
-			storage.UnknownReadCategory, iterFunc); err != nil {
+		if err := db.MVCCIterate(keys.LocalMax, debugCtx.endKey.Key, storage.MVCCKeyAndIntentsIterKind,
+			storage.IterKeyTypePointsAndRanges, iterFunc); err != nil {
 			return err
 		}
 	}
@@ -471,7 +464,7 @@ func runDebugRangeData(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	desc, err := loadRangeDescriptor(cmd.Context(), db, rangeID)
+	desc, err := loadRangeDescriptor(db, rangeID)
 	if err != nil {
 		return err
 	}
@@ -480,12 +473,11 @@ func runDebugRangeData(cmd *cobra.Command, args []string) error {
 	defer snapshot.Close()
 
 	var results int
-	return rditer.IterateReplicaKeySpans(cmd.Context(), &desc, snapshot, debugCtx.replicated,
-		rditer.ReplicatedSpansAll,
-		func(iter storage.EngineIterator, _ roachpb.Span, keyType storage.IterKeyType) error {
+	return rditer.IterateReplicaKeySpans(&desc, snapshot, debugCtx.replicated, rditer.ReplicatedSpansAll,
+		func(iter storage.EngineIterator, _ roachpb.Span) error {
 			for ok := true; ok && err == nil; ok, err = iter.NextEngineKey() {
-				switch keyType {
-				case storage.IterKeyTypePointsOnly:
+				hasPoint, hasRange := iter.HasPointAndRange()
+				if hasPoint {
 					key, err := iter.UnsafeEngineKey()
 					if err != nil {
 						return err
@@ -499,8 +491,9 @@ func runDebugRangeData(cmd *cobra.Command, args []string) error {
 					if results == debugCtx.maxResults {
 						return iterutil.StopIteration()
 					}
+				}
 
-				case storage.IterKeyTypeRangesOnly:
+				if hasRange && iter.RangeKeyChanged() {
 					bounds, err := iter.EngineRangeBounds()
 					if err != nil {
 						return err
@@ -529,7 +522,7 @@ Prints all range descriptors in a store with a history of changes.
 }
 
 func loadRangeDescriptor(
-	ctx context.Context, db storage.Engine, rangeID roachpb.RangeID,
+	db storage.Engine, rangeID roachpb.RangeID,
 ) (roachpb.RangeDescriptor, error) {
 	var desc roachpb.RangeDescriptor
 	handleKV := func(kv storage.MVCCKeyValue, _ storage.MVCCRangeKeyStack) error {
@@ -566,9 +559,8 @@ func loadRangeDescriptor(
 	end := keys.LocalRangeMax
 
 	// NB: Range descriptor keys can have intents.
-	if err := db.MVCCIterate(
-		ctx, start, end, storage.MVCCKeyAndIntentsIterKind, storage.IterKeyTypePointsOnly,
-		storage.UnknownReadCategory, handleKV); err != nil {
+	if err := db.MVCCIterate(start, end, storage.MVCCKeyAndIntentsIterKind,
+		storage.IterKeyTypePointsOnly, handleKV); err != nil {
 		return roachpb.RangeDescriptor{}, err
 	}
 	if desc.RangeID == rangeID {
@@ -590,8 +582,7 @@ func runDebugRangeDescriptors(cmd *cobra.Command, args []string) error {
 	end := keys.LocalRangeMax
 
 	// NB: Range descriptor keys can have intents.
-	return db.MVCCIterate(cmd.Context(), start, end, storage.MVCCKeyAndIntentsIterKind,
-		storage.IterKeyTypePointsOnly, storage.UnknownReadCategory,
+	return db.MVCCIterate(start, end, storage.MVCCKeyAndIntentsIterKind, storage.IterKeyTypePointsOnly,
 		func(kv storage.MVCCKeyValue, _ storage.MVCCRangeKeyStack) error {
 			if kvserver.IsRangeDescriptorKey(kv.Key) != nil {
 				return nil
@@ -716,8 +707,8 @@ The default value for --schema is 'cockroach.sql.sqlbase.Descriptor'.
 For example:
 
 $ cat debug/system.descriptor.txt | cockroach debug decode-proto
-id	descriptor
-1	{"database": {"id": 1, "modificationTime": {}, "name": "system", "privileges": {"users": [{"privileges": 48, "user": "admin"}, {"privileges": 48, "user": "root"}]}}}
+id	descriptor	hex_descriptor
+1	\022!\012\006system\020\001\032\025\012\011\012\005admin\0200\012\010\012\004root\0200	{"database": {"id": 1, "modificationTime": {}, "name": "system", "privileges": {"users": [{"privileges": 48, "user": "admin"}, {"privileges": 48, "user": "root"}]}}}
 ...
 
 decode-proto can be used to decode protos as captured by Chrome Dev
@@ -768,8 +759,7 @@ func runDebugRaftLog(cmd *cobra.Command, args []string) error {
 		string(storage.EncodeMVCCKey(storage.MakeMVCCMetadataKey(end))))
 
 	// NB: raft log does not have intents.
-	return db.MVCCIterate(cmd.Context(), start, end, storage.MVCCKeyIterKind,
-		storage.IterKeyTypePointsOnly, storage.UnknownReadCategory,
+	return db.MVCCIterate(start, end, storage.MVCCKeyIterKind, storage.IterKeyTypePointsOnly,
 		func(kv storage.MVCCKeyValue, _ storage.MVCCRangeKeyStack) error {
 			kvserver.PrintMVCCKeyValue(kv)
 			return nil
@@ -1284,7 +1274,7 @@ func runDebugIntentCount(cmd *cobra.Command, args []string) error {
 		}
 	})
 
-	iter, err := db.NewEngineIterator(ctx, storage.IterOptions{
+	iter, err := db.NewEngineIterator(storage.IterOptions{
 		LowerBound: keys.LockTableSingleKeyStart,
 		UpperBound: keys.LockTableSingleKeyEnd,
 	})
@@ -1471,6 +1461,8 @@ func init() {
 
 	f = debugRecoverCollectInfoCmd.Flags()
 	f.VarP(&debugRecoverCollectInfoOpts.Stores, cliflags.RecoverStore.Name, cliflags.RecoverStore.Shorthand, cliflags.RecoverStore.Usage())
+	f.IntVarP(&debugRecoverCollectInfoOpts.maxConcurrency, "max-concurrency", "c", debugRecoverDefaultMaxConcurrency,
+		"maximum concurrency when fanning out RPCs to nodes in the cluster")
 
 	f = debugRecoverPlanCmd.Flags()
 	f.StringVarP(&debugRecoverPlanOpts.outputFileName, "plan", "o", "",
@@ -1484,6 +1476,8 @@ func init() {
 	f.BoolVar(&debugRecoverPlanOpts.force, "force", false,
 		"force creation of plan even when problems were encountered; applying this plan may "+
 			"result in additional problems and should be done only with care and as a last resort")
+	f.IntVarP(&debugRecoverPlanOpts.maxConcurrency, "max-concurrency", "c", debugRecoverDefaultMaxConcurrency,
+		"maximum concurrency when fanning out RPCs to nodes in the cluster")
 	f.UintVar(&formatHelper.maxPrintedKeyLength, cliflags.PrintKeyLength.Name,
 		formatHelper.maxPrintedKeyLength, cliflags.PrintKeyLength.Usage())
 
@@ -1495,6 +1489,12 @@ func init() {
 		formatHelper.maxPrintedKeyLength, cliflags.PrintKeyLength.Usage())
 	f.BoolVar(&debugRecoverExecuteOpts.ignoreInternalVersion, cliflags.RecoverIgnoreInternalVersion.Name,
 		debugRecoverExecuteOpts.ignoreInternalVersion, cliflags.RecoverIgnoreInternalVersion.Usage())
+	f.IntVarP(&debugRecoverExecuteOpts.maxConcurrency, "max-concurrency", "c", debugRecoverDefaultMaxConcurrency,
+		"maximum concurrency when fanning out RPCs to nodes in the cluster")
+
+	f = debugRecoverVerifyCmd.Flags()
+	f.IntVarP(&debugRecoverVerifyOpts.maxConcurrency, "max-concurrency", "c", debugRecoverDefaultMaxConcurrency,
+		"maximum concurrency when fanning out RPCs to nodes in the cluster")
 
 	f = debugMergeLogsCmd.Flags()
 	f.Var(flagutil.Time(&debugMergeLogsOpts.from), "from",

@@ -1,12 +1,7 @@
 // Copyright 2021 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package sql
 
@@ -17,8 +12,10 @@ import (
 
 	"github.com/cockroachdb/cockroach/pkg/base"
 	"github.com/cockroachdb/cockroach/pkg/jobs/jobspb"
+	"github.com/cockroachdb/cockroach/pkg/keys"
 	"github.com/cockroachdb/cockroach/pkg/security/username"
 	"github.com/cockroachdb/cockroach/pkg/server/telemetry"
+	"github.com/cockroachdb/cockroach/pkg/sql/catalog/catalogkeys"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/catpb"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/descpb"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/descs"
@@ -115,6 +112,64 @@ func (p *planner) newSchemaChangeBuilderDependencies(statements []string) scbuil
 	)
 }
 
+// waitForDescriptorIDGeneratorMigration polls the system.descriptor table (in
+// separate transactions) until the descriptor_id_seq record is present, which
+// indicates that the system tenant's descriptor ID generator has successfully
+// been migrated.
+func (p *planner) waitForDescriptorIDGeneratorMigration(ctx context.Context) error {
+	// Drop all leases and locks due to the current transaction, and, in the
+	// process, abort the transaction.
+	p.Descriptors().ReleaseAll(ctx)
+	if err := p.txn.Rollback(ctx); err != nil {
+		return err
+	}
+
+	// Wait for the system.descriptor_id_gen descriptor to appear.
+	start := timeutil.Now()
+	logEvery := log.Every(30 * time.Second)
+	blocked := true
+	for r := retry.StartWithCtx(ctx, base.DefaultRetryOptions()); blocked && r.Next(); {
+		if knobs := p.ExecCfg().TenantTestingKnobs; knobs != nil {
+			if fn := knobs.BeforeCheckingForDescriptorIDSequence; fn != nil {
+				fn(ctx)
+			}
+		}
+		now := p.ExecCfg().Clock.Now()
+		if logEvery.ShouldLog() {
+			log.Infof(
+				ctx,
+				"waiting for system tenant descriptor ID generator migration, waited %v so far",
+				timeutil.Since(start),
+			)
+		}
+		if err := p.ExecCfg().InternalDB.DescsTxn(ctx, func(
+			ctx context.Context, txn descs.Txn,
+		) error {
+			kvTxn := txn.KV()
+			if err := kvTxn.SetFixedTimestamp(ctx, now); err != nil {
+				return err
+			}
+			k := catalogkeys.MakeDescMetadataKey(p.ExecCfg().Codec, keys.DescIDSequenceID)
+			result, err := txn.KV().Get(ctx, k)
+			if err != nil {
+				return err
+			}
+			if result.Exists() {
+				blocked = false
+			}
+			return nil
+		}); err != nil {
+			return err
+		}
+	}
+	log.Infof(
+		ctx,
+		"done waiting for system tenant descriptor ID generator migration after %v",
+		timeutil.Since(start),
+	)
+	return nil
+}
+
 // waitForDescriptorSchemaChanges polls the specified descriptor (in separate
 // transactions) until all its ongoing schema changes have completed.
 // Internally, this call will restart the planner's underlying transaction and
@@ -158,6 +213,8 @@ func (p *planner) waitForDescriptorSchemaChanges(
 			blockingJobIDs = desc.ConcurrentSchemaChangeJobIDs()
 			return nil
 		}); err != nil {
+			log.Infof(ctx, "done schema change wait on concurrent jobs due"+
+				" to error on descriptor (%d): %s", descID, err)
 			return err
 		}
 		if !isBlocked {

@@ -1,12 +1,7 @@
 // Copyright 2022 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package eval
 
@@ -37,6 +32,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/sessiondatapb"
 	"github.com/cockroachdb/cockroach/pkg/sql/sqlliveness"
 	"github.com/cockroachdb/cockroach/pkg/sql/types"
+	"github.com/cockroachdb/cockroach/pkg/util/cidr"
 	"github.com/cockroachdb/cockroach/pkg/util/duration"
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
 	"github.com/cockroachdb/cockroach/pkg/util/mon"
@@ -173,6 +169,8 @@ type Context struct {
 	// Regions stores information about regions.
 	Regions RegionOperator
 
+	JoinTokenCreator JoinTokenCreator
+
 	Gossip GossipOperator
 
 	PreparedStatementState PreparedStatementState
@@ -288,6 +286,9 @@ type Context struct {
 
 	// ULIDEntropy is the entropy source for ULID generation.
 	ULIDEntropy ulid.MonotonicReader
+
+	// CidrLookup is used to look up the tag name for a given IP address.
+	CidrLookup *cidr.Lookup
 }
 
 // JobsProfiler is the interface used to fetch job specific execution details
@@ -869,7 +870,20 @@ type ReplicationStreamManager interface {
 // StreamIngestManager represents a collection of APIs that streaming replication supports
 // on the ingestion side.
 type StreamIngestManager interface {
+	// CompleteStreamIngestion signals a running stream ingestion job to complete on the consumer side.
+	CompleteStreamIngestion(
+		ctx context.Context,
+		ingestionJobID jobspb.JobID,
+		cutoverTimestamp hlc.Timestamp,
+	) error
+
 	// GetStreamIngestionStats gets a statistics summary for a stream ingestion job.
+	GetStreamIngestionStats(
+		ctx context.Context,
+		streamIngestionDetails jobspb.StreamIngestionDetails,
+		jobProgress jobspb.Progress,
+	) (*streampb.StreamIngestionStats, error)
+
 	GetReplicationStatsAndStatus(
 		ctx context.Context,
 		ingestionJobID jobspb.JobID,

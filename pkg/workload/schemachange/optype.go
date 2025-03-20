@@ -1,12 +1,7 @@
 // Copyright 2020 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package schemachange
 
@@ -83,15 +78,9 @@ const (
 
 	// ALTER DATABASE ...
 
-	alterDatabaseAddRegion       // ALTER DATABASE <db> ADD REGION <region>
-	alterDatabasePrimaryRegion   // ALTER DATABASE <db> PRIMARY REGION <region>
-	alterDatabaseSurvivalGoal    // ALTER DATABASE <db> SURVIVE <failure_mode>
-	alterDatabaseAddSuperRegion  // ALTER DATABASE <db> ADD SUPER REGION <region> VALUES ...
-	alterDatabaseDropSuperRegion // ALTER DATABASE <db> DROP SUPER REGION <region>
-
-	// ALTER FUNCTION ...
-	alterFunctionRename    // ALTER FUNCTION <function> RENAME TO <name>
-	alterFunctionSetSchema // ALTER FUNCTION <function> SET SCHEMA <schema>
+	alterDatabaseAddRegion     // ALTER DATABASE <db> ADD REGION <region>
+	alterDatabasePrimaryRegion //  ALTER DATABASE <db> PRIMARY REGION <region>
+	alterDatabaseSurvivalGoal  // ALTER DATABASE <db> SURVIVE <failure_mode>
 
 	// ALTER TABLE <table> ...
 
@@ -100,11 +89,10 @@ const (
 	alterTableAddConstraintForeignKey // ALTER TABLE <table> ADD CONSTRAINT <constraint> FOREIGN KEY (<column>) REFERENCES <table> (<column>)
 	alterTableAddConstraintUnique     // ALTER TABLE <table> ADD CONSTRAINT <constraint> UNIQUE (<column>)
 	alterTableAlterColumnType         // ALTER TABLE <table> ALTER [COLUMN] <column> [SET DATA] TYPE <type>
-	alterTableAlterPrimaryKey         // ALTER TABLE <table> ALTER PRIMARY KEY USING COLUMNS (<columns>)
 	alterTableDropColumn              // ALTER TABLE <table> DROP COLUMN <column>
-	alterTableDropColumnDefault       // ALTER TABLE <table> ALTER [COLUMN] <column> DROP DEFAULT
 	alterTableDropConstraint          // ALTER TABLE <table> DROP CONSTRAINT <constraint>
 	alterTableDropNotNull             // ALTER TABLE <table> ALTER [COLUMN] <column> DROP NOT NULL
+	alterTableDropColumnDefault       // ALTER TABLE <table> ALTER [COLUMN] <column> DROP DEFAULT
 	alterTableDropStored              // ALTER TABLE <table> ALTER [COLUMN] <column> DROP STORED
 	alterTableLocality                // ALTER TABLE <table> LOCALITY <locality>
 	alterTableRenameColumn            // ALTER TABLE <table> RENAME [COLUMN] <column> TO <column>
@@ -124,15 +112,9 @@ const (
 	createTable    // CREATE TABLE <table> <def>
 	createTableAs  // CREATE TABLE <table> AS <def>
 	createView     // CREATE VIEW <view> AS <def>
-	createFunction // CREATE FUNCTION <function> ...
-
-	// COMMENT ON ...
-
-	commentOn // COMMENT ON [SCHEMA | TABLE | INDEX | COLUMN | CONSTRAINT] IS <comment>
 
 	// DROP ...
 
-	dropFunction // DROP FUNCTION <function>
 	dropIndex    // DROP INDEX <index>@<table>
 	dropSchema   // DROP SCHEMA <schema>
 	dropSequence // DROP SEQUENCE <sequence>
@@ -140,13 +122,21 @@ const (
 	dropView     // DROP VIEW <view>
 
 	// Unimplemented operations. TODO(sql-foundations): Audit and/or implement these operations.
+	// alterDatabaseAddSuperRegion
+	// alterDatabaseAlterSuperRegion
+	// alterDatabaseDropRegion
+	// alterDatabaseDropSecondaryRegion
+	// alterDatabaseDropSuperRegion
 	// alterDatabaseOwner
 	// alterDatabasePlacement
+	// alterDatabaseSecondaryRegion
 	// alterDatabaseSetZoneConfigExtension
 	// alterDefaultPrivileges
 	// alterFunctionDepExtension
 	// alterFunctionOptions
+	// alterFunctionRename
 	// alterFunctionSetOwner
+	// alterFunctionSetSchema
 	// alterIndex
 	// alterIndexPartitionBy
 	// alterIndexVisible
@@ -156,6 +146,7 @@ const (
 	// alterSchemaOwner
 	// alterSchemaRename
 	// alterSequence
+	// alterTableAlterPrimaryKey
 	// alterTableInjectStats
 	// alterTableOwner
 	// alterTablePartitionByTable
@@ -173,13 +164,19 @@ const (
 	// alterTypeRename
 	// alterTypeRenameValue
 	// alterTypeSetSchema
+	// commentOnColumn
+	// commentOnConstraint
 	// commentOnDatabase
+	// commentOnIndex
+	// commentOnSchema
+	// commentOnTable
 	// createDatabase
 	// createRole
 	// createStats
 	// createStatsOptions
 	// createType
 	// dropDatabase
+	// dropFunction
 	// dropOwnedBy
 	// dropRole     // DROP ROLE <role>
 	// dropType     // DROP TYPE <type>
@@ -207,18 +204,13 @@ var opFuncs = []func(*operationGenerator, context.Context, pgx.Tx) (*opStmt, err
 
 	// DDL Operations
 	alterDatabaseAddRegion:            (*operationGenerator).addRegion,
-	alterDatabaseAddSuperRegion:       (*operationGenerator).alterDatabaseAddSuperRegion,
-	alterDatabaseDropSuperRegion:      (*operationGenerator).alterDatabaseDropSuperRegion,
 	alterDatabasePrimaryRegion:        (*operationGenerator).primaryRegion,
 	alterDatabaseSurvivalGoal:         (*operationGenerator).survive,
-	alterFunctionRename:               (*operationGenerator).alterFunctionRename,
-	alterFunctionSetSchema:            (*operationGenerator).alterFunctionSetSchema,
 	alterTableAddColumn:               (*operationGenerator).addColumn,
 	alterTableAddConstraint:           (*operationGenerator).addConstraint,
 	alterTableAddConstraintForeignKey: (*operationGenerator).addForeignKeyConstraint,
 	alterTableAddConstraintUnique:     (*operationGenerator).addUniqueConstraint,
 	alterTableAlterColumnType:         (*operationGenerator).setColumnType,
-	alterTableAlterPrimaryKey:         (*operationGenerator).alterTableAlterPrimaryKey,
 	alterTableDropColumn:              (*operationGenerator).dropColumn,
 	alterTableDropColumnDefault:       (*operationGenerator).dropColumnDefault,
 	alterTableDropConstraint:          (*operationGenerator).dropConstraint,
@@ -229,8 +221,6 @@ var opFuncs = []func(*operationGenerator, context.Context, pgx.Tx) (*opStmt, err
 	alterTableSetColumnDefault:        (*operationGenerator).setColumnDefault,
 	alterTableSetColumnNotNull:        (*operationGenerator).setColumnNotNull,
 	alterTypeDropValue:                (*operationGenerator).alterTypeDropValue,
-	commentOn:                         (*operationGenerator).commentOn,
-	createFunction:                    (*operationGenerator).createFunction,
 	createIndex:                       (*operationGenerator).createIndex,
 	createSchema:                      (*operationGenerator).createSchema,
 	createSequence:                    (*operationGenerator).createSequence,
@@ -238,7 +228,6 @@ var opFuncs = []func(*operationGenerator, context.Context, pgx.Tx) (*opStmt, err
 	createTableAs:                     (*operationGenerator).createTableAs,
 	createTypeEnum:                    (*operationGenerator).createEnum,
 	createView:                        (*operationGenerator).createView,
-	dropFunction:                      (*operationGenerator).dropFunction,
 	dropIndex:                         (*operationGenerator).dropIndex,
 	dropSchema:                        (*operationGenerator).dropSchema,
 	dropSequence:                      (*operationGenerator).dropSequence,
@@ -257,47 +246,39 @@ var opWeights = []int{
 	validate:   2, // validate twice more often
 
 	// DDL Operations
-	alterDatabaseAddRegion:            1,
-	alterDatabaseAddSuperRegion:       0, // Disabled and tracked with #111299
-	alterDatabaseDropSuperRegion:      0, // Disabled and tracked with #111299
-	alterDatabasePrimaryRegion:        0, // Disabled and tracked with #83831
-	alterDatabaseSurvivalGoal:         0, // Disabled and tracked with #83831
-	alterFunctionRename:               0, // Disabled and tracked with #116794.
-	alterFunctionSetSchema:            0, // Disabled and tracked with #116794.
 	alterTableAddColumn:               1,
-	alterTableAddConstraintForeignKey: 1, // Tentatively re-enabled, see #91195.
+	alterTableDropConstraint:          0, // TODO(spaskob): unimplemented
+	alterTableAddConstraintForeignKey: 0, // Disabled and tracked with #91195
+	alterDatabaseAddRegion:            1,
 	alterTableAddConstraintUnique:     0,
-	alterTableAlterColumnType:         0, // Disabled and tracked with #66662.
-	alterTableAlterPrimaryKey:         1,
+	alterTableLocality:                1,
+	createIndex:                       0, // Disabled and tracked with #127280.
+	createSequence:                    1,
+	createTable:                       10,
+	createTableAs:                     1,
+	createView:                        1,
+	createTypeEnum:                    1,
+	createSchema:                      1,
 	alterTableDropColumn:              0,
 	alterTableDropColumnDefault:       1,
-	alterTableDropConstraint:          0, // TODO(spaskob): unimplemented
 	alterTableDropNotNull:             1,
 	alterTableDropStored:              1,
-	alterTableLocality:                1,
-	alterTableRenameColumn:            1,
-	alterTableSetColumnDefault:        1,
-	alterTableSetColumnNotNull:        1,
-	alterTypeDropValue:                0, // Disabled and tracked with #114844, #113859, and #115612.
-	commentOn:                         0, // Disabled and tracked with #116795.
-	createFunction:                    1,
-	createIndex:                       1,
-	createSchema:                      1,
-	createSequence:                    1,
-	createTable:                       1,
-	createTableAs:                     1,
-	createTypeEnum:                    1,
-	createView:                        1,
-	dropFunction:                      0, // Disabled and tracked with #116794.
 	dropIndex:                         1,
-	dropSchema:                        0, // Disabled and tracked with 116792.
 	dropSequence:                      1,
 	dropTable:                         1,
 	dropView:                          1,
+	alterTypeDropValue:                1,
+	dropSchema:                        1,
+	alterDatabasePrimaryRegion:        0, // Disabled and tracked with #83831
+	alterTableRenameColumn:            1,
 	renameIndex:                       1,
 	renameSequence:                    1,
-	renameTable:                       1,
+	renameTable:                       0, // Disabled and tracked with #127980.
 	renameView:                        1,
+	alterTableSetColumnDefault:        1,
+	alterTableSetColumnNotNull:        1,
+	alterTableAlterColumnType:         0, // Disabled and tracked with #66662.
+	alterDatabaseSurvivalGoal:         0, // Disabled and tracked with #83831
 }
 
 // This workload will maintain its own list of minimal supported versions for
@@ -305,20 +286,18 @@ var opWeights = []int{
 // be downlevel. The declarative schema changer builder does have a supported
 // list, but it's not sufficient for that reason.
 var opDeclarativeVersion = map[opType]clusterversion.Key{
-	alterTableAddColumn:               clusterversion.MinSupported,
-	alterTableAddConstraintForeignKey: clusterversion.MinSupported,
-	alterTableAddConstraintUnique:     clusterversion.MinSupported,
-	alterTableDropColumn:              clusterversion.MinSupported,
-	alterTableDropConstraint:          clusterversion.MinSupported,
-	alterTableDropNotNull:             clusterversion.MinSupported,
-	alterTypeDropValue:                clusterversion.MinSupported,
-	commentOn:                         clusterversion.MinSupported,
-	createIndex:                       clusterversion.MinSupported,
-	createSchema:                      clusterversion.V23_2,
-	createSequence:                    clusterversion.MinSupported,
-	dropIndex:                         clusterversion.MinSupported,
-	dropSchema:                        clusterversion.MinSupported,
-	dropSequence:                      clusterversion.MinSupported,
-	dropTable:                         clusterversion.MinSupported,
-	dropView:                          clusterversion.MinSupported,
+	alterTableAddColumn:               clusterversion.BinaryMinSupportedVersionKey,
+	alterTableAddConstraintForeignKey: clusterversion.BinaryMinSupportedVersionKey,
+	alterTableAddConstraintUnique:     clusterversion.BinaryMinSupportedVersionKey,
+	alterTableDropColumn:              clusterversion.BinaryMinSupportedVersionKey,
+	alterTableDropConstraint:          clusterversion.BinaryMinSupportedVersionKey,
+	alterTableDropNotNull:             clusterversion.BinaryMinSupportedVersionKey,
+	alterTypeDropValue:                clusterversion.BinaryMinSupportedVersionKey,
+	createIndex:                       clusterversion.BinaryMinSupportedVersionKey,
+	createSequence:                    clusterversion.BinaryMinSupportedVersionKey,
+	dropIndex:                         clusterversion.BinaryMinSupportedVersionKey,
+	dropSchema:                        clusterversion.BinaryMinSupportedVersionKey,
+	dropSequence:                      clusterversion.BinaryMinSupportedVersionKey,
+	dropTable:                         clusterversion.BinaryMinSupportedVersionKey,
+	dropView:                          clusterversion.BinaryMinSupportedVersionKey,
 }

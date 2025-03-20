@@ -1,12 +1,7 @@
 // Copyright 2018 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package execbuilder
 
@@ -171,15 +166,21 @@ func (b *Builder) buildRelational(e memo.RelExpr) (execPlan, error) {
 	if opt.IsDDLOp(e) {
 		// Mark the statement as containing DDL for use
 		// in the SQL executor.
-		b.IsDDL = true
+		b.flags.Set(exec.PlanFlagIsDDL)
 	}
 
 	if opt.IsMutationOp(e) {
-		b.ContainsMutation = true
+		b.flags.Set(exec.PlanFlagContainsMutation)
 		// Raise error if mutation op is part of a read-only transaction.
 		if b.evalCtx.TxnReadOnly {
-			return execPlan{}, pgerror.Newf(pgcode.ReadOnlySQLTransaction,
-				"cannot execute %s in a read-only transaction", b.statementTag(e))
+			switch tag := b.statementTag(e); tag {
+			// DISCARD can drop temp tables but is still allowed in read-only
+			// transactions for PG compatibility.
+			case "DISCARD ALL", "DISCARD":
+			default:
+				return execPlan{}, pgerror.Newf(pgcode.ReadOnlySQLTransaction,
+					"cannot execute %s in a read-only transaction", tag)
+			}
 		}
 	}
 
@@ -620,7 +621,10 @@ func (b *Builder) scanParams(
 			err = pgerror.Newf(pgcode.WrongObjectType,
 				"index \"%s\" cannot be used for this query", idx.Name())
 			if b.evalCtx.SessionData().DisallowFullTableScans &&
-				(b.ContainsLargeFullTableScan || b.ContainsLargeFullIndexScan) {
+				(b.flags.IsSet(exec.PlanFlagContainsLargeFullTableScan) ||
+					b.flags.IsSet(exec.PlanFlagContainsLargeFullIndexScan)) {
+				// TODO(#123783): this code might need an adjustment for virtual
+				// tables.
 				err = errors.WithHint(err,
 					"try overriding the `disallow_full_table_scans` or increasing the `large_full_scan_rows` cluster/session settings",
 				)
@@ -759,25 +763,38 @@ func (b *Builder) buildScan(scan *memo.ScanExpr) (execPlan, error) {
 		}
 	}
 
+	if scan.Flags.ForceInvertedIndex && !scan.IsInvertedScan(md) {
+		return execPlan{}, fmt.Errorf("could not produce a query plan conforming to the FORCE_INVERTED_INDEX hint")
+	}
+
 	idx := tab.Index(scan.Index)
-	if idx.IsInverted() && len(scan.InvertedConstraint) == 0 {
+	if idx.IsInverted() && len(scan.InvertedConstraint) == 0 && scan.Constraint == nil {
 		return execPlan{},
-			errors.AssertionFailedf("expected inverted index scan to have an inverted constraint")
+			errors.AssertionFailedf("expected inverted index scan to have a constraint")
 	}
 	b.IndexesUsed = util.CombineUnique(b.IndexesUsed, []string{fmt.Sprintf("%d@%d", tab.ID(), idx.ID())})
 
-	// Save if we planned a full table/index scan on the builder so that the
-	// planner can be made aware later. We only do this for non-virtual tables.
+	// Save if we planned a full (large) table/index scan on the builder so that
+	// the planner can be made aware later. We only do this for non-virtual
+	// tables.
+	// TODO(#27611): consider doing this for virtual tables too once we have
+	// stats for them and adjust the comments if so.
+	// TODO(#123783): not setting the plan flags allows plans with full scans of
+	// virtual tables to not be rejected when disallow_full_table_scans is set.
 	relProps := scan.Relational()
 	stats := relProps.Statistics()
 	if !tab.IsVirtualTable() && isUnfiltered {
 		large := !stats.Available || stats.RowCount > b.evalCtx.SessionData().LargeFullScanRows
 		if scan.Index == cat.PrimaryIndex {
-			b.ContainsFullTableScan = true
-			b.ContainsLargeFullTableScan = b.ContainsLargeFullTableScan || large
+			b.flags.Set(exec.PlanFlagContainsFullTableScan)
+			if large {
+				b.flags.Set(exec.PlanFlagContainsLargeFullTableScan)
+			}
 		} else {
-			b.ContainsFullIndexScan = true
-			b.ContainsLargeFullIndexScan = b.ContainsLargeFullIndexScan || large
+			b.flags.Set(exec.PlanFlagContainsFullIndexScan)
+			if large {
+				b.flags.Set(exec.PlanFlagContainsLargeFullIndexScan)
+			}
 		}
 		if stats.Available && stats.RowCount > b.MaxFullScanRows {
 			b.MaxFullScanRows = stats.RowCount
@@ -1046,8 +1063,9 @@ func (b *Builder) buildProject(prj *memo.ProjectExpr) (execPlan, error) {
 	}
 
 	var res execPlan
-	exprs := make(tree.TypedExprs, 0, len(projections)+prj.Passthrough.Len())
-	cols := make(colinfo.ResultColumns, 0, len(exprs))
+	numExprs := len(projections) + prj.Passthrough.Len()
+	exprs := make(tree.TypedExprs, 0, numExprs)
+	cols := make(colinfo.ResultColumns, 0, numExprs)
 	ctx := input.makeBuildScalarCtx()
 	for i := range projections {
 		item := &projections[i]
@@ -1321,15 +1339,11 @@ func (b *Builder) buildHashJoin(join memo.RelExpr) (execPlan, error) {
 	rightExpr := join.Child(1).(memo.RelExpr)
 	filters := join.Child(2).(*memo.FiltersExpr)
 	if joinType == descpb.LeftSemiJoin || joinType == descpb.LeftAntiJoin {
-		// The execution engine always builds the hash table on the right side
-		// of the join, so it is beneficial for the smaller relation to be on
-		// the right. Note that the coster assumes that execbuilder will make
-		// this decision.
-		//
-		// There is no need to consider join hints here because there is no way
-		// to apply join hints to semi or anti joins. Join hints are only
-		// possible on explicit joins using the JOIN keyword, and semi and anti
-		// joins are only created from implicit joins without the JOIN keyword.
+		// We have a partial join, and we want to make sure that the relation
+		// with smaller cardinality is on the right side. Note that we assumed
+		// it during the costing.
+		// TODO(raduberinde): we might also need to look at memo.JoinFlags when
+		// choosing a side.
 		leftRowCount := leftExpr.Relational().Statistics().RowCount
 		rightRowCount := rightExpr.Relational().Statistics().RowCount
 		if leftRowCount < rightRowCount {
@@ -1587,7 +1601,7 @@ func (b *Builder) buildGroupBy(groupBy memo.RelExpr) (execPlan, error) {
 			agg = aggDistinct.Input
 		}
 
-		name, overload := memo.FindAggregateOverload(agg)
+		name, _ := memo.FindAggregateOverload(agg)
 
 		// Accumulate variable arguments in argCols and constant arguments in
 		// constArgs. Constant arguments must follow variable arguments.
@@ -1613,13 +1627,12 @@ func (b *Builder) buildGroupBy(groupBy memo.RelExpr) (execPlan, error) {
 		}
 
 		aggInfos[i] = exec.AggInfo{
-			FuncName:         name,
-			Distinct:         distinct,
-			ResultType:       item.Agg.DataType(),
-			ArgCols:          argCols,
-			ConstArgs:        constArgs,
-			Filter:           filterOrd,
-			DistsqlBlocklist: overload.DistsqlBlocklist,
+			FuncName:   name,
+			Distinct:   distinct,
+			ResultType: item.Agg.DataType(),
+			ArgCols:    argCols,
+			ConstArgs:  constArgs,
+			Filter:     filterOrd,
 		}
 		ep.outputCols.Set(int(item.Col), len(groupingColIdx)+i)
 	}
@@ -2942,10 +2955,10 @@ func (b *Builder) buildLocking(locking opt.Locking) (opt.Locking, error) {
 					!b.evalCtx.SessionData().SharedLockingForSerializable) {
 				// Reset locking information as we've determined we're going to be
 				// performing a non-locking read.
-				return opt.Locking{}, nil // early return; do not set b.ContainsNonDefaultKeyLocking
+				return opt.Locking{}, nil // early return; do not set PlanFlagContainsLocking
 			}
 		}
-		b.ContainsNonDefaultKeyLocking = true
+		b.flags.Set(exec.PlanFlagContainsLocking)
 	}
 	return locking, nil
 }
@@ -3052,7 +3065,10 @@ func (b *Builder) buildRecursiveCTE(rec *memo.RecursiveCTEExpr) (execPlan, error
 			return nil, err
 		}
 		rootRowCount := int64(rec.Recursive.Relational().Statistics().RowCountIfAvailable())
-		return innerBld.factory.ConstructPlan(plan.root, innerBld.subqueries, innerBld.cascades, innerBld.checks, rootRowCount)
+		return innerBld.factory.ConstructPlan(
+			plan.root, innerBld.subqueries, innerBld.cascades, innerBld.checks, rootRowCount,
+			innerBld.flags,
+		)
 	}
 
 	label := fmt.Sprintf("working buffer (%s)", rec.Name)
@@ -3167,7 +3183,7 @@ func (b *Builder) buildCall(c *memo.CallExpr) (execPlan, error) {
 
 	for _, s := range udf.Def.Body {
 		if s.Relational().CanMutate {
-			b.ContainsMutation = true
+			b.flags.Set(exec.PlanFlagContainsMutation)
 			break
 		}
 	}

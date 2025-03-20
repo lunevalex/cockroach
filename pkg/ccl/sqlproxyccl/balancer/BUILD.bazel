@@ -35,14 +35,12 @@ go_test(
         "conn_tracker_test.go",
         "pod_test.go",
     ],
+    args = ["-test.timeout=295s"],
     embed = [":balancer"],
-    exec_properties = select({
-        "//build/toolchains:is_heavy": {"Pool": "heavy"},
-        "//conditions:default": {"Pool": "default"},
-    }),
     tags = ["ccl_test"],
     deps = [
         "//pkg/ccl/sqlproxyccl/tenant",
+        "//pkg/ccl/testutilsccl",
         "//pkg/roachpb",
         "//pkg/testutils",
         "//pkg/util/leaktest",

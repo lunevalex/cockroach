@@ -1,12 +1,7 @@
 // Copyright 2015 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package sql_test
 
@@ -50,6 +45,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/isql"
 	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/pgcode"
 	"github.com/cockroachdb/cockroach/pkg/sql/schemachanger/scexec"
+	"github.com/cockroachdb/cockroach/pkg/sql/sem/eval"
 	"github.com/cockroachdb/cockroach/pkg/sql/sqltestutils"
 	"github.com/cockroachdb/cockroach/pkg/sql/stats"
 	"github.com/cockroachdb/cockroach/pkg/testutils"
@@ -57,6 +53,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/testutils/serverutils"
 	"github.com/cockroachdb/cockroach/pkg/testutils/skip"
 	"github.com/cockroachdb/cockroach/pkg/testutils/sqlutils"
+	"github.com/cockroachdb/cockroach/pkg/testutils/testcluster"
 	"github.com/cockroachdb/cockroach/pkg/util"
 	"github.com/cockroachdb/cockroach/pkg/util/ctxgroup"
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
@@ -85,13 +82,14 @@ import (
 func TestSchemaChangeProcess(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
-	// The descriptor changes made must have an immediate effect
-	// so disable leases on tables.
-	defer lease.TestingDisableTableLeases()()
 
 	params, _ := createTestServerParams()
 	s, sqlDB, kvDB := serverutils.StartServer(t, params)
 	defer s.Stopper().Stop(context.Background())
+
+	// The descriptor changes made must have an immediate effect
+	// so disable leases on tables.
+	defer lease.TestingDisableTableLeases()()
 
 	var instance = base.SQLInstanceID(2)
 	stopper := stop.NewStopper()
@@ -105,7 +103,6 @@ func TestSchemaChangeProcess(t *testing.T) {
 		execCfg.Clock,
 		execCfg.Settings,
 		s.SettingsWatcher().(*settingswatcher.SettingsWatcher),
-		execCfg.SQLLiveness,
 		execCfg.Codec,
 		lease.ManagerTestingKnobs{},
 		stopper,
@@ -213,9 +210,6 @@ INSERT INTO t.test VALUES ('a', 'b'), ('c', 'd');
 func TestAsyncSchemaChanger(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
-	// The descriptor changes made must have an immediate effect
-	// so disable leases on tables.
-	defer lease.TestingDisableTableLeases()()
 	// Disable synchronous schema change execution so the asynchronous schema
 	// changer executes all schema changes.
 	params, _ := createTestServerParams()
@@ -230,6 +224,10 @@ INSERT INTO t.test VALUES ('a', 'b'), ('c', 'd');
 `); err != nil {
 		t.Fatal(err)
 	}
+
+	// The descriptor changes made must have an immediate effect
+	// so disable leases on tables.
+	defer lease.TestingDisableTableLeases()()
 
 	// Read table descriptor for version.
 	tableDesc := desctestutils.TestingGetMutableExistingTableDescriptor(
@@ -602,6 +600,11 @@ func TestRaceWithBackfill(t *testing.T) {
 				return nil
 			},
 		},
+		SQLEvalContext: &eval.TestingKnobs{
+			// This prevents using a small kv-batch-size, which is suspected
+			// of causing the test to time out when run with race detection enabled.
+			ForceProductionValues: true,
+		},
 	}
 
 	tc := serverutils.StartCluster(t, numNodes,
@@ -640,14 +643,17 @@ CREATE UNIQUE INDEX vidx ON t.test (v);
 
 	ctx := context.Background()
 
-	// number of keys == 2 * number of rows; 1 column family and 1 index entry
-	// for each row.
-	if err := sqltestutils.CheckTableKeyCount(ctx, kvDB, codec, 2, maxValue); err != nil {
-		t.Fatal(err)
-	}
-	if err := sqlutils.RunScrub(sqlDB, "t", "test"); err != nil {
-		t.Fatal(err)
-	}
+	testutils.SucceedsSoon(t, func() error {
+		// number of keys == 2 * number of rows; 1 column family and 1 index entry
+		// for each row.
+		if err := sqltestutils.CheckTableKeyCount(ctx, kvDB, codec, 2, maxValue); err != nil {
+			return err
+		}
+		if err := sqlutils.RunScrub(sqlDB, "t", "test"); err != nil {
+			return err
+		}
+		return nil
+	})
 
 	// Run some schema changes with operations.
 
@@ -4314,8 +4320,8 @@ SET CLUSTER SETTING kv.closed_timestamp.target_duration = '20s'
 	// A large enough value that the backfills run as part of the
 	// schema change run in many chunks.
 	var maxValue = 4001
-	if util.RaceEnabled {
-		// Race builds are a lot slower, so use a smaller number of rows.
+	if util.RaceEnabled || syncutil.DeadlockEnabled {
+		// Race and deadlock builds are a lot slower, so use a smaller number of rows.
 		maxValue = 200
 	}
 
@@ -5066,7 +5072,8 @@ CREATE TABLE t.test (a INT, b INT, c JSON, d JSON);
 func TestCreateStatsAfterSchemaChange(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
-	skip.UnderRace(t, "sometimes the timer in stats.Refresher doesn't fire fast enough under race")
+
+	skip.UnderDuress(t, "sometimes the timer in stats.Refresher doesn't fire fast enough under custom configs")
 
 	defer func(oldRefreshInterval, oldAsOf time.Duration) {
 		stats.DefaultRefreshInterval = oldRefreshInterval
@@ -6718,30 +6725,31 @@ func TestClockSyncErrorsAreNotPermanent(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
 
-	var s serverutils.TestServerInterface
-	var conn *gosql.DB
+	var tc serverutils.TestClusterInterface
 	ctx := context.Background()
 	var updatedClock int64 // updated with atomics
-	s, conn, _ = serverutils.StartServer(t, base.TestServerArgs{
-		Knobs: base.TestingKnobs{
-			DistSQL: &execinfra.TestingKnobs{
-				RunBeforeBackfillChunk: func(sp roachpb.Span) error {
-					if atomic.AddInt64(&updatedClock, 1) > 1 {
-						return nil
-					}
-					clock := s.ApplicationLayer().Clock()
-					now := clock.Now()
-					farInTheFuture := now.Add(time.Hour.Nanoseconds(), 0)
+	tc = testcluster.StartTestCluster(t, 1, base.TestClusterArgs{
+		ServerArgs: base.TestServerArgs{
+			Knobs: base.TestingKnobs{
+				DistSQL: &execinfra.TestingKnobs{
+					RunBeforeBackfillChunk: func(sp roachpb.Span) error {
+						if atomic.AddInt64(&updatedClock, 1) > 1 {
+							return nil
+						}
+						clock := tc.Server(0).Clock()
+						now := clock.Now()
+						farInTheFuture := now.Add(time.Hour.Nanoseconds(), 0)
 
-					return clock.UpdateAndCheckMaxOffset(ctx, farInTheFuture.UnsafeToClockTimestamp())
+						return clock.UpdateAndCheckMaxOffset(ctx, farInTheFuture.UnsafeToClockTimestamp())
+					},
 				},
+				JobsTestingKnobs: jobs.NewTestingKnobsWithShortIntervals(),
 			},
-			JobsTestingKnobs: jobs.NewTestingKnobsWithShortIntervals(),
 		},
 	})
-	defer s.Stopper().Stop(ctx)
+	defer tc.Stopper().Stop(ctx)
 
-	tdb := sqlutils.MakeSQLRunner(conn)
+	tdb := sqlutils.MakeSQLRunner(tc.ServerConn(0))
 	tdb.Exec(t, `CREATE TABLE t (i INT PRIMARY KEY)`)
 	// Before the commit which added this test, the below command would fail
 	// due to a permanent error.

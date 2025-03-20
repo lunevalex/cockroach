@@ -1,12 +1,7 @@
 // Copyright 2019 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package colflow
 
@@ -969,14 +964,12 @@ func (s *vectorizedFlowCreator) setupInput(
 	opWithMetaInfo := inputStreamOps[0]
 	if len(inputStreamOps) > 1 {
 		statsInputs := inputStreamOps
+		allocator := colmem.NewAllocator(ctx, s.monitorRegistry.NewStreamingMemAccount(flowCtx), factory)
 		if input.Type == execinfrapb.InputSyncSpec_ORDERED {
 			os := colexec.NewOrderedSynchronizer(
-				flowCtx,
-				processorID,
-				colmem.NewAllocator(ctx, s.monitorRegistry.NewStreamingMemAccount(flowCtx), factory),
-				execinfra.GetWorkMemLimit(flowCtx), inputStreamOps,
-				input.ColumnTypes, execinfrapb.ConvertToColumnOrdering(input.Ordering),
-				0, /* tuplesToMerge */
+				flowCtx, processorID, allocator, execinfra.GetWorkMemLimit(flowCtx),
+				inputStreamOps, input.ColumnTypes,
+				execinfrapb.ConvertToColumnOrdering(input.Ordering), 0, /* tuplesToMerge */
 			)
 			opWithMetaInfo = colexecargs.OpWithMetaInfo{
 				Root:            os,
@@ -991,7 +984,10 @@ func (s *vectorizedFlowCreator) setupInput(
 					err = execinfra.NewDynamicQueryHasNoHomeRegionError(err)
 				}
 			}
-			sync := colexec.NewSerialUnorderedSynchronizer(flowCtx, processorID, inputStreamOps, input.EnforceHomeRegionStreamExclusiveUpperBound, err)
+			sync := colexec.NewSerialUnorderedSynchronizer(
+				flowCtx, processorID, allocator, input.ColumnTypes, inputStreamOps,
+				input.EnforceHomeRegionStreamExclusiveUpperBound, err,
+			)
 			opWithMetaInfo = colexecargs.OpWithMetaInfo{
 				Root:            sync,
 				MetadataSources: colexecop.MetadataSources{sync},
@@ -1001,8 +997,9 @@ func (s *vectorizedFlowCreator) setupInput(
 			// Note that if we have opt == flowinfra.FuseAggressively, then we
 			// must use the serial unordered sync above in order to remove any
 			// concurrency.
-			allocator := colmem.NewAllocator(ctx, s.monitorRegistry.NewStreamingMemAccount(flowCtx), factory)
-			sync := colexec.NewParallelUnorderedSynchronizer(flowCtx, processorID, allocator, inputStreamOps, s.f.GetWaitGroup())
+			sync := colexec.NewParallelUnorderedSynchronizer(
+				flowCtx, processorID, allocator, input.ColumnTypes, inputStreamOps, s.f.GetWaitGroup(),
+			)
 			opWithMetaInfo = colexecargs.OpWithMetaInfo{
 				Root:            sync,
 				MetadataSources: colexecop.MetadataSources{sync},

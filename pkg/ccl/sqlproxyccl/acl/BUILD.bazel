@@ -36,15 +36,13 @@ go_test(
         "private_endpoints_test.go",
         "watcher_test.go",
     ],
+    args = ["-test.timeout=295s"],
     embed = [":acl"],
-    exec_properties = select({
-        "//build/toolchains:is_heavy": {"Pool": "heavy"},
-        "//conditions:default": {"Pool": "default"},
-    }),
     tags = ["ccl_test"],
     deps = [
         "//pkg/ccl/sqlproxyccl/tenant",
         "//pkg/ccl/sqlproxyccl/tenantdirsvr",
+        "//pkg/ccl/testutilsccl",
         "//pkg/roachpb",
         "//pkg/testutils",
         "//pkg/util/leaktest",

@@ -24,10 +24,7 @@ go_test(
         "idx_recommendations_cache_test.go",
         "main_test.go",
     ],
-    exec_properties = select({
-        "//build/toolchains:is_heavy": {"Pool": "heavy"},
-        "//conditions:default": {"Pool": "default"},
-    }),
+    args = ["-test.timeout=295s"],
     deps = [
         ":idxrecommendations",
         "//pkg/base",

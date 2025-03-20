@@ -1,12 +1,7 @@
 // Copyright 2016 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package flowinfra
 
@@ -189,7 +184,7 @@ func (m *Outbox) flush(ctx context.Context) error {
 		HandleStreamErr(ctx, "flushing", sendErr, m.flowCtxCancel, m.outboxCtxCancel)
 		// Make sure the stream is not used any more.
 		m.stream = nil
-		log.VWarningf(ctx, 1, "Outbox flush error: %s", sendErr)
+		log.VErrEventf(ctx, 1, "Outbox flush error: %s", sendErr)
 	} else {
 		log.VEvent(ctx, 2, "Outbox flushed")
 	}
@@ -240,7 +235,10 @@ func (m *Outbox) mainLoop(ctx context.Context, wg *sync.WaitGroup) (retErr error
 			ctx, m.flowCtx.Cfg.SQLInstanceDialer, m.sqlInstanceID, SettingFlowStreamTimeout.Get(&m.flowCtx.Cfg.Settings.SV),
 		)
 		if err != nil {
-			log.VWarningf(ctx, 1, "Outbox Dial connection error, distributed query will fail: %+v", err)
+			// Log any Dial errors. This does not have a verbosity check due to being
+			// a critical part of query execution: if this step doesn't work, the
+			// receiving side might end up hanging or timing out.
+			log.Infof(ctx, "outbox: connection dial error: %+v", err)
 			return err
 		}
 		client := execinfrapb.NewDistSQLClient(conn)
@@ -249,7 +247,9 @@ func (m *Outbox) mainLoop(ctx context.Context, wg *sync.WaitGroup) (retErr error
 		}
 		m.stream, err = client.FlowStream(ctx)
 		if err != nil {
-			log.VWarningf(ctx, 1, "Outbox FlowStream connection error, distributed query will fail: %+v", err)
+			if log.V(1) {
+				log.Infof(ctx, "FlowStream error: %s", err)
+			}
 			return err
 		}
 		return nil

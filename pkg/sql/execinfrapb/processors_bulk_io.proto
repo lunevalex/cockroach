@@ -1,12 +1,7 @@
 // Copyright 2019 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 //
 // Processor definitions for distributed SQL APIs. See
 // docs/RFCS/distributed_sql.md.
@@ -322,9 +317,6 @@ message RestoreFileSpec {
   optional roachpb.Span backup_file_entry_span = 5 [(gogoproto.nullable) = false];
   optional roachpb.RowCount backup_file_entry_counts = 6 [(gogoproto.nullable) = false];
   optional uint64 backing_file_size = 7 [(gogoproto.nullable) = false];
-  optional uint64 approximate_physical_size = 8 [(gogoproto.nullable) = false];
-  
-  // NEXT ID: 9.
 }
 
 message TableRekey {
@@ -447,7 +439,11 @@ message GenerativeSplitAndScatterSpec {
   optional int64 job_id = 18 [(gogoproto.nullable) = false, (gogoproto.customname) = "JobID"];
   optional bool use_frontier_checkpointing = 20 [(gogoproto.nullable) = false];
   repeated jobs.jobspb.RestoreProgress.FrontierEntry checkpointed_spans = 21 [(gogoproto.nullable) = false];
-
+  // MaxFileCount is the max number of files in an extending restore span entry.
+  optional int64 max_file_count = 22 [(gogoproto.nullable) = false];
+  // SQLInstanceIDs is a slice of SQL instance IDs available for dist restore.
+  // Set field ID to 24 to be forward compatible with future versions.
+  repeated int32 sql_instance_ids = 24[(gogoproto.nullable) = false, (gogoproto.customname) = "SQLInstanceIDs"];
   reserved 19;
 }
 

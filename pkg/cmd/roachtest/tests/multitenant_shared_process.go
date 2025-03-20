@@ -1,12 +1,7 @@
 // Copyright 2023 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package tests
 
@@ -27,7 +22,7 @@ func registerMultiTenantSharedProcess(r registry.Registry) {
 
 	r.Add(registry.TestSpec{
 		Name:             "multitenant/shared-process/basic",
-		Owner:            registry.OwnerMultiTenant,
+		Owner:            registry.OwnerDisasterRecovery,
 		Cluster:          r.MakeClusterSpec(crdbNodeCount + 1),
 		Leases:           registry.MetamorphicLeases,
 		CompatibleClouds: registry.AllExceptAWS,
@@ -44,21 +39,21 @@ func registerMultiTenantSharedProcess(r registry.Registry) {
 
 			// In order to observe the app tenant's db console, create a secure
 			// cluster and add Admin roles to the system and app tenant.
-			clusterSettings := install.MakeClusterSettings(install.SecureOption(true))
+			clusterSettings := install.MakeClusterSettings()
 			c.Start(ctx, t.L(), option.DefaultStartOpts(), clusterSettings, crdbNodes)
 
-			startOpts := option.DefaultStartSharedVirtualClusterOpts(appTenantName)
-			c.StartServiceForVirtualCluster(ctx, t.L(), crdbNodes, startOpts, clusterSettings, crdbNodes)
+			startOpts := option.StartSharedVirtualClusterOpts(appTenantName)
+			c.StartServiceForVirtualCluster(ctx, t.L(), startOpts, clusterSettings)
 
 			t.Status(`initialize tpcc workload`)
 			initCmd := fmt.Sprintf(`./workload init tpcc --data-loader import --warehouses %d {pgurl%s:%s}`,
 				tpccWarehouses, crdbNodes, appTenantName)
-			c.Run(ctx, option.WithNodes(workloadNode), initCmd)
+			c.Run(ctx, workloadNode, initCmd)
 
 			t.Status(`run tpcc workload`)
 			runCmd := fmt.Sprintf(`./workload run tpcc --warehouses %d --tolerate-errors --duration 10m {pgurl%s:%s}`,
 				tpccWarehouses, crdbNodes, appTenantName)
-			c.Run(ctx, option.WithNodes(workloadNode), runCmd)
+			c.Run(ctx, workloadNode, runCmd)
 		},
 	})
 }

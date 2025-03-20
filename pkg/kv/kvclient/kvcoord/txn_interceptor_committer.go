@@ -1,12 +1,7 @@
 // Copyright 2018 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package kvcoord
 
@@ -480,10 +475,6 @@ func (tc *txnCommitter) retryTxnCommitAfterFailedParallelCommit(
 	br.Responses[etIdx] = kvpb.ResponseUnion{}
 	if err := br.Combine(ctx, brSuffix, []int{etIdx}, ba); err != nil {
 		return nil, kvpb.NewError(err)
-	}
-	if br.Txn == nil || !br.Txn.Status.IsFinalized() {
-		return nil, kvpb.NewError(errors.AssertionFailedf(
-			"txn status not finalized after successful retried EndTxn: %v", br.Txn))
 	}
 	return br, nil
 }

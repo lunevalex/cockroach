@@ -37,15 +37,11 @@ go_test(
         "signal_test.go",
         ":latch_interval_btree_test.go",  # keep
     ],
+    args = ["-test.timeout=895s"],
     embed = [":spanlatch"],
-    exec_properties = select({
-        "//build/toolchains:is_heavy": {"Pool": "heavy"},
-        "//conditions:default": {"Pool": "default"},
-    }),
     shard_count = 16,
     deps = [
         "//pkg/keys",
-        "//pkg/kv/kvpb",
         "//pkg/kv/kvserver/concurrency/poison",
         "//pkg/kv/kvserver/spanset",
         "//pkg/roachpb",
@@ -54,7 +50,6 @@ go_test(
         "//pkg/util/leaktest",
         "//pkg/util/timeutil",  # keep
         "@com_github_cockroachdb_errors//:errors",
-        "@com_github_cockroachdb_redact//:redact",
         "@com_github_stretchr_testify//require",
     ],
 )

@@ -1,12 +1,7 @@
 // Copyright 2023 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package server_test
 
@@ -181,6 +176,17 @@ func TestSpanStatsFanOut(t *testing.T) {
 				return errors.Newf(
 					"Multi-span: expected %d keys in span [%s - %s], found %d",
 					tcase.expectedKeys,
+					rSpan.Key.String(),
+					rSpan.EndKey.String(),
+					spanStats.TotalStats.LiveCount,
+				)
+			}
+
+			approxKeys := numNodes * tcase.expectedKeys
+			if approxKeys != spanStats.ApproximateTotalStats.LiveCount {
+				return errors.Newf(
+					"Multi-span: expected %d post-replicated keys in span [%s - %s], found %d",
+					approxKeys,
 					rSpan.Key.String(),
 					rSpan.EndKey.String(),
 					spanStats.TotalStats.LiveCount,

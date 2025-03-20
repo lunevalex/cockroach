@@ -1,12 +1,7 @@
 // Copyright 2014 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package batcheval
 
@@ -52,7 +47,7 @@ func declareKeysComputeChecksum(
 
 // ReplicaChecksumVersion versions the checksum computation. Requests silently no-op
 // unless the versions between the requesting and requested replica are compatible.
-const ReplicaChecksumVersion = 5
+const ReplicaChecksumVersion = 4
 
 // ComputeChecksum starts the process of computing a checksum on the replica at
 // a particular snapshot. The checksum is later verified through a

@@ -1,12 +1,7 @@
 // Copyright 2023 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 import {
   combineQueryErrors,
@@ -58,8 +53,7 @@ export function newTableDetailsResponse(): TableDetailsResponse {
         live_percentage: 0,
       },
       replicaData: {
-        nodeIDs: [],
-        nodeCount: 0,
+        storeIDs: [],
         replicaCount: 0,
       },
       indexStats: {
@@ -345,7 +339,7 @@ const getTableHeuristicsDetails: TableDetailsQuery<TableHeuristicDetailsRow> = {
     );
     return {
       sql: Format(
-        `SELECT max(created) AS created FROM [SHOW STATISTICS FOR TABLE %1]`,
+        `SELECT max(created) AS stats_last_created_at FROM [SHOW STATISTICS FOR TABLE %1]`,
         [escFullTableName],
       ),
     };
@@ -420,53 +414,59 @@ const getTableSpanStats: TableDetailsQuery<TableSpanStatsRow> = {
 };
 
 export type TableReplicaData = SqlApiQueryResponse<{
-  nodeIDs: number[];
-  nodeCount: number;
+  storeIDs: number[];
   replicaCount: number;
 }>;
 
 // Table replicas.
 type TableReplicasRow = {
-  replicas: number[];
+  store_ids: number[];
+  replica_count: number;
 };
 
-const getTableReplicas: TableDetailsQuery<TableReplicasRow> = {
+// This query is used to get the store ids for which replicas for a table
+// are stored.
+const getTableReplicaStoreIDs: TableDetailsQuery<TableReplicasRow> = {
   createStmt: (dbName, tableName) => {
-    const escFullTableName = Join(
+    // (xinhaoz) Note that the table name provided here is in an escaped string of the
+    // form <schema>.<table>, and is the result of formatting the retrieved schema and
+    // table name using QualifiedIdentifier.
+    //
+    // Currently we create a QualifiedIdentifier from the table name and schema
+    // immediately upon receiving the request, extracting the escaped string to use
+    // throughout the pages - this It can be unclear what format the table name is in
+    // at any given time and makes formatting less flexible. We should consider either storing
+    // the schema and table names separately and only creating the QualifiedIdentifier as
+    // needed, or otherwise indicate through better variable naming the table name format.
+    const sqlFullTableName = Join(
       [new Identifier(dbName), new SQL(tableName)],
       new SQL("."),
     );
     return {
       sql: Format(
-        `WITH tableId AS (SELECT $1::regclass::int as table_id)
-        SELECT
-            r.replicas
-          FROM %1.crdb_internal.table_spans as ts
-          JOIN tableId ON ts.descriptor_id = tableId.table_id
-          JOIN crdb_internal.ranges_no_leases as r ON ts.start_key < r.end_key AND ts.end_key > r.start_key`,
-        [new Identifier(dbName)],
+        `
+          SELECT count(unnested) AS replica_count, array_agg(DISTINCT unnested) AS store_ids
+          FROM [SHOW RANGES FROM TABLE %1], unnest(replicas) AS unnested;
+`,
+        [sqlFullTableName],
       ),
-      arguments: [escFullTableName.SQLString()],
     };
   },
   addToTableDetail: (
     txn_result: SqlTxnResult<TableReplicasRow>,
     resp: TableDetailsResponse,
   ) => {
-    // Build set of unique replicas for this database.
-    const replicas = new Set<number>();
-    // If rows are not null or empty...
-    if (!txnResultIsEmpty(txn_result)) {
-      txn_result.rows.forEach(row => {
-        row.replicas.forEach(replicas.add, replicas);
-      });
-      // Currently we use replica ids as node ids.
-      resp.stats.replicaData.replicaCount = replicas.size;
-      resp.stats.replicaData.nodeCount = replicas.size;
-      resp.stats.replicaData.nodeIDs = Array.from(replicas.values());
-    }
     if (txn_result.error) {
       resp.stats.replicaData.error = txn_result.error;
+      // We don't expect to have any rows for this query on error.
+      return;
+    }
+
+    // TODO #118957 (xinhaoz) Store IDs and node IDs cannot be used interchangeably.
+    if (!txnResultIsEmpty(txn_result)) {
+      resp.stats.replicaData.storeIDs = txn_result?.rows[0]?.store_ids ?? [];
+      resp.stats.replicaData.replicaCount =
+        txn_result?.rows[0]?.replica_count ?? 0;
     }
   },
 };
@@ -554,7 +554,7 @@ const tableDetailQueries: TableDetailsQuery<TableDetailsRow>[] = [
   getTableSpanStats,
   getTableIndexUsageStats,
   getTableZoneConfig,
-  getTableReplicas,
+  getTableReplicaStoreIDs,
 ];
 
 export function createTableDetailsReq(

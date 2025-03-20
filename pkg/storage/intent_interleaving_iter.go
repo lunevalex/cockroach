@@ -1,18 +1,12 @@
 // Copyright 2020 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package storage
 
 import (
 	"bytes"
-	"context"
 	"fmt"
 	"math/rand"
 	"sync"
@@ -68,16 +62,16 @@ var intentInterleavingReaderPool = sync.Pool{
 // NewMVCCIterator implements the Reader interface. The
 // intentInterleavingReader can be freed once this method returns.
 func (imr *intentInterleavingReader) NewMVCCIterator(
-	ctx context.Context, iterKind MVCCIterKind, opts IterOptions,
+	iterKind MVCCIterKind, opts IterOptions,
 ) (MVCCIterator, error) {
 	if (!opts.MinTimestamp.IsEmpty() || !opts.MaxTimestamp.IsEmpty()) &&
 		iterKind == MVCCKeyAndIntentsIterKind {
 		panic("cannot ask for interleaved intents when specifying timestamp hints")
 	}
 	if iterKind == MVCCKeyIterKind || opts.KeyTypes == IterKeyTypeRangesOnly {
-		return imr.wrappableReader.NewMVCCIterator(ctx, MVCCKeyIterKind, opts)
+		return imr.wrappableReader.NewMVCCIterator(MVCCKeyIterKind, opts)
 	}
-	return newIntentInterleavingIterator(ctx, imr.wrappableReader, opts)
+	return newIntentInterleavingIterator(imr.wrappableReader, opts)
 }
 
 func (imr *intentInterleavingReader) Free() {
@@ -233,9 +227,7 @@ func isLocal(k roachpb.Key) bool {
 	return k.Compare(keys.LocalMax) < 0
 }
 
-func newIntentInterleavingIterator(
-	ctx context.Context, reader Reader, opts IterOptions,
-) (MVCCIterator, error) {
+func newIntentInterleavingIterator(reader Reader, opts IterOptions) (MVCCIterator, error) {
 	if !opts.MinTimestamp.IsEmpty() || !opts.MaxTimestamp.IsEmpty() {
 		panic("intentInterleavingIter must not be used with timestamp hints")
 	}
@@ -291,15 +283,14 @@ func newIntentInterleavingIterator(
 	// iterator for point keys only, or return a normal MVCC iterator if only
 	// range keys are requested.
 	if opts.KeyTypes == IterKeyTypeRangesOnly {
-		return reader.NewMVCCIterator(ctx, MVCCKeyIterKind, opts)
+		return reader.NewMVCCIterator(MVCCKeyIterKind, opts)
 	}
 
 	iiIter := intentInterleavingIterPool.Get().(*intentInterleavingIter)
 	intentKeyBuf := iiIter.intentKeyBuf
 	intentLimitKeyBuf := iiIter.intentLimitKeyBuf
 
-	ltOpts := LockTableIteratorOptions{
-		Prefix: opts.Prefix, MatchMinStr: lock.Intent, ReadCategory: opts.ReadCategory}
+	ltOpts := LockTableIteratorOptions{Prefix: opts.Prefix, MatchMinStr: lock.Intent}
 	if opts.LowerBound != nil {
 		ltOpts.LowerBound, intentKeyBuf = keys.LockTableSingleKey(opts.LowerBound, intentKeyBuf)
 	} else if !opts.Prefix {
@@ -320,7 +311,7 @@ func newIntentInterleavingIterator(
 
 	// Note that we can reuse intentKeyBuf, intentLimitKeyBuf after
 	// NewLockTableIter returns.
-	intentIter, err := NewLockTableIterator(ctx, reader, ltOpts)
+	intentIter, err := NewLockTableIterator(reader, ltOpts)
 	if err != nil {
 		return nil, err
 	}
@@ -331,13 +322,13 @@ func newIntentInterleavingIterator(
 	// and we use that when possible to save allocations).
 	var iter *pebbleIterator
 	if reader.ConsistentIterators() {
-		mvccIter, err := reader.NewMVCCIterator(ctx, MVCCKeyIterKind, opts)
+		mvccIter, err := reader.NewMVCCIterator(MVCCKeyIterKind, opts)
 		if err != nil {
 			return nil, err
 		}
 		iter = maybeUnwrapUnsafeIter(mvccIter).(*pebbleIterator)
 	} else {
-		iter = newPebbleIteratorByCloning(ctx, intentIter.CloneContext(), opts, StandardDurability)
+		iter = newPebbleIteratorByCloning(intentIter.CloneContext(), opts, StandardDurability)
 	}
 
 	*iiIter = intentInterleavingIter{

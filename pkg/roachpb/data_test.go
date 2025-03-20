@@ -1,12 +1,7 @@
 // Copyright 2014 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package roachpb
 
@@ -54,6 +49,14 @@ func makeTS(walltime int64, logical int32) hlc.Timestamp {
 	return hlc.Timestamp{
 		WallTime: walltime,
 		Logical:  logical,
+	}
+}
+
+func makeSynTS(walltime int64, logical int32) hlc.Timestamp {
+	return hlc.Timestamp{
+		WallTime:  walltime,
+		Logical:   logical,
+		Synthetic: true,
 	}
 }
 
@@ -360,13 +363,6 @@ func TestValueChecksumWithBytes(t *testing.T) {
 	}
 }
 
-func TestValueGetErrorsRedacted(t *testing.T) {
-	v := MakeValueFromString("Hello world")
-	_, err := v.GetInt()
-	require.EqualError(t, err, "value type is not INT: BYTES")
-	require.Equal(t, string(redact.Sprintf("%s %s", err, "sensitive").Redact()), "value type is not INT: BYTES ‹×›")
-}
-
 func TestSetGetChecked(t *testing.T) {
 	v := Value{}
 
@@ -543,22 +539,23 @@ var nonZeroTxn = Transaction{
 		Key:               Key("foo"),
 		IsoLevel:          isolation.Snapshot,
 		Epoch:             2,
-		WriteTimestamp:    makeTS(20, 21),
-		MinTimestamp:      makeTS(10, 11),
+		WriteTimestamp:    makeSynTS(20, 21),
+		MinTimestamp:      makeSynTS(10, 11),
 		Priority:          957356782,
 		Sequence:          123,
 		CoordinatorNodeID: 3,
 	},
 	Name:                   "name",
 	Status:                 COMMITTED,
-	LastHeartbeat:          makeTS(1, 2),
-	ReadTimestamp:          makeTS(20, 22),
-	GlobalUncertaintyLimit: makeTS(40, 41),
+	LastHeartbeat:          makeSynTS(1, 2),
+	ReadTimestamp:          makeSynTS(20, 22),
+	GlobalUncertaintyLimit: makeSynTS(40, 41),
 	ObservedTimestamps: []ObservedTimestamp{{
 		NodeID: 1,
 		Timestamp: hlc.ClockTimestamp{
-			WallTime: 1,
-			Logical:  2,
+			WallTime:  1,
+			Logical:   2,
+			Synthetic: true, // normally not set, but needed for zerofields.NoZeroField
 		},
 	}},
 	WriteTooOld:        true,
@@ -764,6 +761,17 @@ func TestTransactionUpdateAbortedOldEpoch(t *testing.T) {
 	}
 }
 
+// TestTransactionUpdateFromRecord tests that updating a transaction with
+// another transaction, derived from a TransactionRecord proto, does not
+// overwrite non-zero fields in the original Transaction.
+func TestTransactionUpdateFromRecord(t *testing.T) {
+	txn := nonZeroTxn
+	txnRecord := txn.AsRecord()
+	txnFromRecord := txnRecord.AsTransaction()
+	txn.Update(&txnFromRecord)
+	require.Equal(t, nonZeroTxn, txn)
+}
+
 func TestTransactionClone(t *testing.T) {
 	txnPtr := nonZeroTxn.Clone()
 	txn := *txnPtr
@@ -929,7 +937,7 @@ func TestMakePriority(t *testing.T) {
 	}
 
 	// Generate values for all priorities.
-	const trials = 750000
+	const trials = 1000000
 	values := make([][trials]enginepb.TxnPriority, len(userPs))
 	for i, userPri := range userPs {
 		for tr := 0; tr < trials; tr++ {
@@ -1032,15 +1040,11 @@ func TestLeaseEquivalence(t *testing.T) {
 	ts3 := makeClockTS(3, 1)
 
 	epoch1 := Lease{Replica: r1, Start: ts1, Epoch: 1}
-	epoch1R2 := Lease{Replica: r2, Start: ts1, Epoch: 1}
-	epoch1TS2 := Lease{Replica: r1, Start: ts2, Epoch: 1}
 	epoch2 := Lease{Replica: r1, Start: ts1, Epoch: 2}
-	epoch2R2TS2 := Lease{Replica: r2, Start: ts2, Epoch: 2}
 	expire1 := Lease{Replica: r1, Start: ts1, Expiration: ts2.ToTimestamp().Clone()}
-	expire1R2 := Lease{Replica: r2, Start: ts1, Expiration: ts2.ToTimestamp().Clone()}
-	expire1TS2 := Lease{Replica: r1, Start: ts2, Expiration: ts2.ToTimestamp().Clone()}
 	expire2 := Lease{Replica: r1, Start: ts1, Expiration: ts3.ToTimestamp().Clone()}
-	expire2R2TS2 := Lease{Replica: r2, Start: ts2, Expiration: ts3.ToTimestamp().Clone()}
+	epoch2TS2 := Lease{Replica: r2, Start: ts2, Epoch: 2}
+	expire2TS2 := Lease{Replica: r2, Start: ts2, Expiration: ts3.ToTimestamp().Clone()}
 
 	proposed1 := Lease{Replica: r1, Start: ts1, Epoch: 1, ProposedTS: &ts1}
 	proposed2 := Lease{Replica: r1, Start: ts1, Epoch: 2, ProposedTS: &ts1}
@@ -1061,21 +1065,13 @@ func TestLeaseEquivalence(t *testing.T) {
 	}{
 		{epoch1, epoch1, true},             // same epoch lease
 		{expire1, expire1, true},           // same expiration lease
-		{epoch1, epoch1R2, false},          // different epoch leases
-		{epoch1, epoch1TS2, false},         // different epoch leases
 		{epoch1, epoch2, false},            // different epoch leases
-		{epoch1, epoch2R2TS2, false},       // different epoch leases
-		{expire1, expire1R2, false},        // different expiration leases
-		{expire1, expire1TS2, false},       // different expiration leases
-		{expire1, expire2R2TS2, false},     // different expiration leases
+		{epoch1, epoch2TS2, false},         // different epoch leases
+		{expire1, expire2TS2, false},       // different expiration leases
 		{expire1, expire2, true},           // same expiration lease, extended
 		{expire2, expire1, false},          // same expiration lease, extended but backwards
-		{epoch1, expire1, false},           // epoch and expiration leases, same replica and start time
-		{epoch1, expire1R2, false},         // epoch and expiration leases, different replica
-		{epoch1, expire1TS2, false},        // epoch and expiration leases, different start time
-		{expire1, epoch1, true},            // expiration and epoch leases, same replica and start time
-		{expire1, epoch1R2, false},         // expiration and epoch leases, different replica
-		{expire1, epoch1TS2, false},        // expiration and epoch leases, different start time
+		{epoch1, expire1, false},           // epoch and expiration leases
+		{expire1, epoch1, false},           // expiration and epoch leases
 		{proposed1, proposed1, true},       // exact leases with identical timestamps
 		{proposed1, proposed2, false},      // same proposed timestamps, but diff epochs
 		{proposed1, proposed3, true},       // different proposed timestamps, same lease
@@ -1086,13 +1082,8 @@ func TestLeaseEquivalence(t *testing.T) {
 	}
 
 	for i, tc := range testCases {
-		// Test expToEpochEquiv = true.
-		require.Equal(t, tc.expSuccess, tc.l.Equivalent(tc.ol, true /* expToEpochEquiv */), "%d", i)
-		if tc.l == expire1 && tc.ol == epoch1 {
-			// The one case where expToEpochEquiv = false makes a difference.
-			require.Equal(t, !tc.expSuccess, tc.l.Equivalent(tc.ol, false /* expToEpochEquiv */), "%d", i)
-		} else {
-			require.Equal(t, tc.expSuccess, tc.l.Equivalent(tc.ol, false /* expToEpochEquiv */), "%d", i)
+		if ok := tc.l.Equivalent(tc.ol); tc.expSuccess != ok {
+			t.Errorf("%d: expected success? %t; got %t", i, tc.expSuccess, ok)
 		}
 	}
 
@@ -1114,7 +1105,7 @@ func TestLeaseEquivalence(t *testing.T) {
 	postPRLease.DeprecatedStartStasis = nil
 	postPRLease.Expiration = nil
 
-	if !postPRLease.Equivalent(prePRLease, true) || !prePRLease.Equivalent(postPRLease, true) {
+	if !postPRLease.Equivalent(prePRLease) || !prePRLease.Equivalent(postPRLease) {
 		t.Fatalf("leases not equivalent but should be despite diff(pre,post) = %s", pretty.Diff(prePRLease, postPRLease))
 	}
 }

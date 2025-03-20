@@ -61,6 +61,7 @@ disable_changefeed_replication                             off
 disable_hoist_projection_in_join_limitation                off
 disable_partially_distributed_plans                        off
 disable_plan_gists                                         off
+disable_vec_union_eager_cancellation                       off
 disallow_full_table_scans                                  off
 distsql                                                    off
 distsql_plan_gateway_bias                                  2
@@ -108,6 +109,7 @@ lc_messages                                                C.UTF-8
 lc_monetary                                                C.UTF-8
 lc_numeric                                                 C.UTF-8
 lc_time                                                    C.UTF-8
+legacy_varchar_typing                                      on
 locality                                                   region=test,dc=dc1
 locality_optimized_partitioned_index_scan                  on
 lock_timeout                                               0
@@ -121,23 +123,32 @@ null_ordered_last                                          off
 on_update_rehome_row_enabled                               on
 opt_split_scan_limit                                       2048
 optimizer_always_use_histograms                            on
+optimizer_apply_full_scan_penalty_to_virtual_tables        off
 optimizer_hoist_uncorrelated_equality_subqueries           on
-optimizer_merge_joins_enabled                              on
+optimizer_prove_implication_with_virtual_computed_columns  off
+optimizer_push_offset_into_index_join                      off
 optimizer_use_forecasts                                    on
 optimizer_use_histograms                                   on
 optimizer_use_improved_computed_column_filters_derivation  on
 optimizer_use_improved_disjunction_stats                   on
+optimizer_use_improved_distinct_on_limit_hint_costing      off
 optimizer_use_improved_join_elimination                    on
+optimizer_use_improved_multi_column_selectivity_estimate   off
 optimizer_use_improved_split_disjunction_for_joins         on
+optimizer_use_improved_trigram_similarity_selectivity      off
+optimizer_use_improved_zigzag_join_costing                 off
 optimizer_use_limit_ordering_for_streaming_group_by        on
 optimizer_use_lock_op_for_serializable                     off
 optimizer_use_multicol_stats                               on
 optimizer_use_not_visible_indexes                          off
 optimizer_use_provided_ordering_fix                        on
+optimizer_use_trigram_similarity_optimization              off
+optimizer_use_virtual_computed_column_stats                off
 override_multi_region_zone_config                          off
 parallelize_multi_key_lookup_joins_enabled                 off
 password_encryption                                        scram-sha-256
 pg_trgm.similarity_threshold                               0.3
+plan_cache_mode                                            force_custom_plan
 prefer_lookup_joins_for_fks                                off
 prepared_statements_cache_size                             0 B
 propagate_input_ordering                                   off
@@ -418,27 +429,6 @@ SELECT node_id, user_name, application_name, active_queries
 node_id  user_name  application_name  active_queries
 1        root       ·                 SELECT node_id, user_name, application_name, active_queries FROM [SHOW CLUSTER SESSIONS] WHERE active_queries != ''
 
-statement ok
-SET tracing=off
-
-query B colnames
-SELECT trace_id > 0 AS has_trace_id FROM [SHOW SESSIONS] WHERE active_queries != ''
-----
-has_trace_id
-false
-
-statement ok
-SET tracing=on
-
-query B colnames
-SELECT trace_id > 0 AS has_trace_id FROM [SHOW SESSIONS] WHERE active_queries != ''
-----
-has_trace_id
-true
-
-statement ok
-SET tracing=off
-
 query ITT colnames
 SELECT node_id, user_name, query FROM [SHOW QUERIES]
 ----
@@ -455,7 +445,7 @@ query TT colnames,rowsort
 SELECT * FROM [SHOW SCHEMAS]
 ----
 schema_name         owner
-public              admin
+public              root
 crdb_internal       node
 pg_extension        node
 pg_catalog          node
@@ -551,7 +541,7 @@ query TTTI colnames
 SELECT start_key, end_key, replicas, lease_holder FROM [SHOW RANGES FROM INDEX foo@ix WITH DETAILS]
 ----
 start_key     end_key       replicas  lease_holder
-…/<IndexMin>  <after:/Max>  {1}       1
+…/<IndexMin>  …/<IndexMax>  {1}       1
 
 query TTTTTTT colnames
 SELECT * FROM [SHOW TRACE FOR SESSION] LIMIT 0

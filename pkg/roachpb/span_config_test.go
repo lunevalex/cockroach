@@ -1,12 +1,7 @@
 // Copyright 2023 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package roachpb
 
@@ -25,8 +20,9 @@ func TestSpanConfigHasConfigurationChange(t *testing.T) {
 			TTLSeconds: 10,
 			ProtectionPolicies: []ProtectionPolicy{{
 				ProtectedTimestamp: hlc.Timestamp{
-					WallTime: 1,
-					Logical:  1,
+					WallTime:  1,
+					Logical:   1,
+					Synthetic: false,
 				},
 				IgnoreIfExcludedFromBackup: false,
 			}},
@@ -56,8 +52,9 @@ func TestSpanConfigHasConfigurationChange(t *testing.T) {
 			TTLSeconds: 10,
 			ProtectionPolicies: []ProtectionPolicy{{
 				ProtectedTimestamp: hlc.Timestamp{
-					WallTime: 2,
-					Logical:  2,
+					WallTime:  2,
+					Logical:   2,
+					Synthetic: false,
 				},
 				IgnoreIfExcludedFromBackup: false,
 			}},

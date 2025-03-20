@@ -11,7 +11,7 @@ go_library(
     visibility = ["//visibility:public"],
     deps = [
         "//pkg/clusterversion",
-        "//pkg/geo/geopb",
+        "//pkg/geo/geoindex",
         "//pkg/sql/catalog",
         "//pkg/sql/catalog/catenumpb",
         "//pkg/sql/catalog/catpb",
@@ -39,11 +39,8 @@ go_test(
         "decomp_test.go",
         "main_test.go",
     ],
+    args = ["-test.timeout=295s"],
     data = glob(["testdata/**"]),
-    exec_properties = select({
-        "//build/toolchains:is_heavy": {"Pool": "heavy"},
-        "//conditions:default": {"Pool": "default"},
-    }),
     deps = [
         "//pkg/security/securityassets",
         "//pkg/security/securitytest",

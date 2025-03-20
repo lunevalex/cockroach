@@ -20,10 +20,7 @@ go_test(
     name = "ipaddr_test",
     size = "small",
     srcs = ["ipaddr_test.go"],
+    args = ["-test.timeout=55s"],
     embed = [":ipaddr"],
-    exec_properties = select({
-        "//build/toolchains:is_heavy": {"Pool": "heavy"},
-        "//conditions:default": {"Pool": "default"},
-    }),
     deps = ["//pkg/util/uint128"],
 )

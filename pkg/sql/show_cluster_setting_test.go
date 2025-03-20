@@ -1,12 +1,7 @@
 // Copyright 2023 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package sql
 
@@ -38,26 +33,26 @@ func TestCheckClusterSettingValuesAreEquivalent(t *testing.T) {
 		exp   string
 	}{
 		{ // 0
-			local: encode(t, "22.2-upgrading-to-23.1-step-010"),
-			kv:    encode(t, "22.2-upgrading-to-23.1-step-010"),
+			local: encode(t, "22.2-10"),
+			kv:    encode(t, "22.2-10"),
 		},
 		{ // 1
-			local: encode(t, "22.2-upgrading-to-23.1-step-012"),
-			kv:    encode(t, "22.2-upgrading-to-23.1-step-011"),
-			exp:   "value differs between local setting (22.2-upgrading-to-23.1-step-012) and KV (22.2-upgrading-to-23.1-step-011)",
+			local: encode(t, "22.2-12"),
+			kv:    encode(t, "22.2-11"),
+			exp:   "value differs between local setting (22.2-12) and KV (22.2-11)",
 		},
 		{ // 2
-			local: encode(t, "22.2-upgrading-to-23.1-step-011"),
-			kv:    encode(t, "22.2-upgrading-to-23.1-step-010"),
+			local: encode(t, "22.2-11"),
+			kv:    encode(t, "22.2-10"),
 		},
 		{ // 3
-			local: encode(t, "22.2-upgrading-to-23.1-step-011"),
+			local: encode(t, "22.2-11"),
 			kv:    []byte("abc"),
-			exp:   "value differs between local setting (22.2-upgrading-to-23.1-step-011) and KV ([97 98 99])",
+			exp:   "value differs between local setting (22.2-11) and KV ([97 98 99])",
 		},
 		{ // 4
-			kv:  encode(t, "22.2-upgrading-to-23.1-step-011"),
-			exp: "value differs between local setting ([]) and KV (22.2-upgrading-to-23.1-step-011)",
+			kv:  encode(t, "22.2-11"),
+			exp: "value differs between local setting ([]) and KV (22.2-11)",
 		},
 	} {
 		t.Run("", func(t *testing.T) {

@@ -1,12 +1,7 @@
 // Copyright 2015 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package kvcoord
 
@@ -140,10 +135,11 @@ func TestSendToOneClient(t *testing.T) {
 	kvpb.RegisterInternalServer(s, Node(0))
 	ln, err := netutil.ListenAndServeGRPC(rpcContext.Stopper, s, util.TestAddr)
 	require.NoError(t, err)
-	transportFactory := GRPCTransportFactory(nodedialer.New(rpcContext, func(roachpb.NodeID) (net.Addr, error) {
-		return ln.Addr(), nil
-	}))
-	reply, err := sendBatch(ctx, t, transportFactory, []net.Addr{ln.Addr()}, rpcContext)
+	nodeDialer := nodedialer.New(rpcContext, func(roachpb.NodeID) (net.Addr, roachpb.Locality, error) {
+		return ln.Addr(), roachpb.Locality{}, nil
+	})
+
+	reply, err := sendBatch(ctx, t, nil, []net.Addr{ln.Addr()}, rpcContext, nodeDialer)
 	require.NoError(t, err)
 	if reply == nil {
 		t.Errorf("expected reply")
@@ -208,6 +204,7 @@ func TestComplexScenarios(t *testing.T) {
 	// We're going to serve multiple node IDs with that one
 	// context. Disable node ID checks.
 	rpcContext.TestingAllowNamedRPCToAnonymousServer = true
+	nodeDialer := nodedialer.New(rpcContext, nil)
 
 	// TODO(bdarnell): the retryable flag is no longer used for RPC errors.
 	// Rework this test to incorporate application-level errors carried in
@@ -241,6 +238,7 @@ func TestComplexScenarios(t *testing.T) {
 			t,
 			func(
 				_ SendOptions,
+				_ *nodedialer.Dialer,
 				replicas ReplicaSlice,
 			) (Transport, error) {
 				return &firstNErrorTransport{
@@ -250,6 +248,7 @@ func TestComplexScenarios(t *testing.T) {
 			},
 			serverAddrs,
 			rpcContext,
+			nodeDialer,
 		)
 		if test.success {
 			if err != nil {
@@ -339,6 +338,7 @@ func sendBatch(
 	transportFactory TransportFactory,
 	addrs []net.Addr,
 	rpcContext *rpc.Context,
+	nodeDialer *nodedialer.Dialer,
 ) (*kvpb.BatchResponse, error) {
 	stopper := stop.NewStopper()
 	defer stopper.Stop(ctx)
@@ -367,9 +367,12 @@ func sendBatch(
 		AmbientCtx:         log.MakeTestingAmbientCtxWithNewTracer(),
 		Settings:           cluster.MakeTestingClusterSettings(),
 		NodeDescs:          g,
-		Stopper:            stopper,
-		TransportFactory:   transportFactory,
+		RPCContext:         rpcContext,
+		NodeDialer:         nodeDialer,
 		FirstRangeProvider: g,
+		TestingKnobs: ClientTestingKnobs{
+			TransportFactory: transportFactory,
+		},
 	})
 	ds.rangeCache.Insert(ctx, roachpb.RangeInfo{
 		Desc:  *desc,

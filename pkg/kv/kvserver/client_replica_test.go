@@ -1,12 +1,7 @@
 // Copyright 2015 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package kvserver_test
 
@@ -76,12 +71,12 @@ import (
 
 // TestReplicaClockUpdates verifies that the leaseholder updates its clocks
 // when executing a command to the command's timestamp, as long as the
-// request timestamp is from a clock (i.e. is not in the future).
+// request timestamp is from a clock (i.e. is not synthetic).
 func TestReplicaClockUpdates(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
 
-	run := func(t *testing.T, write bool, futureTime bool) {
+	run := func(t *testing.T, write bool, synthetic bool) {
 		const numNodes = 3
 		var manuals []*hlc.HybridManualClock
 		var clocks []*hlc.Clock
@@ -120,10 +115,10 @@ func TestReplicaClockUpdates(t *testing.T) {
 			clock.Pause()
 		}
 		// Pick a timestamp in the future of all nodes by less than the
-		// MaxOffset.
-		reqTS := clocks[0].Now().Add(clocks[0].MaxOffset().Nanoseconds()/2, 0)
+		// MaxOffset. Set the synthetic flag according to the test case.
+		reqTS := clocks[0].Now().Add(clocks[0].MaxOffset().Nanoseconds()/2, 0).WithSynthetic(synthetic)
 		h := kvpb.Header{Timestamp: reqTS}
-		if !futureTime {
+		if !reqTS.Synthetic {
 			h.Now = hlc.ClockTimestamp(reqTS)
 		}
 
@@ -144,13 +139,13 @@ func TestReplicaClockUpdates(t *testing.T) {
 		// practice an assertion against followers' clocks being updated is very
 		// difficult to make without being flaky because it's difficult to prevent
 		// other channels (background work, etc.) from carrying the clock update.
-		expUpdated := !futureTime
+		expUpdated := !synthetic
 		require.Equal(t, expUpdated, reqTS.Less(clocks[0].Now()))
 	}
 
 	testutils.RunTrueAndFalse(t, "write", func(t *testing.T, write bool) {
-		testutils.RunTrueAndFalse(t, "future-time", func(t *testing.T, futureTime bool) {
-			run(t, write, futureTime)
+		testutils.RunTrueAndFalse(t, "synthetic", func(t *testing.T, synthetic bool) {
+			run(t, write, synthetic)
 		})
 	})
 }
@@ -176,7 +171,10 @@ func TestLeaseholdersRejectClockUpdateWithJump(t *testing.T) {
 	require.NoError(t, err)
 
 	manual.Pause()
-	ts1 := s.Clock().Now()
+	ts1 := hlc.Timestamp{WallTime: manual.UnixNano()}
+	// NB: it's possible that HLC ran in front of manual.Now() after the Pause()
+	// call. Particularly, if the wall clock regressed during Pause(), and there
+	// was a concurrent Now() with a pre-regression higher timestamp. See #119362.
 
 	key := roachpb.Key("a")
 	incArgs := incrementArgs(key, 5)
@@ -186,37 +184,28 @@ func TestLeaseholdersRejectClockUpdateWithJump(t *testing.T) {
 	const numCmds = 3
 	clockOffset := s.Clock().MaxOffset() / numCmds
 	for i := int64(1); i <= numCmds; i++ {
-		ts := hlc.ClockTimestamp(ts1.Add(i*clockOffset.Nanoseconds(), 0))
-		if _, err := kv.SendWrappedWith(context.Background(), store.TestSender(), kvpb.Header{Now: ts}, incArgs); err != nil {
-			t.Fatal(err)
-		}
+		_, pErr := kv.SendWrappedWith(ctx, store.TestSender(), kvpb.Header{
+			Now: hlc.ClockTimestamp(ts1.Add(i*clockOffset.Nanoseconds(), 0)),
+		}, incArgs)
+		require.NoError(t, pErr.GoError())
 	}
 
+	// Expect the clock to advance.
 	ts2 := s.Clock().Now()
-	if expAdvance, advance := ts2.GoTime().Sub(ts1.GoTime()), numCmds*clockOffset; advance != expAdvance {
-		t.Fatalf("expected clock to advance %s; got %s", expAdvance, advance)
-	}
+	require.Equal(t, numCmds*clockOffset, ts2.GoTime().Sub(ts1.GoTime()))
 
 	// Once the accumulated offset reaches MaxOffset, commands will be rejected.
 	tsFuture := hlc.ClockTimestamp(ts1.Add(s.Clock().MaxOffset().Nanoseconds()+1, 0))
 	_, pErr := kv.SendWrappedWith(ctx, store.TestSender(), kvpb.Header{Now: tsFuture}, incArgs)
-	if !testutils.IsPError(pErr, "remote wall time is too far ahead") {
-		t.Fatalf("unexpected error %v", pErr)
-	}
+	require.True(t, testutils.IsPError(pErr, "remote wall time is too far ahead"))
 
 	// The clock did not advance and the final command was not executed.
 	ts3 := s.Clock().Now()
-	if advance := ts3.GoTime().Sub(ts2.GoTime()); advance != 0 {
-		t.Fatalf("expected clock not to advance, but it advanced by %s", advance)
-	}
+	require.Zero(t, ts3.GoTime().Sub(ts2.GoTime()))
 	valRes, err := storage.MVCCGet(context.Background(), store.TODOEngine(), key, ts3,
 		storage.MVCCGetOptions{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if a, e := mustGetInt(valRes.Value), incArgs.Increment*numCmds; a != e {
-		t.Errorf("expected %d, got %d", e, a)
-	}
+	require.NoError(t, err)
+	require.Equal(t, incArgs.Increment*numCmds, mustGetInt(valRes.Value))
 }
 
 // TestTxnPutOutOfOrder tests a case where a put operation of an older
@@ -1146,9 +1135,7 @@ func TestNonTxnReadWithinUncertaintyIntervalAfterLeaseTransfer(t *testing.T) {
 	var maxNanos int64
 	for _, m := range manuals {
 		m.Pause()
-		if cur := m.UnixNano(); cur > maxNanos {
-			maxNanos = cur
-		}
+		maxNanos = max(maxNanos, m.UnixNano())
 	}
 	// After doing so, perfectly synchronize them.
 	for _, m := range manuals {
@@ -1183,8 +1170,12 @@ func TestNonTxnReadWithinUncertaintyIntervalAfterLeaseTransfer(t *testing.T) {
 		t.Fatalf("timeout")
 	}
 
-	// Advance the clock on node 1.
+	// Advance the clock on node 1. This should now lead the clock on node 2 and
+	// the timestamp assigned to the non-txn read, because the two manual clocks
+	// were paused and synchronized up above.
 	manuals[0].Increment(100)
+	clockTs := tc.Servers[0].Clock().Now()
+	require.True(t, nonTxnOrigTs.Less(clockTs), "nonTxnOrigTs: %v, clockTs: %v", nonTxnOrigTs, clockTs)
 
 	// Perform a non-txn write on node 1. This will grab a timestamp from node 1's
 	// clock, which leads the clock on node 2 and the timestamp assigned to the
@@ -1202,11 +1193,12 @@ func TestNonTxnReadWithinUncertaintyIntervalAfterLeaseTransfer(t *testing.T) {
 	// operations and assert that we observe an uncertainty error even though its
 	// absence would not be a true stale read.
 	ba := &kvpb.BatchRequest{}
+	ba.RangeID = desc.RangeID
 	ba.Add(putArgs(key, []byte("val")))
-	br, pErr := tc.Servers[0].DistSenderI().(kv.Sender).Send(ctx, ba)
+	br, pErr := tc.GetFirstStoreFromServer(t, 0).Send(ctx, ba)
 	require.Nil(t, pErr)
 	writeTs := br.Timestamp
-	require.True(t, nonTxnOrigTs.Less(writeTs))
+	require.True(t, nonTxnOrigTs.Less(writeTs), "nonTxnOrigTs: %v, writeTs: %v", nonTxnOrigTs, writeTs)
 
 	// Then transfer the lease to node 2. The new lease should end up with a start
 	// time above the timestamp assigned to the non-txn read.
@@ -1639,7 +1631,7 @@ func TestLeaseExpirationBasedRangeTransfer(t *testing.T) {
 			t.Fatal(err)
 		}
 		newLease, _ := l.replica0.GetLease()
-		if !origLease.Equivalent(newLease, true /* expToEpochEquiv */) {
+		if !origLease.Equivalent(newLease) {
 			t.Fatalf("original lease %v and new lease %v not equivalent", origLease, newLease)
 		}
 	}
@@ -1922,14 +1914,17 @@ func TestLeaseExpirationBelowFutureTimeRequest(t *testing.T) {
 		now := l.tc.Servers[1].Clock().Now()
 
 		// Construct a future-time request timestamp past the current lease's
-		// expiration. See Replica.checkRequestTimeRLocked for the determination
-		// of whether a request timestamp is too far in the future or not.
+		// expiration. Remember to set the synthetic bit so that it is not used
+		// to update the store's clock. See Replica.checkRequestTimeRLocked for
+		// the exact determination of whether a request timestamp is too far in
+		// the future or not.
 		leaseRenewal := l.tc.Servers[1].RaftConfig().RangeLeaseRenewalDuration()
 		leaseRenewalMinusStasis := leaseRenewal - l.tc.Servers[1].Clock().MaxOffset()
 		reqTime := now.Add(leaseRenewalMinusStasis.Nanoseconds()-10, 0)
 		if tooFarInFuture {
 			reqTime = reqTime.Add(20, 0)
 		}
+		reqTime = reqTime.WithSynthetic(true)
 
 		// Issue a get with the request timestamp.
 		args := getArgs(l.leftKey)
@@ -2724,7 +2719,7 @@ func TestClearRange(t *testing.T) {
 		t.Helper()
 		start := prefix
 		end := prefix.PrefixEnd()
-		kvs, err := storage.Scan(context.Background(), store.TODOEngine(), start, end, 0)
+		kvs, err := storage.Scan(store.TODOEngine(), start, end, 0 /* maxRows */)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -2831,7 +2826,7 @@ func TestLeaseTransferInSnapshotUpdatesTimestampCache(t *testing.T) {
 		// Determine when to read.
 		readTS := tc.Servers[0].Clock().Now()
 		if futureRead {
-			readTS = readTS.Add(500*time.Millisecond.Nanoseconds(), 0)
+			readTS = readTS.Add(500*time.Millisecond.Nanoseconds(), 0).WithSynthetic(true)
 		}
 
 		// Read the key at readTS.
@@ -2908,6 +2903,7 @@ func TestLeaseTransferInSnapshotUpdatesTimestampCache(t *testing.T) {
 		require.Nil(t, pErr)
 		require.NotEqual(t, readTS, br.Timestamp)
 		require.True(t, readTS.Less(br.Timestamp))
+		require.Equal(t, readTS.Synthetic, br.Timestamp.Synthetic)
 	})
 }
 

@@ -1,10 +1,7 @@
 // Copyright 2022 The Cockroach Authors.
 //
-// Licensed as a CockroachDB Enterprise file under the Cockroach Community
-// License (the "License"); you may not use this file except in compliance with
-// the License. You may obtain a copy of the License at
-//
-//     https://github.com/cockroachdb/cockroach/blob/master/licenses/CCL.txt
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package telemetryccl
 
@@ -25,6 +22,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/jobs"
 	"github.com/cockroachdb/cockroach/pkg/jobs/jobspb"
 	"github.com/cockroachdb/cockroach/pkg/sql"
+	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
 	"github.com/cockroachdb/cockroach/pkg/testutils"
 	"github.com/cockroachdb/cockroach/pkg/testutils/serverutils"
 	"github.com/cockroachdb/cockroach/pkg/testutils/sqlutils"
@@ -222,7 +220,9 @@ func TestBulkJobTelemetryLogging(t *testing.T) {
 			query: fmt.Sprintf(`IMPORT INTO a CSV DATA ('%s')`, srv.URL),
 			sampleQueryEvent: expectedSampleQueryEvent{
 				eventType: "import",
-				stmt:      fmt.Sprintf(`IMPORT INTO defaultdb.public.a CSV DATA ('%s')`, srv.URL),
+				stmt: fmt.Sprintf(
+					`IMPORT INTO defaultdb.public.a CSV DATA (%s)`, tree.PasswordSubstitution,
+				),
 			},
 			recoveryEvent: expectedRecoveryEvent{
 				numRows:      3,
@@ -234,7 +234,10 @@ func TestBulkJobTelemetryLogging(t *testing.T) {
 			query: fmt.Sprintf(`IMPORT INTO a CSV DATA ('%s') WITH detached`, srv.URL),
 			sampleQueryEvent: expectedSampleQueryEvent{
 				eventType: "import",
-				stmt:      fmt.Sprintf(`IMPORT INTO defaultdb.public.a CSV DATA ('%s') WITH OPTIONS (detached)`, srv.URL),
+				stmt: fmt.Sprintf(
+					`IMPORT INTO defaultdb.public.a CSV DATA (%s) WITH OPTIONS (detached)`,
+					tree.PasswordSubstitution,
+				),
 			},
 			recoveryEvent: expectedRecoveryEvent{
 				numRows:      3,
@@ -246,7 +249,7 @@ func TestBulkJobTelemetryLogging(t *testing.T) {
 			query: fmt.Sprintf(`BACKUP DATABASE mydb INTO '%s'`, nodelocal.MakeLocalStorageURI("test1")),
 			sampleQueryEvent: expectedSampleQueryEvent{
 				eventType: "backup",
-				stmt:      fmt.Sprintf(`BACKUP DATABASE mydb INTO '%s'`, nodelocal.MakeLocalStorageURI("test1")),
+				stmt:      fmt.Sprintf(`BACKUP DATABASE mydb INTO %s`, tree.PasswordSubstitution),
 			},
 			recoveryEvent: expectedRecoveryEvent{
 				numRows:      3,
@@ -258,7 +261,7 @@ func TestBulkJobTelemetryLogging(t *testing.T) {
 			query: fmt.Sprintf(`BACKUP DATABASE mydb INTO '%s' WITH detached`, nodelocal.MakeLocalStorageURI("test1")),
 			sampleQueryEvent: expectedSampleQueryEvent{
 				eventType: "backup",
-				stmt:      fmt.Sprintf(`BACKUP DATABASE mydb INTO '%s' WITH OPTIONS (detached)`, nodelocal.MakeLocalStorageURI("test1")),
+				stmt:      fmt.Sprintf(`BACKUP DATABASE mydb INTO %s WITH OPTIONS (detached)`, tree.PasswordSubstitution),
 			},
 			recoveryEvent: expectedRecoveryEvent{
 				numRows:      3,
@@ -270,7 +273,7 @@ func TestBulkJobTelemetryLogging(t *testing.T) {
 			query: fmt.Sprintf(`RESTORE DATABASE mydb FROM LATEST IN '%s'`, nodelocal.MakeLocalStorageURI("test1")),
 			sampleQueryEvent: expectedSampleQueryEvent{
 				eventType: "restore",
-				stmt:      fmt.Sprintf(`RESTORE DATABASE mydb FROM 'latest' IN '%s'`, nodelocal.MakeLocalStorageURI("test1")),
+				stmt:      fmt.Sprintf(`RESTORE DATABASE mydb FROM 'latest' IN %s`, tree.PasswordSubstitution),
 			},
 			recoveryEvent: expectedRecoveryEvent{
 				numRows:      3,
@@ -282,7 +285,7 @@ func TestBulkJobTelemetryLogging(t *testing.T) {
 			query: fmt.Sprintf(`RESTORE DATABASE mydb FROM LATEST IN '%s' WITH detached`, nodelocal.MakeLocalStorageURI("test1")),
 			sampleQueryEvent: expectedSampleQueryEvent{
 				eventType: "restore",
-				stmt:      fmt.Sprintf(`RESTORE DATABASE mydb FROM 'latest' IN '%s' WITH OPTIONS (detached)`, nodelocal.MakeLocalStorageURI("test1")),
+				stmt:      fmt.Sprintf(`RESTORE DATABASE mydb FROM 'latest' IN %s WITH OPTIONS (detached)`, tree.PasswordSubstitution),
 			},
 			recoveryEvent: expectedRecoveryEvent{
 				numRows:      3,

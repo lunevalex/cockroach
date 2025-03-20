@@ -70,6 +70,7 @@ db1 sc2 f2 function false
 query-sql
 SELECT create_statement FROM [SHOW CREATE FUNCTION sc1.f1]
 ----
+----
 CREATE FUNCTION sc1.f1(IN a db1.sc1.enum1)
 	RETURNS INT8
 	VOLATILE
@@ -84,8 +85,11 @@ CREATE FUNCTION sc1.f1(IN a db1.sc1.enum1)
 	SELECT a FROM db1.sc1.tbl1;
 	SELECT 'Good':::db1.sc1.enum1;
 	RETURN nextval('sc1.sq1'::REGCLASS);
-	END;
+	END
+
 $$
+----
+----
 
 query-sql
 SELECT sc1.f1('Good'::sc1.enum1)
@@ -111,6 +115,7 @@ USE db1_new
 query-sql
 SELECT create_statement FROM [SHOW CREATE FUNCTION sc1.f1]
 ----
+----
 CREATE FUNCTION sc1.f1(IN a db1_new.sc1.enum1)
 	RETURNS INT8
 	VOLATILE
@@ -125,8 +130,11 @@ CREATE FUNCTION sc1.f1(IN a db1_new.sc1.enum1)
 	SELECT a FROM db1_new.sc1.tbl1;
 	SELECT 'Good':::db1_new.sc1.enum1;
 	RETURN nextval('sc1.sq1'::REGCLASS);
-	END;
+	END
+
 $$
+----
+----
 
 # Make sure function signature is rewritten in schema descriptor so that
 # function can be resolved and executed.
@@ -247,6 +255,7 @@ db1 sc2 f2 function true
 query-sql
 SELECT create_statement FROM [SHOW CREATE FUNCTION sc1.f1]
 ----
+----
 CREATE FUNCTION sc1.f1(IN a db1.sc1.enum1)
 	RETURNS INT8
 	VOLATILE
@@ -262,8 +271,11 @@ CREATE FUNCTION sc1.f1(IN a db1.sc1.enum1)
 	SELECT 'Good':::db1.sc1.enum1;
 	SELECT nextval('sc1.sq1'::REGCLASS) INTO x;
 	RETURN x;
-	END;
+	END
+
 $$
+----
+----
 
 query-sql
 SELECT sc1.f1('Good'::sc1.enum1)
@@ -290,6 +302,7 @@ USE db1
 query-sql
 SELECT create_statement FROM [SHOW CREATE FUNCTION sc1.f1]
 ----
+----
 CREATE FUNCTION sc1.f1(IN a db1.sc1.enum1)
 	RETURNS INT8
 	VOLATILE
@@ -305,8 +318,11 @@ CREATE FUNCTION sc1.f1(IN a db1.sc1.enum1)
 	SELECT 'Good':::db1.sc1.enum1;
 	SELECT nextval('sc1.sq1'::REGCLASS) INTO x;
 	RETURN x;
-	END;
+	END
+
 $$
+----
+----
 
 # Make sure function signature is rewritten in schema descriptor so that
 # function can be resolved and executed.

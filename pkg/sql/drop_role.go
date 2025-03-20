@@ -1,12 +1,7 @@
 // Copyright 2017 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package sql
 
@@ -108,8 +103,22 @@ func (n *DropRoleNode) startExec(params runParams) error {
 		if name.IsReserved() {
 			return pgerror.Newf(pgcode.ReservedName, "role name %q is reserved", name.Normalized())
 		}
+
 		// Non-admin users cannot drop admins.
 		if !hasAdmin {
+			if n.ifExists {
+				// If `IF EXISTS` was specified, then a non-existing role should be
+				// skipped without causing any error.
+				roleExists, err := RoleExists(params.ctx, params.p.InternalSQLTxn(), name)
+				if err != nil {
+					return err
+				}
+				if !roleExists {
+					// If the role does not exist, we can skip the check for targetIsAdmin.
+					continue
+				}
+			}
+
 			targetIsAdmin, err := params.p.UserHasAdminRole(params.ctx, name)
 			if err != nil {
 				return err
@@ -118,6 +127,7 @@ func (n *DropRoleNode) startExec(params runParams) error {
 				return pgerror.New(pgcode.InsufficientPrivilege, "must be superuser to drop superusers")
 			}
 		}
+
 	}
 
 	privilegeObjectFormatter := tree.NewFmtCtx(tree.FmtSimple)
@@ -248,6 +258,19 @@ func (n *DropRoleNode) startExec(params runParams) error {
 					ObjectType: privilege.Type,
 					ObjectName: tn.String(),
 				})
+		}
+		for _, u := range typDesc.GetPrivileges().Users {
+			if _, ok := userNames[u.User()]; ok {
+				tn, err := getTypeNameFromTypeDescriptor(lCtx, typDesc)
+				if err != nil {
+					return err
+				}
+				if privilegeObjectFormatter.Len() > 0 {
+					privilegeObjectFormatter.WriteString(", ")
+				}
+				privilegeObjectFormatter.FormatNode(&tn)
+				break
+			}
 		}
 	}
 	for _, fnDesc := range lCtx.fnDescs {

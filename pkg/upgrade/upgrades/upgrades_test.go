@@ -1,12 +1,7 @@
 // Copyright 2023 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package upgrades
 
@@ -29,21 +24,16 @@ func TestUniqueVersions(t *testing.T) {
 	}
 }
 
-func TestRestoreBehaviorIsSet(t *testing.T) {
-	for _, m := range upgrades {
-		require.NotEmpty(t, m.RestoreBehavior(), "expected %s to document a restore behavior", m.Name())
-	}
-}
-
 // TestFirstUpgradesAfterPreExistingRelease checks that the first internal
-// version following each supported pre-existing release has an firstUpgrade
-// registered for it.
+// version following each supported pre-existing release has an upgrade
+// registered for it, which is also in firstUpgradesAfterPreExistingReleases,
+// and vice-versa.
 func TestFirstUpgradesAfterPreExistingRelease(t *testing.T) {
 	// Compute the set of pre-existing releases supported by this binary.
 	// This excludes the latest release if the binary version is a release.
 	preExistingReleases := make(map[roachpb.Version]struct{})
-	minBinaryVersion := clusterversion.MinSupported.Version()
-	binaryVersion := clusterversion.Latest.Version()
+	minBinaryVersion := clusterversion.ByKey(clusterversion.BinaryMinSupportedVersionKey)
+	binaryVersion := clusterversion.ByKey(clusterversion.BinaryVersionKey)
 	for _, v := range clusterversion.ListBetween(minBinaryVersion, binaryVersion) {
 		preExistingReleases[roachpb.Version{Major: v.Major, Minor: v.Minor}] = struct{}{}
 	}
@@ -59,12 +49,14 @@ func TestFirstUpgradesAfterPreExistingRelease(t *testing.T) {
 		v := roachpb.Version{Major: r.Major, Minor: r.Minor, Internal: 2}
 		m, found := registry[v]
 		require.True(t, found, "missing upgrade for %s in registry", v)
-		require.Contains(t, m.Name(), firstUpgradeDescription(v), "upgrade for %s must use newFirstUpgrade", v)
+		require.Contains(t, firstUpgradesAfterPreExistingReleases, m,
+			"missing upgrade for %s in slice", v)
 	}
 	// Check that for each registered upgrade for a non-primordial version with
 	// internal version 2 is two internal versions ahead of a supported pre-existing
-	// release.
-	for v := range registry {
+	// release, and that the upgrade is in the firstUpgradesAfterPreExistingReleases
+	// slice.
+	for v, m := range registry {
 		if v.Major == 0 || v.Internal != 2 {
 			continue
 		}
@@ -73,5 +65,13 @@ func TestFirstUpgradesAfterPreExistingRelease(t *testing.T) {
 		require.True(t, found,
 			"registered upgrade for %s but %s is not a supported pre-existing release",
 			v, r)
+		require.Contains(t, firstUpgradesAfterPreExistingReleases, m,
+			"missing upgrade for %s in slice", v)
+	}
+	// Check that the firstUpgradesAfterPreExistingReleases slice has no upgrades
+	// which aren't registered. This implies there are no duplicates either.
+	for _, m := range firstUpgradesAfterPreExistingReleases {
+		_, found := registry[m.Version()]
+		require.Truef(t, found, "expected upgrade %s to be registered, but isn't", m.Version())
 	}
 }

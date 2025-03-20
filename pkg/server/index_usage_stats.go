@@ -1,12 +1,7 @@
 // Copyright 2021 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package server
 
@@ -74,7 +69,13 @@ func (s *statusServer) IndexUsageStatistics(
 		return statusClient.IndexUsageStatistics(ctx, localReq)
 	}
 
-	fetchIndexUsageStats := func(ctx context.Context, statusClient serverpb.StatusClient, _ roachpb.NodeID) (interface{}, error) {
+	dialFn := func(ctx context.Context, nodeID roachpb.NodeID) (interface{}, error) {
+		client, err := s.dialNode(ctx, nodeID)
+		return client, err
+	}
+
+	fetchIndexUsageStats := func(ctx context.Context, client interface{}, _ roachpb.NodeID) (interface{}, error) {
+		statusClient := client.(serverpb.StatusClient)
 		return statusClient.IndexUsageStatistics(ctx, localReq)
 	}
 
@@ -92,12 +93,10 @@ func (s *statusServer) IndexUsageStatistics(
 	// It's unfortunate that we cannot use paginatedIterateNodes here because we
 	// need to aggregate all stats before returning. Returning a partial result
 	// yields an incorrect result.
-	if err := iterateNodes(ctx,
-		s.serverIterator, s.stopper,
+	if err := s.iterateNodes(ctx,
 		"requesting index usage stats",
 		noTimeout,
-		s.dialNode,
-		fetchIndexUsageStats, aggFn, errFn); err != nil {
+		dialFn, fetchIndexUsageStats, aggFn, errFn); err != nil {
 		return nil, err
 	}
 
@@ -172,7 +171,13 @@ func (s *statusServer) ResetIndexUsageStats(
 		return statusClient.ResetIndexUsageStats(ctx, localReq)
 	}
 
-	resetIndexUsageStats := func(ctx context.Context, statusClient serverpb.StatusClient, _ roachpb.NodeID) (interface{}, error) {
+	dialFn := func(ctx context.Context, nodeID roachpb.NodeID) (interface{}, error) {
+		client, err := s.dialNode(ctx, nodeID)
+		return client, err
+	}
+
+	resetIndexUsageStats := func(ctx context.Context, client interface{}, _ roachpb.NodeID) (interface{}, error) {
+		statusClient := client.(serverpb.StatusClient)
 		return statusClient.ResetIndexUsageStats(ctx, localReq)
 	}
 
@@ -185,12 +190,10 @@ func (s *statusServer) ResetIndexUsageStats(
 		combinedError = errors.CombineErrors(combinedError, nodeFnError)
 	}
 
-	if err := iterateNodes(ctx,
-		s.serverIterator, s.stopper,
+	if err := s.iterateNodes(ctx,
 		"Resetting index usage stats",
 		noTimeout,
-		s.dialNode,
-		resetIndexUsageStats, aggFn, errFn); err != nil {
+		dialFn, resetIndexUsageStats, aggFn, errFn); err != nil {
 		return nil, err
 	}
 

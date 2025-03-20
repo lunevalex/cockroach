@@ -1,12 +1,7 @@
 // Copyright 2016 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package base
 
@@ -35,14 +30,8 @@ type TestServerArgs struct {
 	// Knobs for the test server.
 	Knobs TestingKnobs
 
-	// Settings for the server.
-	//
-	// When TestServerArgs is used for a multi-node test cluster, the Settings
-	// object is cloned for each node (see cluster.TestingCloneClusterSettings).
-	// To effect a change in a node's settings, ClusterSettings() should be used.
-	Settings *cluster.Settings
-
-	RaftConfig RaftConfig
+	*cluster.Settings
+	RaftConfig
 
 	// PartOfCluster must be set if the TestServer is joining others in a cluster.
 	// If not set (and hence the server is the only one in the cluster), the
@@ -169,10 +158,6 @@ type TestServerArgs struct {
 	// CockroachDB upgrades and periodically reports diagnostics to
 	// Cockroach Labs. Should remain disabled during unit testing.
 	StartDiagnosticsReporting bool
-
-	// ObsServiceAddr is the address to which events will be exported over OTLP.
-	// If empty, exporting events is inhibited.
-	ObsServiceAddr string
 
 	// AutoConfigProvider provides auto-configuration tasks to apply on
 	// the cluster during server initialization.
@@ -549,8 +534,6 @@ type TestSharedProcessTenantArgs struct {
 
 	// Skip check for tenant existence when running the test.
 	SkipTenantCheck bool
-
-	Settings *cluster.Settings
 }
 
 // TestTenantArgs are the arguments to TestServer.StartTenant.
@@ -631,7 +614,11 @@ type TestTenantArgs struct {
 	// determine the tenant's HTTP port.
 	StartingHTTPPort int
 
-	// TracingDefault controls whether the tracing will be on or off by default.
+	// Tracer, if set, will be used by the Server for creating Spans.
+	Tracer *tracing.Tracer
+
+	// TracingDefault controls whether the tracing will be on or off by default,
+	// if Tracer is not set.
 	TracingDefault tracing.TracingMode
 
 	// GoroutineDumpDirName is used to initialize the same named field on the
@@ -645,6 +632,13 @@ type TestTenantArgs struct {
 	// heapprofiler. If empty, no heap profiles will be collected during the test.
 	// If set, this directory should be cleaned up after the test completes.
 	HeapProfileDirName string
+
+	// CPUProfileDirName is used to initialize the same named field on the
+	// SQLServer.BaseConfig field. It is the directory name for cpu profiles
+	// using cpuprofiler. If empty, no cpu profiles will be collected during the
+	// test. If set, this directory should be cleaned up after the test
+	// completes.
+	CPUProfileDirName string
 
 	// StartDiagnosticsReporting checks cluster.TelemetryOptOut(), and
 	// if not disabled starts the asynchronous goroutine that checks for

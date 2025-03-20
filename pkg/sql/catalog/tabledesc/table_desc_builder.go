@@ -1,12 +1,7 @@
 // Copyright 2021 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package tabledesc
 
@@ -14,8 +9,10 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/clusterversion"
 	"github.com/cockroachdb/cockroach/pkg/jobs/jobspb"
 	"github.com/cockroachdb/cockroach/pkg/keys"
+	"github.com/cockroachdb/cockroach/pkg/security/username"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/catenumpb"
+	"github.com/cockroachdb/cockroach/pkg/sql/catalog/catpb"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/catprivilege"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/descpb"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/seqexpr"
@@ -178,6 +175,16 @@ func (tdb *tableDescriptorBuilder) RunRestoreChanges(
 		tdb.changes.Add(catalog.UpgradedSequenceReference)
 	}
 
+	// All backups taken in versions 22.1 and later should already have
+	// constraint IDs set. Technically, now that we are in v24.1, we no longer
+	// support restoring from versions older than 22.1, but we still have
+	// tests that restore from old versions. Until those fixtures are updated,
+	// we need to handle the case where constraint IDs are not set already.
+	// TODO(rafi): remove this once all fixtures are updated. See: https://github.com/cockroachdb/cockroach/issues/120146.
+	if changed := maybeAddConstraintIDs(tdb.maybeModified); changed {
+		tdb.changes.Add(catalog.AddedConstraintIDs)
+	}
+
 	// Upgrade the declarative schema changer state
 	if scpb.MigrateDescriptorState(version, tdb.maybeModified.ParentID, tdb.maybeModified.DeclarativeSchemaChangerState) {
 		tdb.changes.Add(catalog.UpgradedDeclarativeSchemaChangerState)
@@ -250,6 +257,25 @@ func (tdb *tableDescriptorBuilder) StripDanglingBackReferences(
 			seq.SequenceOwner.Reset()
 			tdb.changes.Add(catalog.StrippedDanglingBackReferences)
 		}
+	}
+	return nil
+}
+
+// StripNonExistentRoles implements the catalog.DescriptorBuilder
+// interface.
+func (tdb *tableDescriptorBuilder) StripNonExistentRoles(
+	roleExists func(role username.SQLUsername) bool,
+) error {
+	newPrivs := make([]catpb.UserPrivileges, 0, len(tdb.maybeModified.Privileges.Users))
+	for _, priv := range tdb.maybeModified.Privileges.Users {
+		exists := roleExists(priv.UserProto.Decode())
+		if exists {
+			newPrivs = append(newPrivs, priv)
+		}
+	}
+	if len(newPrivs) != len(tdb.maybeModified.Privileges.Users) {
+		tdb.maybeModified.Privileges.Users = newPrivs
+		tdb.changes.Add(catalog.StrippedNonExistentRoles)
 	}
 	return nil
 }
@@ -390,10 +416,10 @@ func maybeFillInDescriptor(
 	}
 	set(catalog.UpgradedPrivileges, fixedPrivileges)
 	set(catalog.RemovedDuplicateIDsInRefs, maybeRemoveDuplicateIDsInRefs(desc))
-	set(catalog.AddedConstraintIDs, maybeAddConstraintIDs(desc))
 	set(catalog.SetCheckConstraintColumnIDs, maybeSetCheckConstraintColumnIDs(desc))
 	set(catalog.StrippedDanglingSelfBackReferences, maybeStripDanglingSelfBackReferences(desc))
 	set(catalog.FixSecondaryIndexEncodingType, maybeFixSecondaryIndexEncodingType(desc))
+	set(catalog.FixedIncorrectForeignKeyOrigins, maybeFixForeignKeySelfReferences(desc))
 	return changes, nil
 }
 
@@ -779,51 +805,6 @@ func maybeFixPrimaryIndexEncoding(idx *descpb.IndexDescriptor) (hasChanged bool)
 	return true
 }
 
-// maybeRemoveDuplicateIDsInRefs ensures that IDs in references to other tables
-// are not duplicated.
-func maybeRemoveDuplicateIDsInRefs(d *descpb.TableDescriptor) (hasChanged bool) {
-	// Strip duplicates from DependsOn.
-	if s := cleanedIDs(d.DependsOn); len(s) < len(d.DependsOn) {
-		d.DependsOn = s
-		hasChanged = true
-	}
-	// Do the same for DependsOnTypes.
-	if s := cleanedIDs(d.DependsOnTypes); len(s) < len(d.DependsOnTypes) {
-		d.DependsOnTypes = s
-		hasChanged = true
-	}
-	// Do the same for column IDs in DependedOnBy table references.
-	for i := range d.DependedOnBy {
-		ref := &d.DependedOnBy[i]
-		s := catalog.MakeTableColSet(ref.ColumnIDs...).Ordered()
-		if len(s) < len(ref.ColumnIDs) {
-			ref.ColumnIDs = s
-			hasChanged = true
-		}
-	}
-	// Do the same in columns for sequence refs.
-	for i := range d.Columns {
-		col := &d.Columns[i]
-		if s := cleanedIDs(col.UsesSequenceIds); len(s) < len(col.UsesSequenceIds) {
-			col.UsesSequenceIds = s
-			hasChanged = true
-		}
-		if s := cleanedIDs(col.OwnsSequenceIds); len(s) < len(col.OwnsSequenceIds) {
-			col.OwnsSequenceIds = s
-			hasChanged = true
-		}
-	}
-	return hasChanged
-}
-
-func cleanedIDs(input []descpb.ID) []descpb.ID {
-	s := catalog.MakeDescriptorIDSet(input...).Ordered()
-	if len(s) == 0 {
-		return nil
-	}
-	return s
-}
-
 // maybeAddConstraintIDs ensures that all constraints have an ID associated with
 // them.
 func maybeAddConstraintIDs(desc *descpb.TableDescriptor) (hasChanged bool) {
@@ -918,6 +899,51 @@ func maybeAddConstraintIDs(desc *descpb.TableDescriptor) (hasChanged bool) {
 		}
 	}
 	return hasChanged
+}
+
+// maybeRemoveDuplicateIDsInRefs ensures that IDs in references to other tables
+// are not duplicated.
+func maybeRemoveDuplicateIDsInRefs(d *descpb.TableDescriptor) (hasChanged bool) {
+	// Strip duplicates from DependsOn.
+	if s := cleanedIDs(d.DependsOn); len(s) < len(d.DependsOn) {
+		d.DependsOn = s
+		hasChanged = true
+	}
+	// Do the same for DependsOnTypes.
+	if s := cleanedIDs(d.DependsOnTypes); len(s) < len(d.DependsOnTypes) {
+		d.DependsOnTypes = s
+		hasChanged = true
+	}
+	// Do the same for column IDs in DependedOnBy table references.
+	for i := range d.DependedOnBy {
+		ref := &d.DependedOnBy[i]
+		s := catalog.MakeTableColSet(ref.ColumnIDs...).Ordered()
+		if len(s) < len(ref.ColumnIDs) {
+			ref.ColumnIDs = s
+			hasChanged = true
+		}
+	}
+	// Do the same in columns for sequence refs.
+	for i := range d.Columns {
+		col := &d.Columns[i]
+		if s := cleanedIDs(col.UsesSequenceIds); len(s) < len(col.UsesSequenceIds) {
+			col.UsesSequenceIds = s
+			hasChanged = true
+		}
+		if s := cleanedIDs(col.OwnsSequenceIds); len(s) < len(col.OwnsSequenceIds) {
+			col.OwnsSequenceIds = s
+			hasChanged = true
+		}
+	}
+	return hasChanged
+}
+
+func cleanedIDs(input []descpb.ID) []descpb.ID {
+	s := catalog.MakeDescriptorIDSet(input...).Ordered()
+	if len(s) == 0 {
+		return nil
+	}
+	return s
 }
 
 // maybeSetCheckConstraintColumnIDs ensures that all check constraints have a
@@ -1221,4 +1247,24 @@ func resolveTableNamesForIDs(
 	}
 
 	return result, nil
+}
+
+// maybeFixForeignKeySelfReferences fixes references that should point to the
+// current descriptor inside OutboundFKs and InboundFKs.
+func maybeFixForeignKeySelfReferences(tableDesc *descpb.TableDescriptor) (wasRepaired bool) {
+	for idx := range tableDesc.OutboundFKs {
+		fk := &tableDesc.OutboundFKs[idx]
+		if fk.OriginTableID != tableDesc.ID {
+			fk.OriginTableID = tableDesc.ID
+			wasRepaired = true
+		}
+	}
+	for idx := range tableDesc.InboundFKs {
+		fk := &tableDesc.InboundFKs[idx]
+		if fk.ReferencedTableID != tableDesc.ID {
+			fk.ReferencedTableID = tableDesc.ID
+			wasRepaired = true
+		}
+	}
+	return wasRepaired
 }

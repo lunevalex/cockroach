@@ -62,12 +62,9 @@ go_test(
         "lexer_test.go",
         "parser_test.go",
     ],
+    args = ["-test.timeout=295s"],
     data = glob(["testdata/**"]),
     embed = [":pgreplparser"],
-    exec_properties = select({
-        "//build/toolchains:is_heavy": {"Pool": "heavy"},
-        "//conditions:default": {"Pool": "default"},
-    }),
     deps = [
         "//pkg/sql/pgrepl/lsn",
         "//pkg/sql/pgwire/pgerror",

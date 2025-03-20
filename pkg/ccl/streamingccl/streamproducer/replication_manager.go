@@ -1,10 +1,7 @@
 // Copyright 2021 The Cockroach Authors.
 //
-// Licensed as a CockroachDB Enterprise file under the Cockroach Community
-// License (the "License"); you may not use this file except in compliance with
-// the License. You may obtain a copy of the License at
-//
-//     https://github.com/cockroachdb/cockroach/blob/master/licenses/CCL.txt
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package streamproducer
 
@@ -36,7 +33,7 @@ type replicationStreamManagerImpl struct {
 func (r *replicationStreamManagerImpl) StartReplicationStream(
 	ctx context.Context, tenantName roachpb.TenantName, req streampb.ReplicationProducerRequest,
 ) (streampb.ReplicationProducerSpec, error) {
-	return StartReplicationProducerJob(ctx, r.evalCtx, r.txn, tenantName, req)
+	return startReplicationProducerJob(ctx, r.evalCtx, r.txn, tenantName, req)
 }
 
 // HeartbeatReplicationStream implements streaming.ReplicationStreamManager interface.
@@ -91,7 +88,7 @@ func newReplicationStreamManagerWithPrivilegesCheck(
 
 	execCfg := evalCtx.Planner.ExecutorConfig().(*sql.ExecutorConfig)
 	enterpriseCheckErr := utilccl.CheckEnterpriseEnabled(
-		execCfg.Settings, "REPLICATION")
+		execCfg.Settings, execCfg.NodeInfo.LogicalClusterID(), "REPLICATION")
 	if enterpriseCheckErr != nil {
 		return nil, pgerror.Wrap(enterpriseCheckErr,
 			pgcode.CCLValidLicenseRequired, "physical replication requires an enterprise license on the primary (and secondary) cluster")

@@ -41,18 +41,6 @@ SELECT bit_length('Hello'), bit_length('世界'), bit_length(b'世界')
 ----
 40 48 48
 
-statement ok
-CREATE TABLE bit_count_test (a BIT(3), b varbit, c bytea)
-
-statement ok
-INSERT INTO bit_count_test VALUES (B'101', B'00', '\x10'), (B'100', B'101', '\x10A2')
-
-query TTTIII rowsort
-SELECT a, b, encode(c, 'hex'), bit_count(a), bit_count(b), bit_count(c) FROM bit_count_test
-----
-101  00   10    2  0  1
-100  101  10a2  1  2  4
-
 query TTTTTTTT
 SELECT quote_ident('abc'), quote_ident('ab.c'), quote_ident('ab"c'), quote_ident('世界'),
        quote_ident('array'), -- reserved keyword
@@ -4043,12 +4031,18 @@ SELECT crdb_internal.merge_aggregated_stmt_metadata(ARRAY[])
 query T
 SELECT crdb_internal.merge_aggregated_stmt_metadata(ARRAY[ '{ "db": [ "defaultdb", "tpcc" ], "distSQLCount": 1, "failedCount": 2, "fullScanCount": 0, "implicitTxn": true, "query": "SELECT 1", "querySummary": "SELECT 1", "stmtType": "TypeDML", "totalCount": 33, "vecCount": 0 }'::JSON, '{ "db": ["tpcc"], "distSQLCount": 23, "failedCount": 0, "fullScanCount": 99, "implicitTxn": true, "query": "SELECT 1", "querySummary": "SELECT 1", "stmtType": "TypeDML", "totalCount": 3, "vecCount": 2 }'::JSON, '{"hello": "world"}'::JSON ])
 ----
-{"appNames": [], "db": ["defaultdb", "tpcc"], "distSQLCount": 47, "failedCount": 2, "fingerprintID": "", "formattedQuery": "", "fullScanCount": 198, "implicitTxn": true, "query": "SELECT 1", "querySummary": "SELECT 1", "stmtType": "TypeDML", "totalCount": 39, "vecCount": 4}
+{"appNames": [], "db": ["defaultdb", "tpcc"], "distSQLCount": 24, "failedCount": 2, "fingerprintID": "", "formattedQuery": "", "fullScanCount": 99, "implicitTxn": false, "query": "", "querySummary": "", "stmtType": "", "totalCount": 36, "vecCount": 2}
 
 query T
 SELECT crdb_internal.merge_aggregated_stmt_metadata(ARRAY[ '{"aMalformedMetadaObj": 123}'::JSON, '{"key": "value"}'::JSON ])
 ----
 {"appNames": [], "db": [], "distSQLCount": 0, "failedCount": 0, "fingerprintID": "", "formattedQuery": "", "fullScanCount": 0, "implicitTxn": false, "query": "", "querySummary": "", "stmtType": "", "totalCount": 0, "vecCount": 0}
+
+# Merge 2 objects with partial data to check that no value is reused between iterations.
+query T
+SELECT crdb_internal.merge_aggregated_stmt_metadata(ARRAY[ '{"distSQLCount": 111, "failedCount": 222, "fullScanCount": 333 }'::JSON, '{"totalCount": 1, "vecCount": 2}'::JSON, '{"key": "value"}'::JSON ])
+----
+{"appNames": [], "db": [], "distSQLCount": 111, "failedCount": 222, "fingerprintID": "", "formattedQuery": "", "fullScanCount": 333, "implicitTxn": false, "query": "", "querySummary": "", "stmtType": "", "totalCount": 1, "vecCount": 2}
 
 subtest end
 

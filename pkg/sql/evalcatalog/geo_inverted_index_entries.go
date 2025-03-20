@@ -1,19 +1,14 @@
 // Copyright 2022 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package evalcatalog
 
 import (
 	"context"
 
-	"github.com/cockroachdb/cockroach/pkg/geo/geopb"
+	"github.com/cockroachdb/cockroach/pkg/geo/geoindex"
 	"github.com/cockroachdb/cockroach/pkg/kv"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/descs"
@@ -74,14 +69,14 @@ func getIndexGeoConfig(
 	txn *kv.Txn,
 	tableID catid.DescID,
 	indexID catid.IndexID,
-) (geopb.Config, error) {
+) (geoindex.Config, error) {
 	tableDesc, err := dc.ByIDWithLeased(txn).WithoutNonPublic().Get().Table(ctx, tableID)
 	if err != nil {
-		return geopb.Config{}, err
+		return geoindex.Config{}, err
 	}
 	index, err := catalog.MustFindIndexByID(tableDesc, indexID)
 	if err != nil {
-		return geopb.Config{}, err
+		return geoindex.Config{}, err
 	}
 	return index.GetGeoConfig(), nil
 }

@@ -14,6 +14,7 @@ go_library(
     visibility = ["//visibility:public"],
     deps = [
         "//pkg/base",
+        "//pkg/clusterversion",
         "//pkg/multitenant",
         "//pkg/roachpb",
         "//pkg/security",
@@ -26,10 +27,10 @@ go_library(
         "//pkg/settings/cluster",
         "//pkg/sql",
         "//pkg/sql/isql",
-        "//pkg/sql/privilege",
+        "//pkg/sql/pgwire",
+        "//pkg/sql/roleoption",
         "//pkg/sql/sem/tree",
         "//pkg/sql/sessiondata",
-        "//pkg/sql/syntheticprivilege",
         "//pkg/sql/types",
         "//pkg/ui",
         "//pkg/util/grpcutil",
@@ -52,10 +53,7 @@ go_test(
         "authentication_test.go",
         "main_test.go",
     ],
-    exec_properties = select({
-        "//build/toolchains:is_heavy": {"Pool": "heavy"},
-        "//conditions:default": {"Pool": "default"},
-    }),
+    args = ["-test.timeout=295s"],
     deps = [
         ":authserver",
         "//pkg/base",

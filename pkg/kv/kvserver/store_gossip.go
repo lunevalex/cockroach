@@ -1,12 +1,7 @@
 // Copyright 2022 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package kvserver
 
@@ -21,13 +16,32 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/gossip"
 	"github.com/cockroachdb/cockroach/pkg/keys"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
+	"github.com/cockroachdb/cockroach/pkg/settings"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/cockroach/pkg/util/protoutil"
 	"github.com/cockroachdb/cockroach/pkg/util/retry"
 	"github.com/cockroachdb/cockroach/pkg/util/stop"
 	"github.com/cockroachdb/cockroach/pkg/util/syncutil"
+	"github.com/cockroachdb/cockroach/pkg/util/timeutil"
 	"github.com/cockroachdb/errors"
 	"github.com/cockroachdb/redact"
+)
+
+var GossipWhenCapacityDeltaExceedsFraction = settings.RegisterFloatSetting(
+	settings.SystemOnly,
+	"kv.store_gossip.capacity_delta_threshold",
+	"the fraction from the last gossiped store capacity values which need be "+
+		"exceeded before the store will gossip immediately without waiting for "+
+		"the periodic gossip interval, at most kv.store_gossip.max_frequency "+
+		"frequency",
+	defaultGossipWhenCapacityDeltaExceedsFraction,
+)
+
+var MaxStoreGossipFrequency = settings.RegisterDurationSetting(
+	settings.SystemOnly,
+	"kv.store_gossip.max_frequency",
+	"the maximum frequency at which a store will gossip its store descriptor",
+	defaultMaxStoreGossipFrequency,
 )
 
 const (
@@ -35,7 +49,7 @@ const (
 	// last gossiped store capacity values which need be exceeded before the
 	// store will gossip immediately without waiting for the periodic gossip
 	// interval.
-	defaultGossipWhenCapacityDeltaExceedsFraction = 0.05
+	defaultGossipWhenCapacityDeltaExceedsFraction = 0.10
 
 	//  gossipWhenLeaseCountDeltaExceeds specifies the absolute change from the
 	//  last gossiped store capacity lease count which needs to be exceeded
@@ -65,6 +79,12 @@ const (
 	// if a range lease holder experiences a failure causing a missed
 	// gossip update.
 	systemDataGossipInterval = 1 * time.Minute
+
+	// defaultMaxStoreGossipFrequency is the maximum frequency at which a store
+	// will gossip its descriptor. Note that periodic gossip will still occur at
+	// the configured period, regardless of whether last gossip was less than
+	// maxStoreGossipFrequency ago.
+	defaultMaxStoreGossipFrequency = 2 * time.Second
 )
 
 var errPeriodicGossipsDisabled = errors.New("periodic gossip is disabled")
@@ -200,6 +220,7 @@ func (s *Store) systemGossipUpdate(sysCfg *config.SystemConfig) {
 type cachedCapacity struct {
 	syncutil.Mutex
 	cached, lastGossiped roachpb.StoreCapacity
+	lastGossipedTime     time.Time
 }
 
 // StoreGossip is responsible for gossiping the store descriptor. It maintains
@@ -223,6 +244,8 @@ type StoreGossip struct {
 	// descriptorGetter is used for getting an up to date or cached store
 	// descriptor to gossip.
 	descriptorGetter StoreDescriptorProvider
+	sv               *settings.Values
+	clock            timeutil.TimeSource
 }
 
 // StoreGossipTestingKnobs defines the testing knobs specific to StoreGossip.
@@ -249,13 +272,19 @@ type StoreGossipTestingKnobs struct {
 // store descriptor: both proactively, calling Gossip() and reacively on
 // capacity/load changes.
 func NewStoreGossip(
-	gossiper InfoGossiper, descGetter StoreDescriptorProvider, testingKnobs StoreGossipTestingKnobs,
+	gossiper InfoGossiper,
+	descGetter StoreDescriptorProvider,
+	testingKnobs StoreGossipTestingKnobs,
+	sv *settings.Values,
+	clock timeutil.TimeSource,
 ) *StoreGossip {
 	return &StoreGossip{
 		cachedCapacity:   &cachedCapacity{},
 		gossiper:         gossiper,
 		descriptorGetter: descGetter,
 		knobs:            testingKnobs,
+		sv:               sv,
+		clock:            clock,
 	}
 }
 
@@ -293,6 +322,20 @@ type InfoGossiper interface {
 }
 
 var _ InfoGossiper = &gossip.Gossip{}
+
+// canEagerlyGossipNow checks whether the last gossip was recent enough that we
+// should not gossip again now. If the last gossip was too recent, canGossip is
+// false, otherwise true.
+func (s *StoreGossip) canEagerlyGossipNow() (canGossip bool) {
+	now := s.clock.Now()
+	s.cachedCapacity.Lock()
+	defer s.cachedCapacity.Unlock()
+
+	nextValidGossipTime := s.cachedCapacity.lastGossipedTime.Add(
+		MaxStoreGossipFrequency.Get(s.sv))
+
+	return nextValidGossipTime.Before(now)
+}
 
 // asyncGossipStore asynchronously gossips the store descriptor, for a given
 // reason. A cached descriptor is used if specified, otherwise the store
@@ -340,11 +383,13 @@ func (s *StoreGossip) GossipStore(ctx context.Context, useCached bool) error {
 	// bandwidth and racing with local storepool estimations.
 	// TODO(kvoli): Reconsider what triggers gossip here and possibly limit to
 	// only significant workload changes (load), rather than lease or range
-	// count. Previoulsy, this was not as much as an issue as the gossip
+	// count. Previously, this was not as much as an issue as the gossip
 	// interval was 60 seconds, such that gossiping semi-frequently on changes
 	// was required.
+	now := s.clock.Now()
 	s.cachedCapacity.Lock()
 	s.cachedCapacity.lastGossiped = storeDesc.Capacity
+	s.cachedCapacity.lastGossipedTime = now
 	s.cachedCapacity.Unlock()
 
 	// Unique gossip key per store.
@@ -421,12 +466,14 @@ func (s *StoreGossip) RecordNewPerSecondStats(newQPS, newWPS float64) {
 // both absolute and relative terms in order to trigger gossip.
 func (s *StoreGossip) shouldGossipOnCapacityDelta() (should bool, reason string) {
 	// If there is an ongoing gossip attempt, then there is no need to regossip
-	// immediately as we will already be gossiping an up to date (cached) capacity.
-	if s.gossipOngoing.Get() {
+	// immediately as we will already be gossiping an up to date (cached)
+	// capacity. If we have recently gossiped the store descriptor, avoid
+	// re-gossiping too soon, to avoid overloading the receivers of store gossip.
+	if s.gossipOngoing.Get() || !s.canEagerlyGossipNow() {
 		return
 	}
 
-	gossipWhenCapacityDeltaExceedsFraction := defaultGossipWhenCapacityDeltaExceedsFraction
+	gossipWhenCapacityDeltaExceedsFraction := GossipWhenCapacityDeltaExceedsFraction.Get(s.sv)
 	if overrideCapacityDeltaFraction := s.knobs.OverrideGossipWhenCapacityDeltaExceedsFraction; overrideCapacityDeltaFraction > 0 {
 		gossipWhenCapacityDeltaExceedsFraction = overrideCapacityDeltaFraction
 	}

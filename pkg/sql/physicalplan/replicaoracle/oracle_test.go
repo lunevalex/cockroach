@@ -1,12 +1,7 @@
 // Copyright 2019 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package replicaoracle
 
@@ -49,13 +44,13 @@ func TestClosest(t *testing.T) {
 			Locality:   nd2.Locality, // pretend node 2 is closest.
 			Settings:   cluster.MakeTestingClusterSettings(),
 			HealthFunc: func(_ roachpb.NodeID) bool { return true },
-			LatencyFunc: func(id roachpb.NodeID) (time.Duration, bool) {
-				if id == 2 {
-					return time.Nanosecond, validLatencyFunc
-				}
-				return time.Millisecond, validLatencyFunc
-			},
 		})
+		o.(*closestOracle).latencyFunc = func(id roachpb.NodeID) (time.Duration, bool) {
+			if id == 2 {
+				return time.Nanosecond, validLatencyFunc
+			}
+			return time.Millisecond, validLatencyFunc
+		}
 		internalReplicas := []roachpb.ReplicaDescriptor{
 			{NodeID: 4, StoreID: 4},
 			{NodeID: 2, StoreID: 2},

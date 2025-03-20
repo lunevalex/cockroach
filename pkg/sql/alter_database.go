@@ -1,12 +1,7 @@
 // Copyright 2020 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package sql
 
@@ -34,7 +29,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/pgnotice"
 	"github.com/cockroachdb/cockroach/pkg/sql/privilege"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
-	"github.com/cockroachdb/cockroach/pkg/sql/sqlclustersettings"
 	"github.com/cockroachdb/cockroach/pkg/sql/sqlerrors"
 	"github.com/cockroachdb/cockroach/pkg/sql/sqltelemetry"
 	"github.com/cockroachdb/cockroach/pkg/util/intsets"
@@ -420,7 +414,7 @@ func (p *planner) AlterDatabaseDropRegion(
 				pgcode.InvalidDatabaseDefinition,
 				"databases in this cluster must have at least 1 region",
 				n.Region,
-				sqlclustersettings.DefaultPrimaryRegionClusterSettingName,
+				DefaultPrimaryRegionClusterSettingName,
 			)
 		}
 
@@ -561,6 +555,7 @@ func (p *planner) checkCanDropSystemDatabaseRegion(ctx context.Context, region t
 // - either be part of an admin role.
 // - or be an owner of the table.
 // - or have the CREATE privilege on the table.
+// privilege on the table descriptor.
 //
 // For the system database, the conditions are more stringent. The user must
 // be the node user, and this must be a secondary tenant.

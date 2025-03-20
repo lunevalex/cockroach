@@ -695,8 +695,8 @@ string_or_placeholder_list ::=
 	( string_or_placeholder ) ( ( ',' string_or_placeholder ) )*
 
 insert_target ::=
-	table_name
-	| table_name 'AS' table_alias_name
+	table_name_opt_idx
+	| table_name_opt_idx 'AS' table_alias_name
 
 insert_rest ::=
 	select_stmt
@@ -1162,6 +1162,7 @@ unreserved_keyword ::=
 	| 'FORCE_NULL'
 	| 'FORCE_QUOTE'
 	| 'FORCE_INDEX'
+	| 'FORCE_INVERTED_INDEX'
 	| 'FORCE_ZIGZAG'
 	| 'FORWARD'
 	| 'FREEZE'
@@ -1188,7 +1189,6 @@ unreserved_keyword ::=
 	| 'HOUR'
 	| 'IDENTITY'
 	| 'IMMEDIATE'
-	| 'IMMEDIATELY'
 	| 'IMMUTABLE'
 	| 'IMPORT'
 	| 'INCLUDE'
@@ -1788,7 +1788,6 @@ create_sequence_stmt ::=
 
 create_func_stmt ::=
 	'CREATE' opt_or_replace 'FUNCTION' routine_create_name '(' opt_routine_param_with_default_list ')' 'RETURNS' opt_return_set routine_return_type opt_create_routine_opt_list opt_routine_body
-	| 'CREATE' opt_or_replace 'FUNCTION' routine_create_name '(' opt_routine_param_with_default_list ')' opt_create_routine_opt_list opt_routine_body
 
 create_proc_stmt ::=
 	'CREATE' opt_or_replace 'PROCEDURE' routine_create_name '(' opt_routine_param_with_default_list ')' opt_create_routine_opt_list opt_routine_body
@@ -2122,7 +2121,8 @@ typename ::=
 	| simple_typename 'ARRAY'
 
 transaction_mode ::=
-	transaction_user_priority
+	transaction_iso_level
+	| transaction_user_priority
 	| transaction_read_mode
 	| as_of_clause
 	| transaction_deferrable_mode
@@ -2723,7 +2723,7 @@ scrub_option_list ::=
 	( scrub_option ) ( ( ',' scrub_option ) )*
 
 simple_select_clause ::=
-	'SELECT' opt_all_clause opt_target_list from_clause opt_where_clause group_clause having_clause window_clause
+	'SELECT' opt_all_clause target_list from_clause opt_where_clause group_clause having_clause window_clause
 	| 'SELECT' distinct_clause target_list from_clause opt_where_clause group_clause having_clause window_clause
 	| 'SELECT' distinct_on_clause target_list from_clause opt_where_clause group_clause having_clause window_clause
 
@@ -2899,6 +2899,9 @@ opt_array_bounds ::=
 	'[' ']'
 	| 
 
+transaction_iso_level ::=
+	'ISOLATION' 'LEVEL' iso_level
+
 transaction_user_priority ::=
 	'PRIORITY' user_priority
 
@@ -3010,8 +3013,6 @@ alter_backup_schedule_cmd ::=
 	| 'SET' 'FULL' 'BACKUP' 'ALWAYS'
 	| 'SET' 'FULL' 'BACKUP' sconst_or_placeholder
 	| 'SET' 'SCHEDULE' 'OPTION' kv_option
-	| 'EXECUTE' 'IMMEDIATELY'
-	| 'EXECUTE' 'FULL' 'IMMEDIATELY'
 
 role_option ::=
 	'CREATEROLE'
@@ -3289,10 +3290,6 @@ opt_all_clause ::=
 	'ALL'
 	| 
 
-opt_target_list ::=
-	target_list
-	| 
-
 from_clause ::=
 	'FROM' from_list opt_as_of_clause
 	| 
@@ -3389,6 +3386,13 @@ interval_type ::=
 	'INTERVAL'
 	| 'INTERVAL' interval_qualifier
 	| 'INTERVAL' '(' iconst32 ')'
+
+iso_level ::=
+	'READ' 'UNCOMMITTED'
+	| 'READ' 'COMMITTED'
+	| 'SNAPSHOT'
+	| 'REPEATABLE' 'READ'
+	| 'SERIALIZABLE'
 
 user_priority ::=
 	'LOW'
@@ -3736,6 +3740,7 @@ bare_label_keywords ::=
 	| 'FORCE_NULL'
 	| 'FORCE_QUOTE'
 	| 'FORCE_INDEX'
+	| 'FORCE_INVERTED_INDEX'
 	| 'FORCE_ZIGZAG'
 	| 'FOREIGN'
 	| 'FORMAT'
@@ -3773,7 +3778,6 @@ bare_label_keywords ::=
 	| 'IGNORE_FOREIGN_KEYS'
 	| 'ILIKE'
 	| 'IMMEDIATE'
-	| 'IMMEDIATELY'
 	| 'IMMUTABLE'
 	| 'IMPORT'
 	| 'IN'
@@ -4305,7 +4309,7 @@ alter_column_default ::=
 	| 'DROP' 'DEFAULT'
 
 alter_column_on_update ::=
-	'SET' 'ON' 'UPDATE' a_expr
+	'SET' 'ON' 'UPDATE' b_expr
 	| 'DROP' 'ON' 'UPDATE'
 
 alter_column_visible ::=
@@ -4466,9 +4470,6 @@ window_definition ::=
 
 routine_param_class ::=
 	'IN'
-	| 'OUT'
-	| 'INOUT'
-	| 'IN' 'OUT'
 
 param_name ::=
 	type_function_name

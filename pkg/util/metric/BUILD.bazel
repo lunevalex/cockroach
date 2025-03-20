@@ -37,7 +37,6 @@ go_library(
         "@com_github_prometheus_client_model//go",
         "@com_github_prometheus_common//expfmt",
         "@com_github_prometheus_prometheus//promql/parser",
-        "@com_github_rcrowley_go_metrics//:go-metrics",
         "@in_gopkg_yaml_v3//:yaml_v3",
     ],
 )
@@ -54,12 +53,9 @@ go_test(
         "registry_test.go",
         "rule_test.go",
     ],
+    args = ["-test.timeout=55s"],
     data = glob(["testdata/**"]),
     embed = [":metric"],
-    exec_properties = select({
-        "//build/toolchains:is_heavy": {"Pool": "heavy"},
-        "//conditions:default": {"Pool": "default"},
-    }),
     deps = [
         "//pkg/testutils/datapathutils",
         "//pkg/testutils/echotest",

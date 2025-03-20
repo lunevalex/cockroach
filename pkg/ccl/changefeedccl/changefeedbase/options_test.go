@@ -1,10 +1,7 @@
 // Copyright 2022 The Cockroach Authors.
 //
-// Licensed as a CockroachDB Enterprise file under the Cockroach Community
-// License (the "License"); you may not use this file except in compliance with
-// the License. You may obtain a copy of the License at
-//
-//     https://github.com/cockroachdb/cockroach/blob/master/licenses/CCL.txt
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package changefeedbase
 
@@ -68,11 +65,11 @@ func TestLaggingRangesVersionGate(t *testing.T) {
 	// The version does not matter if the default config is used.
 	t.Run("default config", func(t *testing.T) {
 		opts := MakeDefaultOptions()
-		settings := cluster.MakeTestingClusterSettingsWithVersions(clusterversion.V23_2_ChangefeedLaggingRangesOpts.Version(), clusterversion.V23_1.Version(), true)
+		settings := cluster.MakeTestingClusterSettingsWithVersions(clusterversion.ByKey(clusterversion.V23_2_ChangefeedLaggingRangesOpts), clusterversion.ByKey(clusterversion.V23_1), true)
 		_, _, err := opts.GetLaggingRangesConfig(ctx, settings)
 		require.NoError(t, err)
 
-		settings = cluster.MakeTestingClusterSettingsWithVersions((clusterversion.V23_2_ChangefeedLaggingRangesOpts - 1).Version(), clusterversion.V23_1.Version(), true)
+		settings = cluster.MakeTestingClusterSettingsWithVersions(clusterversion.ByKey(clusterversion.V23_2_ChangefeedLaggingRangesOpts-1), clusterversion.ByKey(clusterversion.V23_1), true)
 		_, _, err = opts.GetLaggingRangesConfig(ctx, settings)
 		require.NoError(t, err)
 	})
@@ -83,11 +80,11 @@ func TestLaggingRangesVersionGate(t *testing.T) {
 		opts.m[OptLaggingRangesThreshold] = "25ms"
 		opts.m[OptLaggingRangesPollingInterval] = "250ms"
 
-		settings := cluster.MakeTestingClusterSettingsWithVersions(clusterversion.V23_2_ChangefeedLaggingRangesOpts.Version(), clusterversion.V23_1.Version(), true)
+		settings := cluster.MakeTestingClusterSettingsWithVersions(clusterversion.ByKey(clusterversion.V23_2_ChangefeedLaggingRangesOpts), clusterversion.ByKey(clusterversion.V23_1), true)
 		_, _, err := opts.GetLaggingRangesConfig(ctx, settings)
 		require.NoError(t, err)
 
-		settings = cluster.MakeTestingClusterSettingsWithVersions((clusterversion.V23_2_ChangefeedLaggingRangesOpts - 1).Version(), clusterversion.V23_1.Version(), true)
+		settings = cluster.MakeTestingClusterSettingsWithVersions(clusterversion.ByKey(clusterversion.V23_2_ChangefeedLaggingRangesOpts-1), clusterversion.ByKey(clusterversion.V23_1), true)
 		_, _, err = opts.GetLaggingRangesConfig(ctx, settings)
 		require.Error(t, err, "cluster version must be 23.2 or greater")
 	})

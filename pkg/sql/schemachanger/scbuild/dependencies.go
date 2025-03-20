@@ -1,12 +1,7 @@
 // Copyright 2022 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package scbuild
 
@@ -55,7 +50,8 @@ type Dependencies interface {
 	// of checking whether CCL features are enabled.
 	ClusterID() uuid.UUID
 
-	// Codec returns the current SQL codec.
+	// Codec returns the current session data, as in execCfg.
+	// So far this is used only to build a eval.Context.
 	Codec() keys.SQLCodec
 
 	// Statements returns the statements behind this schema change.
@@ -178,14 +174,14 @@ type AuthorizationAccessor interface {
 		ctx context.Context, privilegeObject privilege.Object, privilege privilege.Kind,
 	) error
 
-	// HasAdminRole verifies if current user has an admin role.
+	// HasAdminRole verifies if a user has an admin role.
 	HasAdminRole(ctx context.Context) (bool, error)
 
 	// HasOwnership returns true iff the role, or any role the role is a member
 	// of, has ownership privilege of the desc.
 	HasOwnership(ctx context.Context, privilegeObject privilege.Object) (bool, error)
 
-	// CheckPrivilegeForUser verifies that `user` has `privilege` on `descriptor`.
+	// CheckPrivilegeForUser verifies that the user has `privilege` on `descriptor`.
 	CheckPrivilegeForUser(
 		ctx context.Context, privilegeObject privilege.Object, privilege privilege.Kind, user username.SQLUsername,
 	) error
@@ -194,18 +190,11 @@ type AuthorizationAccessor interface {
 	// and indirect) and returns a map of "role" -> "isAdmin".
 	MemberOfWithAdminOption(ctx context.Context, member username.SQLUsername) (map[username.SQLUsername]bool, error)
 
-	// HasPrivilege checks if the `user` has `privilege` on `privilegeObject`.
+	// HasPrivilege checks if the user has `privilege` on `descriptor`.
 	HasPrivilege(ctx context.Context, privilegeObject privilege.Object, privilege privilege.Kind, user username.SQLUsername) (bool, error)
 
 	// HasAnyPrivilege returns true if user has any privileges at all.
 	HasAnyPrivilege(ctx context.Context, privilegeObject privilege.Object) (bool, error)
-
-	// HasGlobalPrivilegeOrRoleOption returns a bool representing whether the current user
-	// has a global privilege or the corresponding legacy role option.
-	HasGlobalPrivilegeOrRoleOption(ctx context.Context, privilege privilege.Kind) (bool, error)
-
-	// CheckRoleExists returns nil if `role` exists.
-	CheckRoleExists(ctx context.Context, role username.SQLUsername) error
 }
 
 // AstFormatter provides interfaces for formatting AST nodes.

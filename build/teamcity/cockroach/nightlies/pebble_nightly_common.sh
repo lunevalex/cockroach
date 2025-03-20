@@ -1,4 +1,10 @@
 #!/usr/bin/env bash
+
+# Copyright 2022 The Cockroach Authors.
+#
+# Use of this software is governed by the CockroachDB Software License
+# included in the /LICENSE file.
+
 #
 # This script contains common configuration used by the Pebble Nightly runs.
 
@@ -32,11 +38,11 @@ BAZEL_BIN=$(bazel info bazel-bin --config ci -c opt)
 cp $BAZEL_BIN/pkg/cmd/roachtest/roachtest_/roachtest bin
 chmod a+w bin/roachtest
 
-# Pull in the latest version of Pebble from upstream. The benchmarks run
-# against the tip of the 'master' branch. We do this by `go get`ting the
+# Pull in the latest version of Pebble from upstream. The benchmarks run against
+# the tip of the 'crl-release-23.2' branch. We do this by `go get`ting the
 # latest version of the module, and then running `mirror` to update `DEPS.bzl`
 # accordingly.
-bazel run @go_sdk//:bin/go get github.com/cockroachdb/pebble@master
+bazel run @go_sdk//:bin/go get github.com/cockroachdb/pebble@crl-release-23.2
 NEW_DEPS_BZL_CONTENT=$(bazel run //pkg/cmd/mirror/go:mirror)
 echo "$NEW_DEPS_BZL_CONTENT" > DEPS.bzl
 bazel build @com_github_cockroachdb_pebble//cmd/pebble --config ci -c opt

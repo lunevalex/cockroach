@@ -1,13 +1,8 @@
 // Copyright 2017 Andy Kimball
 // Copyright 2017 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package tscache
 
@@ -198,7 +193,7 @@ func newIntervalSkl(clock *hlc.Clock, minRet time.Duration, metrics sklMetrics) 
 		minPages: defaultMinSklPages,
 		metrics:  metrics,
 	}
-	s.pushNewPage(0 /* maxWallTime */, nil /* arena */)
+	s.pushNewPage(0 /* maxTime */, nil /* arena */)
 	s.metrics.Pages.Update(1)
 	return &s
 }
@@ -206,8 +201,8 @@ func newIntervalSkl(clock *hlc.Clock, minRet time.Duration, metrics sklMetrics) 
 // Add marks the a single key as having been read at the given timestamp. Once
 // Add completes, future lookups of this key are guaranteed to return an equal
 // or greater timestamp.
-func (s *intervalSkl) Add(ctx context.Context, key []byte, val cacheValue) {
-	s.AddRange(ctx, nil, key, 0, val)
+func (s *intervalSkl) Add(key []byte, val cacheValue) {
+	s.AddRange(nil, key, 0, val)
 }
 
 // AddRange marks the given range of keys [from, to] as having been read at the
@@ -229,9 +224,7 @@ func (s *intervalSkl) Add(ctx context.Context, key []byte, val cacheValue) {
 // the range is split into sub-ranges that are each marked with the maximum read
 // timestamp for that sub-range. Once AddRange completes, future lookups at any
 // point in the range are guaranteed to return an equal or greater timestamp.
-func (s *intervalSkl) AddRange(
-	ctx context.Context, from, to []byte, opt rangeOptions, val cacheValue,
-) {
+func (s *intervalSkl) AddRange(from, to []byte, opt rangeOptions, val cacheValue) {
 	if from == nil && to == nil {
 		panic("from and to keys cannot be nil")
 	}
@@ -277,13 +270,13 @@ func (s *intervalSkl) AddRange(
 
 	for {
 		// Try to add the range to the later page.
-		filledPage := s.addRange(ctx, from, to, opt, val)
+		filledPage := s.addRange(from, to, opt, val)
 		if filledPage == nil {
 			break
 		}
 
 		// The page was filled up, so rotate the pages and then try again.
-		s.rotatePages(ctx, filledPage)
+		s.rotatePages(filledPage)
 	}
 }
 
@@ -293,17 +286,16 @@ func (s *intervalSkl) AddRange(
 // "to" arguments in accordance with AddRange's contract. It returns nil if the
 // operation was successful, or a pointer to an sklPage if the operation failed
 // because that page was full.
-func (s *intervalSkl) addRange(
-	ctx context.Context, from, to []byte, opt rangeOptions, val cacheValue,
-) *sklPage {
+func (s *intervalSkl) addRange(from, to []byte, opt rangeOptions, val cacheValue) *sklPage {
 	// Acquire the rotation mutex read lock so that the page will not be rotated
 	// while add or lookup operations are in progress.
-	s.rotMutex.TracedRLock(ctx)
+	s.rotMutex.RLock()
 	defer s.rotMutex.RUnlock()
 
-	// If floor ts is >= requested timestamp, then no need to perform a search or
-	// add any records.
-	if val.ts.LessEq(s.floorTS) {
+	// If floor ts is greater than the requested timestamp, then no need to
+	// perform a search or add any records. We don't return early when the
+	// timestamps are equal, because their flags may differ.
+	if val.ts.Less(s.floorTS) {
 		return nil
 	}
 
@@ -325,12 +317,8 @@ func (s *intervalSkl) addRange(
 			err = fp.addNode(&it, to, val, 0, true /* mustInit */)
 		}
 
-		if err != nil {
-			if errors.Is(err, arenaskl.ErrArenaFull) {
-				return fp
-			} else {
-				panic(fmt.Sprintf("unexpected error: %v", err))
-			}
+		if errors.Is(err, arenaskl.ErrArenaFull) {
+			return fp
 		}
 	}
 
@@ -347,12 +335,8 @@ func (s *intervalSkl) addRange(
 		err = fp.addNode(&it, from, val, hasGap, false /* mustInit */)
 	}
 
-	if err != nil {
-		if errors.Is(err, arenaskl.ErrArenaFull) {
-			return fp
-		} else {
-			panic(fmt.Sprintf("unexpected error: %v", err))
-		}
+	if errors.Is(err, arenaskl.ErrArenaFull) {
+		return fp
 	}
 
 	// Seek to the node immediately after the "from" node.
@@ -393,7 +377,7 @@ func (s *intervalSkl) frontPage() *sklPage {
 
 // pushNewPage prepends a new empty page to the front of the pages list. It
 // accepts an optional arena argument to facilitate re-use.
-func (s *intervalSkl) pushNewPage(maxWallTime int64, arena *arenaskl.Arena) {
+func (s *intervalSkl) pushNewPage(maxTime ratchetingTime, arena *arenaskl.Arena) {
 	size := s.nextPageSize()
 	if arena != nil && arena.Cap() == size {
 		// Re-use the provided arena, if possible.
@@ -403,7 +387,7 @@ func (s *intervalSkl) pushNewPage(maxWallTime int64, arena *arenaskl.Arena) {
 		arena = arenaskl.NewArena(size)
 	}
 	p := newSklPage(arena)
-	p.maxWallTime.Store(maxWallTime)
+	p.maxTime = maxTime
 	s.pages.PushFront(p)
 }
 
@@ -433,9 +417,9 @@ func (s *intervalSkl) maximumPageSize() uint32 {
 // earlier page. The max timestamp of the earlier page becomes the new floor
 // timestamp, in order to guarantee that timestamp lookups never return decreasing
 // values.
-func (s *intervalSkl) rotatePages(ctx context.Context, filledPage *sklPage) {
+func (s *intervalSkl) rotatePages(filledPage *sklPage) {
 	// Acquire the rotation mutex write lock to lock the entire intervalSkl.
-	s.rotMutex.TracedLock(ctx)
+	s.rotMutex.Lock()
 	defer s.rotMutex.Unlock()
 
 	fp := s.frontPage()
@@ -480,13 +464,13 @@ func (s *intervalSkl) rotatePages(ctx context.Context, filledPage *sklPage) {
 		s.pages.Remove(evict)
 	}
 
-	// Push a new empty page on the front of the pages list. We give this page the
-	// maxWallTime of the old front page. This assures that the maxWallTime for a
+	// Push a new empty page on the front of the pages list. We give this page
+	// the maxTime of the old front page. This assures that the maxTime for a
 	// page is always equal to or greater than that for all earlier pages. In
-	// other words, it assures that the maxWallTime for a page is not only the
+	// other words, it assures that the maxTime for a page is not only the
 	// maximum timestamp for all values it contains, but also for all values any
 	// earlier pages contain.
-	s.pushNewPage(fp.maxWallTime.Load(), oldArena)
+	s.pushNewPage(fp.maxTime, oldArena)
 
 	// Update metrics.
 	s.metrics.Pages.Update(int64(s.pages.Len()))
@@ -496,23 +480,21 @@ func (s *intervalSkl) rotatePages(ctx context.Context, filledPage *sklPage) {
 // LookupTimestamp returns the latest timestamp value at which the given key was
 // read. If this operation is repeated with the same key, it will always result
 // in an equal or greater timestamp.
-func (s *intervalSkl) LookupTimestamp(ctx context.Context, key []byte) cacheValue {
-	return s.LookupTimestampRange(ctx, nil, key, 0)
+func (s *intervalSkl) LookupTimestamp(key []byte) cacheValue {
+	return s.LookupTimestampRange(nil, key, 0)
 }
 
 // LookupTimestampRange returns the latest timestamp value of any key within the
 // specified range. If this operation is repeated with the same range, it will
 // always result in an equal or greater timestamp.
-func (s *intervalSkl) LookupTimestampRange(
-	ctx context.Context, from, to []byte, opt rangeOptions,
-) cacheValue {
+func (s *intervalSkl) LookupTimestampRange(from, to []byte, opt rangeOptions) cacheValue {
 	if from == nil && to == nil {
 		panic("from and to keys cannot be nil")
 	}
 
 	// Acquire the rotation mutex read lock so that the page will not be rotated
 	// while add or lookup operations are in progress.
-	s.rotMutex.TracedRLock(ctx)
+	s.rotMutex.RLock()
 	defer s.rotMutex.RUnlock()
 
 	// Iterate over the pages, performing the lookup on each and remembering the
@@ -564,9 +546,9 @@ func (s *intervalSkl) FloorTS() hlc.Timestamp {
 // filled up, it returns arenaskl.ErrArenaFull. At that point, a new fixed page
 // must be allocated and used instead.
 type sklPage struct {
-	list        *arenaskl.Skiplist
-	maxWallTime atomic.Int64
-	isFull      atomic.Int32
+	list    *arenaskl.Skiplist
+	maxTime ratchetingTime // accessed atomically
+	isFull  int32          // accessed atomically
 }
 
 func newSklPage(arena *arenaskl.Arena) *sklPage {
@@ -660,7 +642,7 @@ func (p *sklPage) addNode(
 
 		switch {
 		case errors.Is(err, arenaskl.ErrArenaFull):
-			p.isFull.Store(1)
+			atomic.StoreInt32(&p.isFull, 1)
 			return err
 		case errors.Is(err, arenaskl.ErrRecordExists):
 			// Another thread raced and added the node, so just ratchet its
@@ -782,7 +764,7 @@ func (p *sklPage) ensureFloorValue(it *arenaskl.Iterator, to []byte, val cacheVa
 			break
 		}
 
-		if p.isFull.Load() == 1 {
+		if atomic.LoadInt32(&p.isFull) == 1 {
 			// Page is full, so stop iterating. The caller will then be able to
 			// release the read lock and rotate the pages. Not doing this could
 			// result in forcing all other operations to wait for this thread to
@@ -812,6 +794,55 @@ func (p *sklPage) ensureFloorValue(it *arenaskl.Iterator, to []byte, val cacheVa
 }
 
 func (p *sklPage) ratchetMaxTimestamp(ts hlc.Timestamp) {
+	new := makeRatchetingTime(ts)
+	for {
+		old := ratchetingTime(atomic.LoadInt64((*int64)(&p.maxTime)))
+		if new <= old {
+			break
+		}
+
+		if atomic.CompareAndSwapInt64((*int64)(&p.maxTime), int64(old), int64(new)) {
+			break
+		}
+	}
+}
+
+func (p *sklPage) getMaxTimestamp() hlc.Timestamp {
+	return ratchetingTime(atomic.LoadInt64((*int64)(&p.maxTime))).get()
+}
+
+// ratchetingTime is a compressed representation of an hlc.Timestamp, reduced
+// down to 64 bits to support atomic access.
+//
+// ratchetingTime implements compression such that any loss of information when
+// passing through the type results in the resulting Timestamp being ratcheted
+// to a larger value. This provides the guarantee that the following relation
+// holds, regardless of the value of x:
+//
+//	x.LessEq(makeRatchetingTime(x).get())
+//
+// It also provides the guarantee that if the synthetic flag is set on the
+// initial timestamp, then this flag is set on the resulting Timestamp. So the
+// following relation is guaranteed to hold, regardless of the value of x:
+//
+//	x.IsFlagSet(SYNTHETIC) == makeRatchetingTime(x).get().IsFlagSet(SYNTHETIC)
+//
+// Compressed ratchetingTime values compare such that taking the maximum of any
+// two ratchetingTime values and converting that back to a Timestamp is always
+// equal to or larger than the equivalent call through the Timestamp.Forward
+// method. So the following relation is guaranteed to hold, regardless of the
+// value of x or y:
+//
+//	z := max(makeRatchetingTime(x), makeRatchetingTime(y)).get()
+//	x.Forward(y).LessEq(z)
+//
+// Bit layout (LSB to MSB):
+//
+//	bits 0:      inverted synthetic flag
+//	bits 1 - 63: upper 63 bits of wall time
+type ratchetingTime int64
+
+func makeRatchetingTime(ts hlc.Timestamp) ratchetingTime {
 	// Cheat and just use the max wall time portion of the timestamp, since it's
 	// fine for the max timestamp to be a bit too large. This is the case
 	// because it's always safe to increase the timestamp in a range. It's also
@@ -825,25 +856,38 @@ func (p *sklPage) ratchetMaxTimestamp(ts hlc.Timestamp) {
 	// We could use an atomic.Value to store a "MaxValue" cacheValue for a given
 	// page, but this would be more expensive and it's not clear that it would
 	// be worth it.
-	new := ts.WallTime
+	rt := ratchetingTime(ts.WallTime)
 	if ts.Logical > 0 {
-		new++
+		rt++
 	}
 
-	for {
-		old := p.maxWallTime.Load()
-		if new <= old {
-			break
-		}
-
-		if p.maxWallTime.CompareAndSwap(old, new) {
-			break
-		}
+	// Similarly, cheat and use the last bit in the wall time to indicate
+	// whether the timestamp is synthetic or not. Do so by first rounding up the
+	// last bit of the wall time so that it is empty. This is safe for the same
+	// reason that rounding up the logical portion of the timestamp in the wall
+	// time is safe (see above).
+	//
+	// We use the last bit to indicate that the flag is NOT set. This ensures
+	// that if two timestamps have the same ordering but different values for
+	// the synthetic flag, the timestamp without the synthetic flag has a larger
+	// ratchetingTime value. This follows how Timestamp.Forward treats the flag.
+	if rt&1 == 1 {
+		rt++
 	}
+	if !ts.Synthetic {
+		rt |= 1
+	}
+
+	return rt
 }
 
-func (p *sklPage) getMaxTimestamp() hlc.Timestamp {
-	return hlc.Timestamp{WallTime: p.maxWallTime.Load()}
+func (rt ratchetingTime) get() hlc.Timestamp {
+	var ts hlc.Timestamp
+	ts.WallTime = int64(rt &^ 1)
+	if rt&1 == 0 {
+		ts.Synthetic = true
+	}
+	return ts
 }
 
 // ratchetPolicy defines the behavior a ratcheting attempt should take when
@@ -939,7 +983,7 @@ func (p *sklPage) ratchetValueSet(
 				// was initialized after this, its value set would be relied
 				// upon to stand on its own even though it would be missing the
 				// ratcheting we tried to perform here.
-				p.isFull.Store(1)
+				atomic.StoreInt32(&p.isFull, 1)
 
 				if !inited && (meta&cantInit) == 0 {
 					err := it.SetMeta(meta | cantInit)
@@ -1080,16 +1124,12 @@ func (p *sklPage) scanTo(
 
 		// Decode the current node's value set.
 		keyVal, gapVal := decodeValueSet(it.Value(), it.Meta())
-		if ratchetErr != nil {
-			if errors.Is(ratchetErr, arenaskl.ErrArenaFull) {
-				// If we failed to ratchet an uninitialized node above, the desired
-				// ratcheting won't be reflected in the decoded values. Perform the
-				// ratcheting manually.
-				keyVal, _ = ratchetValue(keyVal, prevGapVal)
-				gapVal, _ = ratchetValue(gapVal, prevGapVal)
-			} else {
-				panic(fmt.Sprintf("unexpected error: %v", ratchetErr))
-			}
+		if errors.Is(ratchetErr, arenaskl.ErrArenaFull) {
+			// If we failed to ratchet an uninitialized node above, the desired
+			// ratcheting won't be reflected in the decoded values. Perform the
+			// ratcheting manually.
+			keyVal, _ = ratchetValue(keyVal, prevGapVal)
+			gapVal, _ = ratchetValue(gapVal, prevGapVal)
 		}
 
 		if !(first && (opt&excludeFrom) != 0) {

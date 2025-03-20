@@ -1,10 +1,7 @@
 // Copyright 2018 The Cockroach Authors.
 //
-// Licensed as a CockroachDB Enterprise file under the Cockroach Community
-// License (the "License"); you may not use this file except in compliance with
-// the License. You may obtain a copy of the License at
-//
-//     https://github.com/cockroachdb/cockroach/blob/master/licenses/CCL.txt
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package changefeedccl
 
@@ -153,7 +150,13 @@ func getAndDialSink(
 	if err != nil {
 		return nil, err
 	}
-	return sink, sink.Dial()
+	if err := sink.Dial(); err != nil {
+		if closeErr := sink.Close(); closeErr != nil {
+			return nil, errors.CombineErrors(err, errors.Wrap(closeErr, `failed to close sink`))
+		}
+		return nil, err
+	}
+	return sink, nil
 }
 
 // WebhookV2Enabled determines whether or not the refactored Webhook sink
@@ -178,6 +181,17 @@ var PubsubV2Enabled = settings.RegisterBoolSetting(
 	// TODO: delete the original pubsub sink code
 	util.ConstantWithMetamorphicTestBool("changefeed.new_pubsub_sink.enabled", true),
 	settings.WithName("changefeed.new_pubsub_sink.enabled"),
+)
+
+// KafkaV2Enabled determines whether or not the refactored Kafka sink
+// or the deprecated sink should be used.
+var KafkaV2Enabled = settings.RegisterBoolSetting(
+	settings.ApplicationLevel,
+	"changefeed.new_kafka_sink_enabled",
+	"if enabled, this setting enables a new implementation of the kafka sink with improved reliability",
+	// TODO(#126991): delete the original kafka sink code
+	util.ConstantWithMetamorphicTestBool("changefeed.new_kafka_sink.enabled", false),
+	settings.WithName("changefeed.new_kafka_sink.enabled"),
 )
 
 func getSink(
@@ -234,7 +248,13 @@ func getSink(
 			return makeNullSink(sinkURL{URL: u}, metricsBuilder(nullIsAccounted))
 		case isKafkaSink(u):
 			return validateOptionsAndMakeSink(changefeedbase.KafkaValidOptions, func() (Sink, error) {
-				return makeKafkaSink(ctx, sinkURL{URL: u}, AllTargets(feedCfg), opts.GetKafkaConfigJSON(), serverCfg.Settings, metricsBuilder)
+				if KafkaV2Enabled.Get(&serverCfg.Settings.SV) {
+					return makeKafkaSinkV2(ctx, sinkURL{URL: u}, AllTargets(feedCfg), opts.GetKafkaConfigJSON(),
+						numSinkIOWorkers(serverCfg), newCPUPacerFactory(ctx, serverCfg), timeutil.DefaultTimeSource{},
+						serverCfg.Settings, metricsBuilder, kafkaSinkV2Knobs{})
+				} else {
+					return makeKafkaSink(ctx, sinkURL{URL: u}, AllTargets(feedCfg), opts.GetKafkaConfigJSON(), serverCfg.Settings, metricsBuilder)
+				}
 			})
 		case isWebhookSink(u):
 			webhookOpts, err := opts.GetWebhookSinkOptions()

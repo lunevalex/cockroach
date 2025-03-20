@@ -1,10 +1,7 @@
 // Copyright 2022 The Cockroach Authors.
 //
-// Licensed as a CockroachDB Enterprise file under the Cockroach Community
-// License (the "License"); you may not use this file except in compliance with
-// the License. You may obtain a copy of the License at
-//
-//     https://github.com/cockroachdb/cockroach/blob/master/licenses/CCL.txt
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package schemachangerccl
 
@@ -15,6 +12,7 @@ import (
 
 	"github.com/cockroachdb/cockroach/pkg/base"
 	"github.com/cockroachdb/cockroach/pkg/ccl/multiregionccl/multiregionccltestutils"
+	"github.com/cockroachdb/cockroach/pkg/clusterversion"
 	"github.com/cockroachdb/cockroach/pkg/jobs"
 	"github.com/cockroachdb/cockroach/pkg/server"
 	"github.com/cockroachdb/cockroach/pkg/sql"
@@ -46,7 +44,8 @@ func (f MultiRegionTestClusterFactory) WithSchemaChangerKnobs(
 // WithMixedVersion implements the sctest.TestServerFactory interface.
 func (f MultiRegionTestClusterFactory) WithMixedVersion() sctest.TestServerFactory {
 	f.server = &server.TestingKnobs{
-		BinaryVersionOverride:          sctest.OldVersionKey.Version(),
+		BootstrapVersionKeyOverride:    sctest.OldVersionKey,
+		BinaryVersionOverride:          clusterversion.ByKey(sctest.OldVersionKey),
 		DisableAutomaticVersionUpgrade: make(chan struct{}),
 	}
 	return f

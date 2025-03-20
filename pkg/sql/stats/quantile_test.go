@@ -1,12 +1,7 @@
 // Copyright 2022 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package stats
 
@@ -42,7 +37,7 @@ func TestRandomQuantileRoundTrip(t *testing.T) {
 	colTypes = append(colTypes, types.Scalar...)
 	rng, seed := randutil.NewTestRand()
 	for _, colType := range colTypes {
-		if canMakeQuantile(HistVersion, colType) {
+		if canMakeQuantile(histVersion, colType) {
 			for i := 0; i < 5; i++ {
 				t.Run(fmt.Sprintf("%v/%v", colType.Name(), i), func(t *testing.T) {
 					hist, rowCount := randHist(colType, rng)

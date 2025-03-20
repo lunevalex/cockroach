@@ -1,10 +1,7 @@
 // Copyright 2022 The Cockroach Authors.
 //
-// Licensed as a CockroachDB Enterprise file under the Cockroach Community
-// License (the "License"); you may not use this file except in compliance with
-// the License. You may obtain a copy of the License at
-//
-//     https://github.com/cockroachdb/cockroach/blob/master/licenses/CCL.txt
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package changefeedccl
 
@@ -261,13 +258,13 @@ func (e *jsonEncoder) initRawEnvelope() error {
 		}
 
 		if e.updatedField {
-			if err := metaBuilder.Set("updated", json.FromString(evCtx.updated.AsOfSystemTime())); err != nil {
+			if err := metaBuilder.Set("updated", json.FromString(timestampToString(evCtx.updated))); err != nil {
 				return nil, err
 			}
 		}
 
 		if e.mvccTimestampField {
-			if err := metaBuilder.Set("mvcc_timestamp", json.FromString(evCtx.mvcc.AsOfSystemTime())); err != nil {
+			if err := metaBuilder.Set("mvcc_timestamp", json.FromString(timestampToString(evCtx.mvcc))); err != nil {
 				return nil, err
 			}
 		}
@@ -355,13 +352,13 @@ func (e *jsonEncoder) initWrappedEnvelope() error {
 		}
 
 		if e.updatedField {
-			if err := b.Set("updated", json.FromString(evCtx.updated.AsOfSystemTime())); err != nil {
+			if err := b.Set("updated", json.FromString(timestampToString(evCtx.updated))); err != nil {
 				return nil, err
 			}
 		}
 
 		if e.mvccTimestampField {
-			if err := b.Set("mvcc_timestamp", json.FromString(evCtx.mvcc.AsOfSystemTime())); err != nil {
+			if err := b.Set("mvcc_timestamp", json.FromString(timestampToString(evCtx.mvcc))); err != nil {
 				return nil, err
 			}
 		}

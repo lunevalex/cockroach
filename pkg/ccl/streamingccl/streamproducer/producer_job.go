@@ -1,10 +1,7 @@
 // Copyright 2021 The Cockroach Authors.
 //
-// Licensed as a CockroachDB Enterprise file under the Cockroach Community
-// License (the "License"); you may not use this file except in compliance with
-// the License. You may obtain a copy of the License at
-//
-//     https://github.com/cockroachdb/cockroach/blob/master/licenses/CCL.txt
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package streamproducer
 
@@ -41,26 +38,23 @@ func makeTenantSpan(tenantID uint64) roachpb.Span {
 func makeProducerJobRecord(
 	registry *jobs.Registry,
 	tenantInfo *mtinfopb.TenantInfo,
-	expirationWindow time.Duration,
+	timeout time.Duration,
 	user username.SQLUsername,
 	ptsID uuid.UUID,
 ) jobs.Record {
 	tenantID := tenantInfo.ID
 	tenantName := tenantInfo.Name
-	currentTime := timeutil.Now()
-	expiration := currentTime.Add(expirationWindow)
 	return jobs.Record{
 		JobID:       registry.MakeJobID(),
-		Description: fmt.Sprintf("History Retention for Physical Replication of %s", tenantName),
+		Description: fmt.Sprintf("Physical replication stream producer for %q (%d)", tenantName, tenantID),
 		Username:    user,
 		Details: jobspb.StreamReplicationDetails{
 			ProtectedTimestampRecordID: ptsID,
 			Spans:                      []roachpb.Span{makeTenantSpan(tenantID)},
 			TenantID:                   roachpb.MustMakeTenantID(tenantID),
-			ExpirationWindow:           expirationWindow,
 		},
 		Progress: jobspb.StreamReplicationProgress{
-			Expiration: expiration,
+			Expiration: timeutil.Now().Add(timeout),
 		},
 	}
 }
@@ -121,11 +115,6 @@ func (p *producerJobResumer) Resume(ctx context.Context, execCtx interface{}) er
 
 			switch progress.StreamIngestionStatus {
 			case jobspb.StreamReplicationProgress_FINISHED_SUCCESSFULLY:
-				// Retain the pts until the expiration period elapses to allow for fast
-				// fail back.
-				if progress.Expiration.After(p.timeSource.Now()) {
-					continue
-				}
 				if err := p.removeJobFromTenantRecord(ctx, execCfg); err != nil {
 					return err
 				}

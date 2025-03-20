@@ -1,12 +1,7 @@
 // Copyright 2019 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package colflow_test
 
@@ -234,7 +229,7 @@ func TestVectorizedFlowShutdown(t *testing.T) {
 				// memory accounting system.
 				syncAllocator := colmem.NewAllocator(ctx, &syncMemAccount, testColumnFactory)
 				syncFlowCtx := &execinfra.FlowCtx{Local: false, Gateway: !addAnotherRemote}
-				synchronizer := colexec.NewParallelUnorderedSynchronizer(syncFlowCtx, 0 /* processorID */, syncAllocator, synchronizerInputs, &wg)
+				synchronizer := colexec.NewParallelUnorderedSynchronizer(syncFlowCtx, 0 /* processorID */, syncAllocator, typs, synchronizerInputs, &wg)
 				inputMetadataSource := colexecop.MetadataSource(synchronizer)
 
 				runOutboxInbox := func(

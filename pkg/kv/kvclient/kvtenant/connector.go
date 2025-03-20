@@ -1,12 +1,7 @@
 // Copyright 2023 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package kvtenant
 
@@ -130,6 +125,11 @@ type Connector interface {
 	// mixed version 21.2->22.1 state where the tenant has not yet configured
 	// its own zones.
 	config.SystemConfigProvider
+
+	// GetClusterInitGracePeriodTS will return the timestamp used to signal the
+	// end of the grace period for clusters with a license. The timestamp is
+	// represented as the number of seconds since the Unix epoch.
+	GetClusterInitGracePeriodTS() int64
 }
 
 // TokenBucketProvider supplies an endpoint (to tenants) for the TokenBucket API
@@ -209,10 +209,11 @@ type connector struct {
 		// metadata bits has been received.
 		receivedFirstMetadata bool
 
-		tenantName   roachpb.TenantName
-		dataState    mtinfopb.TenantDataState
-		serviceMode  mtinfopb.TenantServiceMode
-		capabilities *tenantcapabilitiespb.TenantCapabilities
+		tenantName               roachpb.TenantName
+		dataState                mtinfopb.TenantDataState
+		serviceMode              mtinfopb.TenantServiceMode
+		capabilities             *tenantcapabilitiespb.TenantCapabilities
+		clusterInitGracePeriodTS int64
 
 		// notifyCh is closed when there are changes to the metadata.
 		notifyCh chan struct{}
@@ -664,29 +665,24 @@ func (c *connector) TenantRanges(
 	return
 }
 
+// FirstRange implements the kvcoord.RangeDescriptorDB interface.
+func (c *connector) FirstRange() (*roachpb.RangeDescriptor, error) {
+	return nil, status.Error(codes.Unauthenticated, "kvtenant.Proxy does not have access to FirstRange")
+}
+
 // NewIterator implements the rangedesc.IteratorFactory interface.
 func (c *connector) NewIterator(
 	ctx context.Context, span roachpb.Span,
 ) (rangedesc.Iterator, error) {
-	rangeDescriptors, err := c.getRangeDescs(ctx, span, 0)
-	return rangedesc.NewSliceIterator(rangeDescriptors), err
-}
-
-func (c *connector) getRangeDescs(
-	ctx context.Context, span roachpb.Span, pageSize int,
-) ([]roachpb.RangeDescriptor, error) {
 	var rangeDescriptors []roachpb.RangeDescriptor
-
-	streamCtx, cancel := context.WithCancel(ctx)
-	defer cancel()
 	for ctx.Err() == nil {
 		rangeDescriptors = rangeDescriptors[:0] // clear out.
 		client, err := c.getClient(ctx)
 		if err != nil {
 			continue
 		}
-		stream, err := client.GetRangeDescriptors(streamCtx, &kvpb.GetRangeDescriptorsRequest{
-			Span: span, BatchSize: int64(pageSize),
+		stream, err := client.GetRangeDescriptors(ctx, &kvpb.GetRangeDescriptorsRequest{
+			Span: span,
 		})
 		if err != nil {
 			// TODO(arul): We probably don't want to treat all errors here as "soft".
@@ -702,7 +698,10 @@ func (c *connector) getRangeDescs(
 			e, err := stream.Recv()
 			if err != nil {
 				if err == io.EOF {
-					return rangeDescriptors, nil
+					return &rangeDescIterator{
+						rangeDescs: rangeDescriptors,
+						curIdx:     0,
+					}, nil
 				}
 				log.Warningf(ctx, "error consuming GetRangeDescriptors RPC: %v", err)
 				if grpcutil.IsAuthError(err) {
@@ -714,23 +713,9 @@ func (c *connector) getRangeDescs(
 				break
 			}
 			rangeDescriptors = append(rangeDescriptors, e.RangeDescriptors...)
-			if pageSize != 0 && len(rangeDescriptors) >= pageSize {
-				if err := stream.CloseSend(); err != nil {
-					return nil, err
-				}
-				cancel()
-				return rangeDescriptors, nil
-			}
 		}
 	}
 	return nil, errors.Wrap(ctx.Err(), "new iterator")
-}
-
-// NewLazyIterator implements the IteratorFactory interface.
-func (i *connector) NewLazyIterator(
-	ctx context.Context, span roachpb.Span, pageSize int,
-) (rangedesc.LazyIterator, error) {
-	return rangedesc.NewPaginatedIter(ctx, span, pageSize, i.getRangeDescs)
 }
 
 // TokenBucket implements the kvtenant.TokenBucketProvider interface.
@@ -896,24 +881,6 @@ func (c *connector) HotRangesV2(
 	return resp, nil
 }
 
-// DownloadSpan implements the serverpb.TenantStatusServer interface
-func (c *connector) DownloadSpan(
-	ctx context.Context, req *serverpb.DownloadSpanRequest,
-) (*serverpb.DownloadSpanResponse, error) {
-	if !roachpb.IsSystemTenantID(c.tenantID.InternalValue) {
-		return nil, status.Errorf(codes.PermissionDenied, "only the system tenant can issue download span requests")
-	}
-	var resp *serverpb.DownloadSpanResponse
-	if err := c.withClient(ctx, func(ctx context.Context, c *client) error {
-		var err error
-		resp, err = c.DownloadSpan(ctx, req)
-		return err
-	}); err != nil {
-		return nil, err
-	}
-	return resp, nil
-}
-
 // WithTxn implements the spanconfig.KVAccessor interface.
 func (c *connector) WithTxn(context.Context, *kv.Txn) spanconfig.KVAccessor {
 	panic("not applicable")
@@ -1002,10 +969,10 @@ func (c *connector) dialAddrs(ctx context.Context) (*client, error) {
 
 func (c *connector) dialAddr(ctx context.Context, addr string) (conn *grpc.ClientConn, err error) {
 	if c.rpcDialTimeout == 0 {
-		return c.rpcContext.GRPCUnvalidatedDial(addr).Connect(ctx)
+		return c.rpcContext.GRPCUnvalidatedDial(addr, roachpb.Locality{}).Connect(ctx)
 	}
 	err = timeutil.RunWithTimeout(ctx, "dial addr", c.rpcDialTimeout, func(ctx context.Context) error {
-		conn, err = c.rpcContext.GRPCUnvalidatedDial(addr).Connect(ctx)
+		conn, err = c.rpcContext.GRPCUnvalidatedDial(addr, roachpb.Locality{}).Connect(ctx)
 		return err
 	})
 	return conn, err
@@ -1050,12 +1017,12 @@ func (c *connector) Query(
 // be used as a nodedialer.AddressResolver. Addresses are resolved to a node's
 // address.
 func AddressResolver(s kvcoord.NodeDescStore) nodedialer.AddressResolver {
-	return func(nodeID roachpb.NodeID) (net.Addr, error) {
+	return func(nodeID roachpb.NodeID) (net.Addr, roachpb.Locality, error) {
 		nd, err := s.GetNodeDescriptor(nodeID)
 		if err != nil {
-			return nil, err
+			return nil, roachpb.Locality{}, err
 		}
-		return &nd.Address, nil
+		return &nd.Address, nd.Locality, nil
 	}
 }
 

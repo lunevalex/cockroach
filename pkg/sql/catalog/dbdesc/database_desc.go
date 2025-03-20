@@ -1,12 +1,7 @@
 // Copyright 2020 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 // Package dbdesc contains the concrete implementations of
 // catalog.DatabaseDescriptor.
@@ -273,11 +268,10 @@ func (desc *immutable) validateMultiRegion(vea catalog.ValidationErrorAccumulato
 func (desc *immutable) maybeValidateSystemDatabaseSchemaVersion(
 	vea catalog.ValidationErrorAccumulator,
 ) {
-	maybeSV := desc.GetSystemDatabaseSchemaVersion()
-	if maybeSV == nil {
+	sv := desc.GetSystemDatabaseSchemaVersion()
+	if sv == nil {
 		return
 	}
-	sv := clusterversion.RemoveDevOffset(*maybeSV)
 
 	if id := desc.GetID(); id != keys.SystemDatabaseID {
 		vea.Report(errors.AssertionFailedf(
@@ -286,21 +280,21 @@ func (desc *immutable) maybeValidateSystemDatabaseSchemaVersion(
 		))
 	}
 
-	binaryMinSupportedVersion := clusterversion.RemoveDevOffset(clusterversion.MinSupported.Version())
-	if !binaryMinSupportedVersion.LessEq(sv) {
+	binaryMinSupportedVersion := clusterversion.ByKey(clusterversion.BinaryMinSupportedVersionKey)
+	if !binaryMinSupportedVersion.LessEq(*sv) {
 		vea.Report(errors.AssertionFailedf(
 			`attempting to set system database schema version to version lower than binary min supported version (%#v): %#v`,
 			binaryMinSupportedVersion,
-			sv,
+			*sv,
 		))
 	}
 
-	binaryVersion := clusterversion.RemoveDevOffset(clusterversion.Latest.Version())
+	binaryVersion := clusterversion.ByKey(clusterversion.BinaryVersionKey)
 	if !sv.LessEq(binaryVersion) {
 		vea.Report(errors.AssertionFailedf(
 			`attempting to set system database schema version to version higher than binary version (%#v): %#v`,
 			binaryVersion,
-			sv,
+			*sv,
 		))
 	}
 }

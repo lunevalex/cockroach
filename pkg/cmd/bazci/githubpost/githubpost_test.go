@@ -1,23 +1,16 @@
 // Copyright 2016 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package githubpost
 
 import (
 	"context"
-	"encoding/xml"
 	"os"
 	"strings"
 	"testing"
 
-	bazelutil "github.com/cockroachdb/cockroach/pkg/build/util"
 	"github.com/cockroachdb/cockroach/pkg/cmd/internal/issues"
 	"github.com/cockroachdb/cockroach/pkg/testutils/datapathutils"
 	"github.com/stretchr/testify/assert"
@@ -334,7 +327,7 @@ TestXXA - 1.00s
 					testName: "TestMeta",
 					title:    "internal/metamorphic: TestMeta failed",
 					message:  "panic: induced panic",
-					expRepro: `go test -tags 'invariants' -exec 'stress -p 1' -timeout 0 -test.v -run 'TestMeta$' ./internal/metamorphic -seed 1600209371838097000 -ops "uniform:5000-10000"`,
+					expRepro: `go test -tags 'invariants' -exec 'stress -p 1' -timeout 0 -test.v -run TestMeta$ ./internal/metamorphic -seed 1600209371838097000 -ops "uniform:5000-10000"`,
 					labels:   []string{"metamorphic-failure", "C-test-failure", "release-blocker"},
 				},
 			},
@@ -440,14 +433,11 @@ func TestListFailuresFromTestXML(t *testing.T) {
 
 	for _, c := range testCases {
 		t.Run(c.fileName, func(t *testing.T) {
-			content, err := os.ReadFile(datapathutils.TestDataPath(t, c.fileName))
+			file, err := os.Open(datapathutils.TestDataPath(t, c.fileName))
 			if err != nil {
 				t.Fatal(err)
 			}
-			var testXml bazelutil.TestSuites
-			if err := xml.Unmarshal(content, &testXml); err != nil {
-				t.Fatal(err)
-			}
+			defer file.Close()
 			curIssue := 0
 
 			f := func(ctx context.Context, f Failure) error {
@@ -472,7 +462,7 @@ func TestListFailuresFromTestXML(t *testing.T) {
 				curIssue++
 				return nil
 			}
-			if err := listFailuresFromTestXML(context.Background(), testXml, f); err != nil {
+			if err := listFailuresFromTestXML(context.Background(), file, f); err != nil {
 				t.Fatal(err)
 			}
 			if curIssue != len(c.expIssues) {

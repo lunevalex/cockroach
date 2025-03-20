@@ -1,12 +1,7 @@
 // Copyright 2019 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package kvserver
 
@@ -68,8 +63,7 @@ func (r *Replica) executeReadOnlyBatch(
 	ui := uncertainty.ComputeInterval(&ba.Header, st, r.Clock().MaxOffset())
 
 	// Evaluate read-only batch command.
-	rec := NewReplicaEvalContext(
-		ctx, r, g.LatchSpans(), ba.RequiresClosedTSOlderThanStorageSnapshot(), ba.AdmissionHeader)
+	rec := NewReplicaEvalContext(ctx, r, g.LatchSpans(), ba.RequiresClosedTSOlderThanStorageSnapshot())
 	defer rec.Release()
 
 	// TODO(irfansharif): It's unfortunate that in this read-only code path,
@@ -84,16 +78,7 @@ func (r *Replica) executeReadOnlyBatch(
 	// Pin engine state eagerly so that all iterators created over this Reader are
 	// based off the state of the engine as of this point and are mutually
 	// consistent.
-	readCategory := storage.BatchEvalReadCategory
-	for _, union := range ba.Requests {
-		inner := union.GetInner()
-		switch inner.(type) {
-		case *kvpb.ScanRequest, *kvpb.ReverseScanRequest:
-			readCategory = batcheval.ScanReadCategory(ba.AdmissionHeader)
-		}
-		break
-	}
-	if err := rw.PinEngineStateForIterators(readCategory); err != nil {
+	if err := rw.PinEngineStateForIterators(); err != nil {
 		return nil, g, nil, kvpb.NewError(err)
 	}
 	if util.RaceEnabled {

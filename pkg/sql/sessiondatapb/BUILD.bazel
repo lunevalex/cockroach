@@ -58,11 +58,8 @@ go_proto_library(
 go_test(
     name = "sessiondatapb_test",
     srcs = ["session_data_test.go"],
+    args = ["-test.timeout=295s"],
     embed = [":sessiondatapb"],
-    exec_properties = select({
-        "//build/toolchains:is_heavy": {"Pool": "heavy"},
-        "//conditions:default": {"Pool": "default"},
-    }),
     deps = [
         "//pkg/sql/protoreflect",
         "@com_github_stretchr_testify//require",

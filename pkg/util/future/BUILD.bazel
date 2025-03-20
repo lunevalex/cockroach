@@ -16,10 +16,7 @@ go_library(
 go_test(
     name = "future_test",
     srcs = ["future_test.go"],
-    exec_properties = select({
-        "//build/toolchains:is_heavy": {"Pool": "heavy"},
-        "//conditions:default": {"Pool": "default"},
-    }),
+    args = ["-test.timeout=295s"],
     deps = [
         ":future",
         "//pkg/testutils",

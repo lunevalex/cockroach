@@ -6,11 +6,9 @@ go_test(
         "datadriven_test.go",
         "main_test.go",
     ],
+    args = ["-test.timeout=295s"],
     data = glob(["testdata/**"]),
-    exec_properties = select({
-        "//build/toolchains:is_heavy": {"Pool": "heavy"},
-        "//conditions:default": {"Pool": "large"},
-    }),
+    exec_properties = {"Pool": "medium"},
     tags = ["ccl_test"],
     deps = [
         "//pkg/base",

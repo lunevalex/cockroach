@@ -1,12 +1,7 @@
 // Copyright 2022 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package main
 
@@ -32,7 +27,6 @@ type testFileTemplateConfig struct {
 	CockroachGoTestserverTest     bool
 	Ccl                           bool
 	ForceProductionValues         bool
-	SkipCclUnderRace              bool
 	Package, TestRuleName, RelDir string
 	ConfigIdx                     int
 	TestCount                     int
@@ -179,9 +173,6 @@ func (t *testdir) dump() error {
 		// allocate the tests which use 3-node clusters 2 vCPUs, and
 		// the ones which use more a bit more.
 		tplCfg.NumCPU = (cfg.NumNodes / 2) + 1
-		if cfg.Name == "3node-tenant" || strings.HasPrefix(cfg.Name, "multiregion-") {
-			tplCfg.SkipCclUnderRace = true
-		}
 		subdir := filepath.Join(t.dir, cfg.Name)
 		f, buildF, cleanup, err := openTestSubdir(subdir)
 		if err != nil {

@@ -1,3 +1,5 @@
+# LogicTest: !metamorphic-batch-sizes
+
 statement ok
 CREATE TABLE t (x INT PRIMARY KEY, y INT NOT NULL, z INT NOT NULL, w INT, INDEX i (x), INDEX i2 (z))
 
@@ -243,7 +245,7 @@ CREATE TABLE t (
   v JSONB,
   INDEX i1 (w), -- will get rewritten.
   INDEX i2 (y), -- will get rewritten.
-  UNIQUE INDEX i3 (z) STORING (y), -- will be rewritten.
+  UNIQUE INDEX i3 (z) STORING (y), -- will not be rewritten.
   UNIQUE INDEX i4 (z), -- will be rewritten.
   UNIQUE INDEX i5 (w) STORING (y), -- will be rewritten.
   INVERTED INDEX i6 (v), -- will be rewritten.
@@ -268,32 +270,32 @@ t  CREATE TABLE public.t (
      v JSONB NULL,
      crdb_internal_z_shard_4 INT8 NOT VISIBLE NOT NULL AS (mod(fnv32(md5(crdb_internal.datums_to_bytes(z))), 4:::INT8)) VIRTUAL,
      CONSTRAINT t_pkey PRIMARY KEY (y ASC),
+     UNIQUE INDEX i3 (z ASC) STORING (y),
      INDEX i1 (w ASC),
      INDEX i2 (y ASC),
-     UNIQUE INDEX i3 (z ASC),
      UNIQUE INDEX i4 (z ASC),
-     UNIQUE INDEX i5 (w ASC),
+     UNIQUE INDEX i5 (w ASC) STORING (y),
      INVERTED INDEX i6 (v),
      INDEX i7 (z ASC) USING HASH WITH (bucket_count=4),
      UNIQUE INDEX t_x_key (x ASC),
      FAMILY fam_0_x_y_z_w_v (x, y, z, w, v)
    )
 
-# Test that the indexes we expect got rewritten. All should have been rewritten,
-# so all indexID should be larger than 7.
+# Test that the indexes we expect got rewritten. All but i3 should have been rewritten,
+# so all but i3's indexID should be larger than 7.
 
 query IT
 SELECT index_id, index_name FROM crdb_internal.table_indexes WHERE descriptor_name = 't' ORDER BY index_id
 ----
+4   i3
 9   t_pkey
 11  i1
 13  i2
-15  i3
-17  i4
-19  i5
-21  i6
-23  i7
-25  t_x_key
+15  i4
+17  i5
+19  i6
+21  i7
+23  t_x_key
 
 # Make sure that each index can index join against the new primary key;
 
@@ -398,20 +400,6 @@ query IIIIT
 SELECT * FROM t@i5
 ----
 1 2 3 4 {}
-
-# Make sure the create_statement from `SHOW CREATE` can indeed recreate the
-# table without error.
-
-let $index_rewrites_t_create_statement
-SELECT create_statement FROM [SHOW CREATE t];
-
-statement ok
-DROP TABLE IF EXISTS t;
-
-statement ok
-$index_rewrites_t_create_statement
-
-subtest end
 
 subtest hash_sharded
 
@@ -1586,7 +1574,6 @@ statement ok
 COMMENT ON INDEX pkey IS 'idx';
 COMMENT ON CONSTRAINT pkey ON pkey_comment IS 'const';
 
-# Create a unique secondary index and add a comment on it.
 statement ok
 CREATE UNIQUE INDEX i2 ON pkey_comment(c);
 
@@ -1607,21 +1594,15 @@ COMMENT ON CONSTRAINT i2 ON public.pkey_comment IS 'idx3'
 statement ok
 ALTER TABLE pkey_comment ALTER PRIMARY KEY USING COLUMNS (b);
 
-# Verify that all comments are appropriately carried over. The order of comments
-# from `SHOW CREATE` between LSC and DSC are slightly different so we used
-# slightly complicated query to extract all comments from `SHOW CREATE` and
-# order them by comments for a unified output.
+# No comment exists inside the CREATE statement
+skipif config local-legacy-schema-changer
 query T
-SELECT trim(trailing ';' from unnest(regexp_split_to_array(substring(create_statement, strpos(create_statement, 'COMMENT')), '\n', 'g'))) AS comment
-FROM [SHOW CREATE pkey_comment]
-ORDER BY comment;
+SELECT substring(create_statement, strpos(create_statement, 'COMMENT')) FROM [SHOW CREATE pkey_comment];
 ----
-COMMENT ON CONSTRAINT i2 ON public.pkey_comment IS 'idx3'
+COMMENT ON INDEX public.pkey_comment@i2 IS 'idx2';
+COMMENT ON INDEX public.pkey_comment@pkey IS 'idx';
+COMMENT ON CONSTRAINT i2 ON public.pkey_comment IS 'idx3';
 COMMENT ON CONSTRAINT pkey ON public.pkey_comment IS 'const'
-COMMENT ON INDEX public.pkey_comment@i2 IS 'idx2'
-COMMENT ON INDEX public.pkey_comment@pkey IS 'idx'
-
-subtest end
 
 subtest test-index-deduplication
 
@@ -1929,46 +1910,58 @@ t_99303  CREATE TABLE public.t_99303 (
 
 subtest end
 
-# This subtest ensures that if we ALTER PK on a table with unique secondary
-# indexes on the new-pk-cols, then ALTER PK rewrites those unique secondary
-# indexes so that they have no reference to old-pk-cols anymore (previously,
-# before the ALTER PK, old-pk-cols are in their keySuffixColumn). This ensures
-# subsequent dropping of old-pk-cols will not impact any of these unique
-# secondary indexes.
-subtest 114436
+# In #123017 we noticed that ALTER PRIMARY KEY does not work correctly
+# if there are either view or function references to an index due to validation
+# errors in both the legacy and declarative schema changer. Long term we can
+# support this in the declarative schema changer.
+subtest alter_primary_key_block_func_view_ref
 
 statement ok
-CREATE TABLE t_114436 (j INT NOT NULL, UNIQUE INDEX idx (j));
+CREATE TABLE t_view_func_ref_123017 (
+    a STRING NOT NULL,
+    b INT2,
+    UNIQUE (b ASC)
+);
+CREATE FUNCTION f_123017() RETURNS RECORD LANGUAGE SQL AS $$
+  SELECT NULL FROM t_view_func_ref_123017@t_view_func_ref_123017_b_key
+$$;
+CREATE VIEW t_view_123017 AS (SELECT b FROM t_view_func_ref_123017@t_view_func_ref_123017_b_key);
+
+statement error pq: unimplemented: table \"t_view_func_ref_123017\" has an index \(t_view_func_ref_123017_b_key\) that is still referenced by \"f_123017\"
+ALTER TABLE t_view_func_ref_123017 ALTER PRIMARY KEY USING COLUMNS (a);
 
 statement ok
-ALTER TABLE t_114436 ALTER PRIMARY KEY USING COLUMNS (j);
+DROP FUNCTION f_123017;
+
+statement error pq: unimplemented: table \"t_view_func_ref_123017\" has an index \(t_view_func_ref_123017_b_key\) that is still referenced by \"t_view_123017\"
+ALTER TABLE t_view_func_ref_123017 ALTER PRIMARY KEY USING COLUMNS (a);
 
 statement ok
-ALTER TABLE t_114436 DROP COLUMN IF EXISTS rowid;
+DROP VIEW t_view_123017;
 
-query TTT
-SELECT index_name, column_name, direction FROM [SHOW INDEXES FROM t_114436] ORDER BY 1,2,3
+statement ok
+ALTER TABLE t_view_func_ref_123017 ALTER PRIMARY KEY USING COLUMNS (a);
+
+subtest end
+
+subtest special_characters
+
+statement ok
+CREATE TABLE table_w0_66 ( "Abc" INT4 PRIMARY KEY, "ab\f" INT2 NOT NULL, FAMILY ("Abc", "ab\f"));
+
+statement ok
+ALTER TABLE public.table_w0_66 ALTER PRIMARY KEY USING COLUMNS ("Abc", "ab\f") USING HASH;
+
+query T
+SELECT create_statement FROM [SHOW CREATE TABLE public.table_w0_66]
 ----
-idx j ASC
-t_114436_pkey j ASC
-
-# Repeat the same thing but on a non-rowid column this time.
-statement ok
-DROP TABLE t_114436;
-
-statement ok
-CREATE TABLE t_114436 (i INT PRIMARY KEY, j INT NOT NULL, UNIQUE INDEX idx (j));
-
-statement ok
-ALTER TABLE t_114436 ALTER PRIMARY KEY USING COLUMNS (j);
-
-statement ok
-ALTER TABLE t_114436 DROP COLUMN i;
-
-query TTT
-SELECT index_name, column_name, direction FROM [SHOW INDEXES FROM t_114436] ORDER BY 1,2,3
-----
-idx j ASC
-t_114436_pkey j ASC
+CREATE TABLE public.table_w0_66 (
+  "Abc" INT4 NOT NULL,
+  "ab\f" INT2 NOT NULL,
+  "crdb_internal_Abc_ab\f_shard_16" INT8 NOT VISIBLE NOT NULL AS (mod(fnv32(md5(crdb_internal.datums_to_bytes("Abc", "ab\f"))), 16:::INT8)) VIRTUAL,
+  CONSTRAINT table_w0_66_pkey PRIMARY KEY ("Abc" ASC, "ab\f" ASC) USING HASH WITH (bucket_count=16),
+  UNIQUE INDEX "table_w0_66_Abc_key" ("Abc" ASC),
+  FAMILY "fam_0_Abc_ab\f" ("Abc", "ab\f")
+)
 
 subtest end

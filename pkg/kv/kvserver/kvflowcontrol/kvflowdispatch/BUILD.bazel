@@ -24,12 +24,9 @@ go_library(
 go_test(
     name = "kvflowdispatch_test",
     srcs = ["kvflowdispatch_test.go"],
+    args = ["-test.timeout=295s"],
     data = glob(["testdata/**"]),
     embed = [":kvflowdispatch"],
-    exec_properties = select({
-        "//build/toolchains:is_heavy": {"Pool": "heavy"},
-        "//conditions:default": {"Pool": "default"},
-    }),
     deps = [
         "//pkg/base",
         "//pkg/kv/kvserver/kvflowcontrol",

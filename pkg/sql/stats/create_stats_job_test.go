@@ -1,12 +1,7 @@
 // Copyright 2019 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package stats_test
 
@@ -31,6 +26,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/testutils"
 	"github.com/cockroachdb/cockroach/pkg/testutils/jobutils"
 	"github.com/cockroachdb/cockroach/pkg/testutils/serverutils"
+	"github.com/cockroachdb/cockroach/pkg/testutils/skip"
 	"github.com/cockroachdb/cockroach/pkg/testutils/sqlutils"
 	"github.com/cockroachdb/cockroach/pkg/testutils/testcluster"
 	"github.com/cockroachdb/cockroach/pkg/util/encoding"
@@ -120,17 +116,17 @@ func TestCreateStatsControlJob(t *testing.T) {
 
 // runCreateStatsJob runs the provided CREATE STATISTICS job control statement,
 // initializing, notifying and closing the chan at the passed pointer (see below
-// for why) and returning the jobID and error result. PAUSE JOB and CANCEL JOB
-// are racy in that it's hard to guarantee that the job is still running when
-// executing a PAUSE or CANCEL -- or that the job has even started running. To
-// synchronize, we can install a store response filter which does a blocking
-// receive for one of the responses used by our job (for example, Export for a
-// BACKUP). Later, when we want to guarantee the job is in progress, we do
-// exactly one blocking send. When this send completes, we know the job has
-// started, as we've seen one expected response. We also know the job has not
-// finished, because we're blocking all future responses until we close the
-// channel, and our operation is large enough that it will generate more than
-// one of the expected response.
+// for why) and returning the jobID and error result.
+//
+// PAUSE JOB and CANCEL JOB are racy in that it's hard to guarantee that the job
+// is still running when executing a PAUSE or CANCEL -- or that the job has even
+// started running. To synchronize, we can install a store response filter which
+// does a blocking receive for the ScanRequest used by our job. Later, when we
+// want to guarantee the job is in progress, we do exactly one blocking send.
+// When this send completes, we know the job has started, as we've seen one
+// expected response. We also know the job has not finished, because we're
+// blocking all future responses until we close the channel, and our operation
+// is large enough that it will generate more than one of the expected response.
 func runCreateStatsJob(
 	ctx context.Context,
 	t *testing.T,
@@ -331,8 +327,9 @@ func TestDeleteFailedJob(t *testing.T) {
 
 	ctx := context.Background()
 	serverArgs := base.TestServerArgs{Knobs: base.TestingKnobs{JobsTestingKnobs: jobs.NewTestingKnobsWithShortIntervals()}}
-	s, conn, _ := serverutils.StartServer(t, serverArgs)
-	defer s.Stopper().Stop(ctx)
+	tc := testcluster.StartTestCluster(t, 1, base.TestClusterArgs{ServerArgs: serverArgs})
+	defer tc.Stopper().Stop(ctx)
+	conn := tc.ApplicationLayer(0).SQLConn(t)
 	sqlDB := sqlutils.MakeSQLRunner(conn)
 
 	sqlDB.Exec(t, `SET CLUSTER SETTING sql.stats.automatic_collection.enabled = false`)
@@ -389,25 +386,40 @@ func TestCreateStatsProgress(t *testing.T) {
 	}(rowexec.SamplerProgressInterval)
 	rowexec.SamplerProgressInterval = 10
 
+	skip.UnderRace(t, "the test is too sensitive to overload")
+	skip.UnderDeadlock(t, "the test is too sensitive to overload")
+
+	getLastCreateStatsJobID := func(t testing.TB, db *sqlutils.SQLRunner) jobspb.JobID {
+		var jobID jobspb.JobID
+		db.QueryRow(t, "SELECT id FROM system.jobs WHERE status = 'running' AND "+
+			"job_type = 'CREATE STATS' ORDER BY created DESC LIMIT 1").Scan(&jobID)
+		return jobID
+	}
+
 	var allowRequest chan struct{}
-	var serverArgs base.TestServerArgs
+	var allowRequestClosed bool
+	// Make sure that we unblock the test server in all scenarios with test
+	// failures.
+	defer func() {
+		if !allowRequestClosed {
+			close(allowRequest)
+		}
+	}()
 	filter, setTableID := createStatsRequestFilter(&allowRequest)
-	params := base.TestClusterArgs{ServerArgs: serverArgs}
-	params.ServerArgs.Knobs.Store = &kvserver.StoreTestingKnobs{
+	var params base.TestServerArgs
+	params.Knobs.Store = &kvserver.StoreTestingKnobs{
 		TestingRequestFilter: filter,
 	}
-	params.ServerArgs.Knobs.DistSQL = &execinfra.TestingKnobs{
+	params.Knobs.DistSQL = &execinfra.TestingKnobs{
 		// Force the stats job to iterate through the input rows instead of reading
 		// them all at once.
 		TableReaderBatchBytesLimit: 100,
 	}
 
 	ctx := context.Background()
-	const nodes = 1
-	tc := testcluster.StartTestCluster(t, nodes, params)
-	defer tc.Stopper().Stop(ctx)
-	s := tc.ApplicationLayer(0)
-	conn := s.SQLConn(t)
+	srv, conn, _ := serverutils.StartServer(t, params)
+	defer srv.Stopper().Stop(ctx)
+	s := srv.ApplicationLayer()
 	sqlDB := sqlutils.MakeSQLRunner(conn)
 
 	sqlDB.Exec(t, `SET CLUSTER SETTING sql.stats.automatic_collection.enabled = false`)
@@ -454,7 +466,7 @@ func TestCreateStatsProgress(t *testing.T) {
 	}
 
 	// Fetch the new job ID since we know it's running now.
-	jobID := jobutils.GetLastJobID(t, sqlDB)
+	jobID := getLastCreateStatsJobID(t, sqlDB)
 
 	// Ensure that 0 progress has been recorded since there are no existing
 	// stats available to estimate progress.
@@ -469,6 +481,7 @@ func TestCreateStatsProgress(t *testing.T) {
 	// Allow the job to complete and verify that the client didn't see anything
 	// amiss.
 	close(allowRequest)
+	allowRequestClosed = true
 	if err := <-errCh; err != nil {
 		t.Fatalf("create stats job should have completed: %s", err)
 	}
@@ -483,15 +496,12 @@ func TestCreateStatsProgress(t *testing.T) {
 	}
 
 	// Invalidate the stats cache so that we can be sure to get the latest stats.
-	var tableID descpb.ID
-	sqlDB.QueryRow(t, `SELECT id FROM system.namespace WHERE name = 't'`).Scan(&tableID)
-	s.ExecutorConfig().(sql.ExecutorConfig).TableStatsCache.InvalidateTableStats(
-		ctx, tableID,
-	)
+	s.ExecutorConfig().(sql.ExecutorConfig).TableStatsCache.InvalidateTableStats(ctx, tID)
 
 	// Start another CREATE STATISTICS run and wait until it has scanned part of
 	// the table.
 	allowRequest = make(chan struct{})
+	allowRequestClosed = false
 	go func() {
 		_, err := conn.Exec(query)
 		errCh <- err
@@ -510,7 +520,7 @@ func TestCreateStatsProgress(t *testing.T) {
 	}
 
 	// Fetch the new job ID since we know it's running now.
-	jobID = jobutils.GetLastJobID(t, sqlDB)
+	jobID = getLastCreateStatsJobID(t, sqlDB)
 
 	// Ensure that partial progress has been recorded since there are existing
 	// stats available.
@@ -525,6 +535,7 @@ func TestCreateStatsProgress(t *testing.T) {
 	// Allow the job to complete and verify that the client didn't see anything
 	// amiss.
 	close(allowRequest)
+	allowRequestClosed = true
 	if err := <-errCh; err != nil {
 		t.Fatalf("create stats job should have completed: %s", err)
 	}
@@ -544,9 +555,9 @@ func TestCreateStatsAsOfTime(t *testing.T) {
 	defer log.Scope(t).Close(t)
 
 	ctx := context.Background()
-	s, conn, _ := serverutils.StartServer(t, base.TestServerArgs{})
-	defer s.Stopper().Stop(ctx)
-	sqlDB := sqlutils.MakeSQLRunner(conn)
+	tc := testcluster.StartTestCluster(t, 1, base.TestClusterArgs{})
+	defer tc.Stopper().Stop(ctx)
+	sqlDB := sqlutils.MakeSQLRunner(tc.ApplicationLayer(0).SQLConn(t))
 	sqlDB.Exec(t, `CREATE DATABASE d`)
 	sqlDB.Exec(t, `CREATE TABLE d.t (x INT PRIMARY KEY)`)
 

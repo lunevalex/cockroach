@@ -1,12 +1,7 @@
 // Copyright 2021 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 import React from "react";
 import { RouteComponentProps } from "react-router-dom";
@@ -57,8 +52,8 @@ import {
   SqlApiQueryResponse,
   SqlExecutionErrorMessage,
 } from "../api";
+import { LoadingCell } from "../databases";
 import { InlineAlert } from "@cockroachlabs/ui-components";
-import { checkInfoAvailable } from "../databases";
 
 const cx = classNames.bind(styles);
 const sortableTableCx = classNames.bind(sortableTableStyles);
@@ -562,34 +557,19 @@ export class DatabasesPage extends React.Component<
             Tables
           </Tooltip>
         ),
-        cell: database =>
-          checkInfoAvailable(
-            database.detailsRequestError,
-            database.tables?.error,
-            database.tables?.tables?.length,
-          ),
+        cell: database => (
+          <LoadingCell
+            requestError={database.detailsRequestError}
+            queryError={database.tables?.error}
+            loading={database.detailsLoading}
+            errorClassName={cx("databases-table__cell-error")}
+          >
+            {database.tables?.tables?.length}
+          </LoadingCell>
+        ),
         sort: database => database.tables?.tables.length ?? 0,
         className: cx("databases-table__col-table-count"),
         name: "tableCount",
-      },
-      {
-        title: (
-          <Tooltip
-            placement="bottom"
-            title="The total number of ranges across all tables in the database."
-          >
-            Range Count
-          </Tooltip>
-        ),
-        cell: database =>
-          checkInfoAvailable(
-            database.spanStatsRequestError,
-            database.spanStats?.error,
-            database.spanStats?.range_count,
-          ),
-        sort: database => database.spanStats?.range_count,
-        className: cx("databases-table__col-range-count"),
-        name: "rangeCount",
       },
       {
         title: (
@@ -600,12 +580,15 @@ export class DatabasesPage extends React.Component<
             {this.props.isTenant ? "Regions" : "Regions/Nodes"}
           </Tooltip>
         ),
-        cell: database =>
-          checkInfoAvailable(
-            database.detailsRequestError,
-            null,
-            database.nodesByRegionString ? database.nodesByRegionString : null,
-          ),
+        cell: database => (
+          <LoadingCell
+            requestError={database.detailsRequestError}
+            loading={database.detailsLoading}
+            errorClassName={cx("databases-table__cell-error")}
+          >
+            {database.nodesByRegionString ? database.nodesByRegionString : null}
+          </LoadingCell>
+        ),
         sort: database => database.nodesByRegionString,
         className: cx("databases-table__col-node-regions"),
         name: "nodeRegions",

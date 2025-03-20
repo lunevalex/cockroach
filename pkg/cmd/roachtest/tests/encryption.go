@@ -1,12 +1,7 @@
 // Copyright 2018 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package tests
 
@@ -36,15 +31,13 @@ func registerEncryption(r registry.Registry) {
 			t.Fatal(err)
 		}
 		for _, addr := range adminAddrs {
-			if err := c.RunE(ctx, option.WithNodes(c.Node(nodes)), fmt.Sprintf(`curl http://%s/_status/stores/local | (! grep '"encryptionStatus": null')`, addr)); err != nil {
+			if err := c.RunE(ctx, c.Node(nodes), fmt.Sprintf(`curl http://%s/_status/stores/local | (! grep '"encryptionStatus": null')`, addr)); err != nil {
 				t.Fatalf("encryption status from /_status/stores/local endpoint is null")
 			}
 		}
 
 		for i := 1; i <= nodes; i++ {
-			if err := c.StopCockroachGracefullyOnNode(ctx, t.L(), i); err != nil {
-				t.Fatal(err)
-			}
+			c.Stop(ctx, t.L(), option.NewStopOpts(option.Graceful(shutdownGracePeriod)), c.Node(i))
 		}
 
 		// Restart node with encryption turned on to verify old key works.
@@ -52,12 +45,12 @@ func registerEncryption(r registry.Registry) {
 
 		testCLIGenKey := func(size int) error {
 			// Generate encryption store key through `./cockroach gen encryption-key -s=size aes-size.key`.
-			if err := c.RunE(ctx, option.WithNodes(c.Node(nodes)), fmt.Sprintf("./cockroach gen encryption-key -s=%[1]d aes-%[1]d.key", size)); err != nil {
+			if err := c.RunE(ctx, c.Node(nodes), fmt.Sprintf("./cockroach gen encryption-key -s=%[1]d aes-%[1]d.key", size)); err != nil {
 				return errors.Wrapf(err, "failed to generate AES key with size %d through CLI", size)
 			}
 
 			// Check the size of generated aes key has expected size.
-			if err := c.RunE(ctx, option.WithNodes(c.Node(nodes)), fmt.Sprintf(`size=$(wc -c <"aes-%d.key"); test $size -eq %d && exit 0 || exit 1`, size, 32+size/8)); err != nil {
+			if err := c.RunE(ctx, c.Node(nodes), fmt.Sprintf(`size=$(wc -c <"aes-%d.key"); test $size -eq %d && exit 0 || exit 1`, size, 32+size/8)); err != nil {
 				return errors.Errorf("expected aes-%d.key has size %d bytes, but got different size", size, 32+size/8)
 			}
 

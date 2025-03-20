@@ -1,12 +1,7 @@
 // Copyright 2015 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package sql
 
@@ -48,11 +43,11 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/protectedts"
 	"github.com/cockroachdb/cockroach/pkg/multitenant"
 	"github.com/cockroachdb/cockroach/pkg/multitenant/tenantcapabilities"
-	"github.com/cockroachdb/cockroach/pkg/obs"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/rpc"
 	"github.com/cockroachdb/cockroach/pkg/security/username"
 	"github.com/cockroachdb/cockroach/pkg/server/autoconfig/acprovider"
+	"github.com/cockroachdb/cockroach/pkg/server/license"
 	"github.com/cockroachdb/cockroach/pkg/server/pgurl"
 	"github.com/cockroachdb/cockroach/pkg/server/serverpb"
 	"github.com/cockroachdb/cockroach/pkg/server/status/statuspb"
@@ -91,7 +86,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/scheduledlogging"
 	"github.com/cockroachdb/cockroach/pkg/sql/schemachanger/scexec"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/asof"
-	"github.com/cockroachdb/cockroach/pkg/sql/sem/catconstants"
+	"github.com/cockroachdb/cockroach/pkg/sql/sem/builtins"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/eval"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
 	"github.com/cockroachdb/cockroach/pkg/sql/sessiondata"
@@ -108,7 +103,9 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/upgrade"
 	"github.com/cockroachdb/cockroach/pkg/upgrade/upgradebase"
 	"github.com/cockroachdb/cockroach/pkg/util/bitarray"
+	"github.com/cockroachdb/cockroach/pkg/util/cidr"
 	"github.com/cockroachdb/cockroach/pkg/util/duration"
+	"github.com/cockroachdb/cockroach/pkg/util/errorutil/unimplemented"
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/cockroach/pkg/util/metric"
@@ -123,7 +120,23 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/uuid"
 	"github.com/cockroachdb/errors"
 	"github.com/cockroachdb/redact"
+	io_prometheus_client "github.com/prometheus/client_model/go"
 )
+
+func init() {
+	builtins.ExecuteQueryViaJobExecContext = func(
+		evalCtx *eval.Context,
+		ctx context.Context,
+		opName string,
+		txn *kv.Txn,
+		override sessiondata.InternalExecutorOverride,
+		stmt string,
+		qargs ...interface{},
+	) (eval.InternalRows, error) {
+		ie := evalCtx.JobExecContext.(JobExecContext).ExecCfg().InternalDB.Executor()
+		return ie.QueryIteratorEx(ctx, opName, txn, override, stmt, qargs...)
+	}
+}
 
 // ClusterOrganization is the organization name.
 var ClusterOrganization = settings.RegisterStringSetting(
@@ -216,6 +229,18 @@ var allowCrossDatabaseSeqReferences = settings.RegisterBoolSetting(
 	false,
 	settings.WithPublic)
 
+// SecondaryTenantZoneConfigsEnabled controls if secondary tenants are allowed
+// to set zone configurations. It has no effect for the system tenant.
+//
+// This setting has no effect on zone configurations that have already been set.
+var SecondaryTenantZoneConfigsEnabled = settings.RegisterBoolSetting(
+	settings.SystemVisible,
+	"sql.zone_configs.allow_for_secondary_tenant.enabled",
+	"enable the use of ALTER CONFIGURE ZONE in virtual clusters",
+	false,
+	settings.WithName("sql.virtual_cluster.feature_access.zone_configs.enabled"),
+)
+
 // SecondaryTenantSplitAtEnabled controls if secondary tenants are allowed to
 // run ALTER TABLE/INDEX ... SPLIT AT statements. It has no effect for the
 // system tenant.
@@ -269,6 +294,18 @@ var TraceStmtThreshold = settings.RegisterDurationSetting(
 		"this setting applies to individual statements within a transaction and "+
 		"is therefore finer-grained than sql.trace.txn.enable_threshold",
 	0,
+	settings.WithPublic)
+
+// traceSessionEventLogEnabled can be used to enable the event log
+// that is normally kept for every SQL connection. The event log has a
+// non-trivial performance impact and also reveals SQL statements
+// which may be a privacy concern.
+var traceSessionEventLogEnabled = settings.RegisterBoolSetting(
+	settings.ApplicationLevel,
+	"sql.trace.session_eventlog.enabled",
+	"set to true to enable session tracing; "+
+		"note that enabling this may have a negative performance impact",
+	false,
 	settings.WithPublic)
 
 // ReorderJoinsLimitClusterSettingName is the name of the cluster setting for
@@ -968,6 +1005,12 @@ var (
 		Measurement: "SQL Statements",
 		Unit:        metric.Unit_COUNT,
 	}
+	MetaTxnUpgradedFromWeakIsolation = metric.Metadata{
+		Name:        "sql.txn.upgraded_iso_level.count",
+		Help:        "Number of times a weak isolation level was automatically upgraded to a stronger one",
+		Measurement: "SQL Statements",
+		Unit:        metric.Unit_COUNT,
+	}
 	MetaSelectExecuted = metric.Metadata{
 		Name:        "sql.select.count",
 		Help:        "Number of SQL SELECT statements successfully executed",
@@ -1088,6 +1131,20 @@ var (
 		Measurement: "SQL Stats Flush",
 		Unit:        metric.Unit_COUNT,
 	}
+	MetaSQLStatsFlushFingerprintCount = metric.Metadata{
+		Name:        "sql.stats.flush.fingerprint.count",
+		Help:        "The number of unique statement and transaction fingerprints included in the SQL Stats flush",
+		Measurement: "statement & transaction fingerprints",
+		Unit:        metric.Unit_COUNT,
+	}
+	MetaSQLStatsFlushDoneSignalsIgnored = metric.Metadata{
+		Name: "sql.stats.flush.done_signals.ignored",
+		Help: "Number of times the SQL Stats activity update job ignored the signal sent to it indicating " +
+			"a flush has completed",
+		Measurement: "flush done signals ignored",
+		Unit:        metric.Unit_COUNT,
+		MetricType:  io_prometheus_client.MetricType_COUNTER,
+	}
 	MetaSQLStatsFlushFailure = metric.Metadata{
 		Name:        "sql.stats.flush.error",
 		Help:        "Number of errors encountered when flushing SQL Stats",
@@ -1169,10 +1226,11 @@ type NodeInfo struct {
 	PGURL func(*url.Userinfo) (*pgurl.URL, error)
 }
 
-// nodeStatusGenerator is a limited portion of the status.MetricsRecorder
+// limitedMetricsRecorder is a limited portion of the status.MetricsRecorder
 // struct, to avoid having to import all of status in sql.
-type nodeStatusGenerator interface {
+type limitedMetricsRecorder interface {
 	GenerateNodeStatus(ctx context.Context) *statuspb.NodeStatus
+	AppRegistry() *metric.Registry
 }
 
 // SystemTenantOnly wraps an object in the ExecutorConfig that is only
@@ -1241,7 +1299,7 @@ type ExecutorConfig struct {
 	// available when not running as a system tenant.
 	SQLStatusServer    serverpb.SQLStatusServer
 	TenantStatusServer serverpb.TenantStatusServer
-	MetricsRecorder    nodeStatusGenerator
+	MetricsRecorder    limitedMetricsRecorder
 	SessionRegistry    *SessionRegistry
 	ClosedSessionCache *ClosedSessionCache
 	SQLLiveness        sqlliveness.Provider
@@ -1423,9 +1481,6 @@ type ExecutorConfig struct {
 	// RangeStatsFetcher is used to fetch RangeStats.
 	RangeStatsFetcher eval.RangeStatsFetcher
 
-	// EventsExporter is the client for the Observability Service.
-	EventsExporter obs.EventsExporterInterface
-
 	// NodeDescs stores {Store,Node}Descriptors in an in-memory cache.
 	NodeDescs kvcoord.NodeDescStore
 
@@ -1438,6 +1493,12 @@ type ExecutorConfig struct {
 	// VirtualClusterName contains the name of the virtual cluster
 	// (tenant).
 	VirtualClusterName roachpb.TenantName
+
+	// LicenseEnforcer is used to enforce the license profiles.
+	LicenseEnforcer *license.Enforcer
+
+	// CidrLookup is used to look up the tag name for a given IP address.
+	CidrLookup *cidr.Lookup
 }
 
 // UpdateVersionSystemSettingHook provides a callback that allows us
@@ -1516,7 +1577,7 @@ type ExecutorTestingKnobs struct {
 
 	// AfterExecute is like StatementFilter, but it runs in the same goroutine of the
 	// statement.
-	AfterExecute func(ctx context.Context, stmt string, err error)
+	AfterExecute func(ctx context.Context, stmt string, isInternal bool, err error)
 
 	// AfterExecCmd is called after successful execution of any command.
 	AfterExecCmd func(ctx context.Context, cmd Command, buf *StmtBuf)
@@ -1619,7 +1680,7 @@ type ExecutorTestingKnobs struct {
 
 	// OnRecordTxnFinish, if set, will be called as we record a transaction
 	// finishing.
-	OnRecordTxnFinish func(isInternal bool, phaseTimes *sessionphase.Times, stmt string)
+	OnRecordTxnFinish func(isInternal bool, phaseTimes *sessionphase.Times, stmt string, txnStats sqlstats.RecordedTxnStats)
 
 	// UseTransactionDescIDGenerator is used to force descriptor ID generation
 	// to use a transaction, and, in doing so, more deterministically allocate
@@ -1641,6 +1702,13 @@ type ExecutorTestingKnobs struct {
 	// ForceSQLLivenessSession will force the use of a sqlliveness session for
 	// transaction deadlines even in the system tenant.
 	ForceSQLLivenessSession bool
+
+	// DisableProbabilisticSampling, if set to true, will disable
+	// probabilistic transaction sampling. This is important for tests that
+	// want to deterministically test cases where we turn on transaction sampling
+	// due to some other condition. We can't set the probability to 0 since
+	// that would disable the feature entirely.
+	DisableProbabilisticSampling bool
 }
 
 // PGWireTestingKnobs contains knobs for the pgwire module.
@@ -1707,6 +1775,9 @@ type TTLTestingKnobs struct {
 	// PreSelectStatement runs before the start of the TTL select-delete
 	// loop.
 	PreSelectStatement string
+	// ExtraStatsQuery is an additional query to run while gathering stats if
+	// the ttl_row_stats_poll_interval is set. It is always run first.
+	ExtraStatsQuery string
 }
 
 // ModuleTestingKnobs implements the base.ModuleTestingKnobs interface.
@@ -1838,6 +1909,10 @@ func shouldDistributeGivenRecAndMode(
 // is reused, but if plan has logical representation (i.e. it is a planNode
 // tree), then we traverse that tree in order to determine the distribution of
 // the plan.
+//
+// The returned error, if any, indicates why we couldn't distribute the plan.
+// Note that it's possible that we choose to not distribute the plan while
+// nil error is returned.
 // WARNING: in some cases when this method returns
 // physicalplan.FullyDistributedPlan, the plan might actually run locally. This
 // is the case when
@@ -1852,38 +1927,40 @@ func getPlanDistribution(
 	txnHasUncommittedTypes bool,
 	distSQLMode sessiondatapb.DistSQLExecMode,
 	plan planMaybePhysical,
-) physicalplan.PlanDistribution {
+) (_ physicalplan.PlanDistribution, distSQLProhibitedErr error) {
 	if plan.isPhysicalPlan() {
-		return plan.physPlan.Distribution
+		// TODO(#47473): store the distSQLProhibitedErr for DistSQL spec factory
+		// too.
+		return plan.physPlan.Distribution, nil
 	}
 
 	// If this transaction has modified or created any types, it is not safe to
 	// distribute due to limitations around leasing descriptors modified in the
 	// current transaction.
 	if txnHasUncommittedTypes {
-		return physicalplan.LocalPlan
+		return physicalplan.LocalPlan, nil
 	}
 
 	if distSQLMode == sessiondatapb.DistSQLOff {
-		return physicalplan.LocalPlan
+		return physicalplan.LocalPlan, nil
 	}
 
 	// Don't try to run empty nodes (e.g. SET commands) with distSQL.
 	if _, ok := plan.planNode.(*zeroNode); ok {
-		return physicalplan.LocalPlan
+		return physicalplan.LocalPlan, nil
 	}
 
 	rec, err := checkSupportForPlanNode(plan.planNode)
 	if err != nil {
 		// Don't use distSQL for this request.
 		log.VEventf(ctx, 1, "query not supported for distSQL: %s", err)
-		return physicalplan.LocalPlan
+		return physicalplan.LocalPlan, err
 	}
 
 	if shouldDistributeGivenRecAndMode(rec, distSQLMode) {
-		return physicalplan.FullyDistributedPlan
+		return physicalplan.FullyDistributedPlan, nil
 	}
-	return physicalplan.LocalPlan
+	return physicalplan.LocalPlan, nil
 }
 
 // golangFillQueryArguments transforms Go values into datums.
@@ -2011,10 +2088,15 @@ func checkResultType(typ *types.T) error {
 	case types.EnumFamily:
 	case types.VoidFamily:
 	case types.ArrayFamily:
-		// Note that we support multidimensional arrays in some cases (e.g.
-		// array_agg with arrays as inputs) but not in others (e.g. CREATE).
-		// Here we allow them in all cases and rely on each unsupported place to
-		// have the check.
+		if typ.ArrayContents().Family() == types.ArrayFamily {
+			// Technically we could probably return arrays of arrays to a
+			// client (the encoding exists) but we don't want to give
+			// mixed signals -- that nested arrays appear to be supported
+			// in this case, and not in other cases (eg. CREATE). So we
+			// reject them in every case instead.
+			return unimplemented.NewWithIssueDetail(32552,
+				"result", "arrays cannot have arrays as element type")
+		}
 	case types.AnyFamily:
 		// Placeholder case.
 		return errors.Errorf("could not determine data type of %s", typ)
@@ -2032,6 +2114,11 @@ func (p *planner) EvalAsOfTimestamp(
 	asOf, err := asof.Eval(ctx, asOfClause, &p.semaCtx, p.EvalContext(), opts...)
 	if err != nil {
 		return eval.AsOfSystemTime{}, err
+	}
+	ts := asOf.Timestamp
+	if now := p.execCfg.Clock.Now(); now.Less(ts) && !ts.Synthetic {
+		return eval.AsOfSystemTime{}, errors.Errorf(
+			"AS OF SYSTEM TIME: cannot specify timestamp in the future (%s > %s)", ts, now)
 	}
 	return asOf, nil
 }
@@ -2963,7 +3050,11 @@ type sessionDataMutatorCallbacks struct {
 	paramStatusUpdater paramStatusUpdater
 	// setCurTxnReadOnly is called when we execute SET transaction_read_only = ...
 	// It can be nil, in which case nothing triggers on execution.
-	setCurTxnReadOnly func(val bool)
+	setCurTxnReadOnly func(readOnly bool) error
+	// upgradedIsolationLevel is called whenever the transaction isolation
+	// session variable is configured and the isolation level is automatically
+	// upgraded to a stronger one.
+	upgradedIsolationLevel func()
 	// onTempSchemaCreation is called when the temporary schema is set
 	// on the search path (the first and only time).
 	// It can be nil, in which case nothing triggers on execution.
@@ -3184,6 +3275,10 @@ func (m *sessionDataMutator) SetPartiallyDistributedPlansDisabled(val bool) {
 	m.data.PartiallyDistributedPlansDisabled = val
 }
 
+func (m *sessionDataMutator) SetDisableVecUnionEagerCancellation(val bool) {
+	m.data.DisableVecUnionEagerCancellation = val
+}
+
 func (m *sessionDataMutator) SetRequireExplicitPrimaryKeys(val bool) {
 	m.data.RequireExplicitPrimaryKeys = val
 }
@@ -3222,10 +3317,6 @@ func (m *sessionDataMutator) SetOptimizerUseMultiColStats(val bool) {
 
 func (m *sessionDataMutator) SetOptimizerUseNotVisibleIndexes(val bool) {
 	m.data.OptimizerUseNotVisibleIndexes = val
-}
-
-func (m *sessionDataMutator) SetOptimizerMergeJoinsEnabled(val bool) {
-	m.data.OptimizerMergeJoinsEnabled = val
 }
 
 func (m *sessionDataMutator) SetLocalityOptimizedSearch(val bool) {
@@ -3283,16 +3374,16 @@ func (m *sessionDataMutator) SetCustomOption(name, val string) {
 	m.data.CustomOptions[name] = val
 }
 
-func (m *sessionDataMutator) SetReadOnly(val bool) {
+func (m *sessionDataMutator) SetReadOnly(val bool) error {
 	// The read-only state is special; it's set as a session variable (SET
 	// transaction_read_only=<>), but it represents per-txn state, not
 	// per-session. There's no field for it in the SessionData struct. Instead, we
-	// call into the connEx, which modifies its TxnState.
-	// NOTE(andrei): I couldn't find good documentation on transaction_read_only,
-	// but I've tested its behavior in Postgres 11.
+	// call into the connEx, which modifies its TxnState. This is similar to
+	// transaction_isolation.
 	if m.setCurTxnReadOnly != nil {
-		m.setCurTxnReadOnly(val)
+		return m.setCurTxnReadOnly(val)
 	}
+	return nil
 }
 
 func (m *sessionDataMutator) SetStmtTimeout(timeout time.Duration) {
@@ -3349,6 +3440,10 @@ func (m *sessionDataMutator) SetOverrideMultiRegionZoneConfigEnabled(val bool) {
 
 func (m *sessionDataMutator) SetDisallowFullTableScans(val bool) {
 	m.data.DisallowFullTableScans = val
+}
+
+func (m *sessionDataMutator) SetOptimizerApplyFullScanPenaltyToVirtualTables(val bool) {
+	m.data.OptimizerApplyFullScanPenaltyToVirtualTables = val
 }
 
 func (m *sessionDataMutator) SetAlterColumnTypeGeneral(val bool) {
@@ -3700,6 +3795,46 @@ func (m *sessionDataMutator) SetDistSQLPlanGatewayBias(val int64) {
 	m.data.DistsqlPlanGatewayBias = val
 }
 
+func (m *sessionDataMutator) SetOptimizerUseVirtualComputedColumnStats(val bool) {
+	m.data.OptimizerUseVirtualComputedColumnStats = val
+}
+
+func (m *sessionDataMutator) SetOptimizerUseTrigramSimilarityOptimization(val bool) {
+	m.data.OptimizerUseTrigramSimilarityOptimization = val
+}
+
+func (m *sessionDataMutator) SetOptimizerUseImprovedDistinctOnLimitHintCosting(val bool) {
+	m.data.OptimizerUseImprovedDistinctOnLimitHintCosting = val
+}
+
+func (m *sessionDataMutator) SetOptimizerUseImprovedTrigramSimilaritySelectivity(val bool) {
+	m.data.OptimizerUseImprovedTrigramSimilaritySelectivity = val
+}
+
+func (m *sessionDataMutator) SetOptimizerUseImprovedZigzagJoinCosting(val bool) {
+	m.data.OptimizerUseImprovedZigzagJoinCosting = val
+}
+
+func (m *sessionDataMutator) SetOptimizerUseImprovedMultiColumnSelectivityEstimate(val bool) {
+	m.data.OptimizerUseImprovedMultiColumnSelectivityEstimate = val
+}
+
+func (m *sessionDataMutator) SetOptimizerProveImplicationWithVirtualComputedColumns(val bool) {
+	m.data.OptimizerProveImplicationWithVirtualComputedColumns = val
+}
+
+func (m *sessionDataMutator) SetOptimizerPushOffsetIntoIndexJoin(val bool) {
+	m.data.OptimizerPushOffsetIntoIndexJoin = val
+}
+
+func (m *sessionDataMutator) SetPlanCacheMode(val sessiondatapb.PlanCacheMode) {
+	m.data.PlanCacheMode = val
+}
+
+func (m *sessionDataMutator) SetLegacyVarcharTyping(val bool) {
+	m.data.LegacyVarcharTyping = val
+}
+
 // Utility functions related to scrubbing sensitive information on SQL Stats.
 
 // quantizeCounts ensures that the Count field in the
@@ -3846,18 +3981,17 @@ func (cfg *ExecutorConfig) GetRowMetrics(internal bool) *rowinfra.Metrics {
 	return cfg.RowMetrics
 }
 
-// MaybeHashAppName returns the provided app name, possibly hashed.
-// If the app name is not an internal query, we want to hash the app name.
-func MaybeHashAppName(appName string, secret string) string {
-	scrubbedName := appName
-	if !strings.HasPrefix(appName, catconstants.ReportableAppNamePrefix) {
-		if !strings.HasPrefix(appName, catconstants.DelegatedAppNamePrefix) {
-			scrubbedName = HashForReporting(secret, appName)
-		} else if !strings.HasPrefix(appName,
-			catconstants.DelegatedAppNamePrefix+catconstants.ReportableAppNamePrefix) {
-			scrubbedName = catconstants.DelegatedAppNamePrefix + HashForReporting(
-				secret, appName)
-		}
+// requireSystemTenantOrClusterSetting returns a setting disabled error if
+// executed from inside a secondary tenant that does not have the specified
+// cluster setting.
+func requireSystemTenantOrClusterSetting(
+	codec keys.SQLCodec, settings *cluster.Settings, setting *settings.BoolSetting,
+) error {
+	if codec.ForSystemTenant() || setting.Get(&settings.SV) {
+		return nil
 	}
-	return scrubbedName
+	return errors.WithDetailf(errors.WithHint(
+		errors.New("operation is disabled within a virtual cluster"),
+		"Feature was disabled by the system operator."),
+		"Feature flag: %s", setting.Name())
 }

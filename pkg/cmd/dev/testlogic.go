@@ -1,12 +1,7 @@
 // Copyright 2020 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package main
 
@@ -252,7 +247,15 @@ func (d *dev) testlogic(cmd *cobra.Command, commandLine []string) error {
 		args = append(args, "--test_arg", "-show-diff")
 	}
 	if timeout > 0 {
-		args = append(args, fmt.Sprintf("--test_timeout=%d", int(timeout.Seconds())))
+		// The bazel timeout should be higher than the timeout passed to the
+		// test binary (giving it ample time to clean up, 5 seconds is probably
+		// enough).
+		args = append(args, fmt.Sprintf("--test_timeout=%d", 5+int(timeout.Seconds())))
+		args = append(args, "--test_arg", fmt.Sprintf("-test.timeout=%s", timeout.String()))
+
+		// If --test-args '-test.timeout=X' is specified as well, or
+		// -- --test_arg '-test.timeout=X', that'll take precedence further
+		// below.
 	}
 	if stress {
 		if count == 1 {

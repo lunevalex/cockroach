@@ -1,12 +1,7 @@
 // Copyright 2020 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package main
 
@@ -83,6 +78,7 @@ func (g *execFactoryGen) genExecFactory() {
 	g.w.writeIndent("cascades []Cascade,\n")
 	g.w.writeIndent("checks []Node,\n")
 	g.w.writeIndent("rootRowCount int64,\n")
+	g.w.writeIndent("flags PlanFlags,\n")
 	g.w.unnest(") (Plan, error)\n")
 
 	g.w.write("\n")
@@ -121,6 +117,7 @@ func (g *execFactoryGen) genStubFactory() {
 	g.w.writeIndent("cascades []Cascade,\n")
 	g.w.writeIndent("checks []Node,\n")
 	g.w.writeIndent("rootRowCount int64,\n")
+	g.w.writeIndent("flags PlanFlags,\n")
 	g.w.unnest(") (Plan, error) {\n")
 	g.w.nestIndent("return struct{}{}, nil\n")
 	g.w.unnest("}\n")

@@ -1,12 +1,7 @@
 // Copyright 2022 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package storepool
 
@@ -18,7 +13,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/liveness/livenesspb"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
-	"github.com/cockroachdb/redact"
 )
 
 // OverrideStorePool is an implementation of AllocatorStorePool that allows
@@ -93,12 +87,7 @@ func NewOverrideStorePool(
 }
 
 func (o *OverrideStorePool) String() string {
-	return redact.StringWithoutMarkers(o)
-}
-
-// SafeFormat implements the redact.SafeFormatter interface.
-func (o *OverrideStorePool) SafeFormat(w redact.SafePrinter, _ rune) {
-	w.Print(o.sp.statusString(o.overrideNodeLivenessFn))
+	return o.sp.statusString(o.overrideNodeLivenessFn)
 }
 
 // IsStoreReadyForRoutineReplicaTransfer implements the AllocatorStorePool interface.

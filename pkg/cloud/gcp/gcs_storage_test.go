@@ -1,12 +1,7 @@
 // Copyright 2020 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package gcp
 
@@ -477,11 +472,13 @@ func TestReadFileAtReturnsSize(t *testing.T) {
 	gsURI := fmt.Sprintf("gs://%s/%s-%d?AUTH=implicit", bucket, "read-file-at-returns-size", testID)
 	conf, err := cloud.ExternalStorageConfFromURI(gsURI, user)
 	require.NoError(t, err)
-	args := cloud.EarlyBootExternalStorageContext{
-		IOConf:   base.ExternalIODirConfig{},
-		Settings: testSettings,
-		Options:  nil,
-		Limiters: nil,
+	args := cloud.ExternalStorageContext{
+		IOConf:          base.ExternalIODirConfig{},
+		Settings:        testSettings,
+		DB:              nil,
+		Options:         nil,
+		Limiters:        nil,
+		MetricsRecorder: cloud.NilMetrics,
 	}
 	s, err := makeGCSStorage(ctx, args, conf)
 	require.NoError(t, err)

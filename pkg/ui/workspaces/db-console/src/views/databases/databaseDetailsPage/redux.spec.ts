@@ -1,15 +1,9 @@
 // Copyright 2021 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 import { createMemoryHistory } from "history";
-import _ from "lodash";
 import { RouteComponentProps } from "react-router-dom";
 import { bindActionCreators, Store } from "redux";
 import {
@@ -125,8 +119,14 @@ class TestDriver {
     );
   }
 
+  async refreshNodes() {
+    return this.actions.refreshNodes();
+  }
+
   private findTable(name: string) {
-    return _.find(this.properties().tables, { name });
+    return this.properties().tables.find(
+      t => t.name.qualifiedNameWithSchemaAndTable === name,
+    );
   }
 }
 
@@ -205,7 +205,12 @@ describe("Database Details Page", function () {
       sortSettingGrants: { ascending: true, columnTitle: "name" },
       tables: [
         {
-          name: `"public"."foo"`,
+          name: {
+            schema: "public",
+            table: "foo",
+            qualifiedNameWithSchemaAndTable: `"public"."foo"`,
+          },
+          qualifiedDisplayName: `public.foo`,
           loading: false,
           loaded: false,
           requestError: undefined,
@@ -225,7 +230,12 @@ describe("Database Details Page", function () {
           },
         },
         {
-          name: `"public"."bar"`,
+          name: {
+            schema: "public",
+            table: "bar",
+            qualifiedNameWithSchemaAndTable: `"public"."bar"`,
+          },
+          qualifiedDisplayName: `public.bar`,
           loading: false,
           loaded: false,
           requestError: undefined,
@@ -320,7 +330,7 @@ describe("Database Details Page", function () {
         {},
         // Table replicas query
         {
-          rows: [{ replicas: [1, 2, 3] }],
+          rows: [{ store_ids: [1, 2, 3], replica_count: 5 }],
         },
       ],
     );
@@ -370,17 +380,42 @@ describe("Database Details Page", function () {
         {},
         // Table replicas query
         {
-          rows: [{ replicas: [1, 2, 3, 4, 5] }],
+          rows: [{ store_ids: [1, 2, 3, 4, 5], replica_count: 5 }],
         },
       ],
     );
 
+    fakeApi.stubNodesUI({
+      nodes: [...Array(5).keys()].map(node_id => {
+        return {
+          desc: {
+            node_id: node_id + 1, // 1-index offset.
+            locality: {
+              tiers: [
+                {
+                  key: "region",
+                  value: "gcp-us-east1",
+                },
+              ],
+            },
+          },
+          store_statuses: [{ desc: { store_id: node_id + 1 } }],
+        };
+      }),
+    });
+
     await driver.refreshDatabaseDetails();
     await driver.refreshTableDetails(`"public"."foo"`);
     await driver.refreshTableDetails(`"public"."bar"`);
+    await driver.refreshNodes();
 
     driver.assertTableDetails(`"public"."foo"`, {
-      name: `"public"."foo"`,
+      name: {
+        schema: "public",
+        table: "foo",
+        qualifiedNameWithSchemaAndTable: `"public"."foo"`,
+      },
+      qualifiedDisplayName: `public.foo`,
       loading: false,
       loaded: true,
       requestError: null,
@@ -407,12 +442,17 @@ describe("Database Details Page", function () {
           live_percentage: 0.5,
         },
         nodes: [1, 2, 3],
-        nodesByRegionString: "",
+        nodesByRegionString: "gcp-us-east1(n1,n2,n3)",
       },
     });
 
     driver.assertTableDetails(`"public"."bar"`, {
-      name: `"public"."bar"`,
+      name: {
+        schema: "public",
+        table: "bar",
+        qualifiedNameWithSchemaAndTable: `"public"."bar"`,
+      },
+      qualifiedDisplayName: `public.bar`,
       loading: false,
       loaded: true,
       requestError: null,
@@ -437,7 +477,7 @@ describe("Database Details Page", function () {
           approximate_disk_bytes: 10,
         },
         nodes: [1, 2, 3, 4, 5],
-        nodesByRegionString: "",
+        nodesByRegionString: "gcp-us-east1(n1,n2,n3,n4,n5)",
       },
     });
   });

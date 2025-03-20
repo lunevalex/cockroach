@@ -1,12 +1,7 @@
 // Copyright 2023 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 import {
   TxnStmtFingerprintsResponseColumns,
@@ -24,7 +19,24 @@ import {
   getTxnInsightsContentionDetailsApi,
 } from "./contentionApi";
 import moment from "moment-timezone";
-import { MockSqlResponse } from "../util/testing";
+
+function mockSqlResponse<T>(rows: T[]): SqlExecutionResponse<T> {
+  return {
+    execution: {
+      retries: 0,
+      txn_results: [
+        {
+          tag: "",
+          start: "",
+          end: "",
+          rows_affected: 0,
+          statement: 1,
+          rows: [...rows],
+        },
+      ],
+    },
+  };
+}
 
 type TxnContentionDetailsTests = {
   name: string;
@@ -61,16 +73,16 @@ describe("test txn insights api functions", () => {
   test.each([
     {
       name: "all api responses empty",
-      contentionResp: MockSqlResponse([]),
-      txnFingerprintsResp: MockSqlResponse([]),
-      stmtsFingerprintsResp: MockSqlResponse([]),
+      contentionResp: mockSqlResponse([]),
+      txnFingerprintsResp: mockSqlResponse([]),
+      stmtsFingerprintsResp: mockSqlResponse([]),
       expected: null,
     },
     {
       name: "no fingerprints available",
-      contentionResp: MockSqlResponse([contentionDetailsMock]),
-      txnFingerprintsResp: MockSqlResponse([]),
-      stmtsFingerprintsResp: MockSqlResponse([]),
+      contentionResp: mockSqlResponse([contentionDetailsMock]),
+      txnFingerprintsResp: mockSqlResponse([]),
+      stmtsFingerprintsResp: mockSqlResponse([]),
       expected: {
         transactionExecutionID: contentionDetailsMock.waiting_txn_id,
         application: undefined,
@@ -104,8 +116,8 @@ describe("test txn insights api functions", () => {
     },
     {
       name: "no stmt fingerprints available",
-      contentionResp: MockSqlResponse([contentionDetailsMock]),
-      txnFingerprintsResp: MockSqlResponse<TxnStmtFingerprintsResponseColumns>([
+      contentionResp: mockSqlResponse([contentionDetailsMock]),
+      txnFingerprintsResp: mockSqlResponse<TxnStmtFingerprintsResponseColumns>([
         {
           transaction_fingerprint_id:
             contentionDetailsMock.blocking_txn_fingerprint_id,
@@ -113,7 +125,7 @@ describe("test txn insights api functions", () => {
           app_name: undefined,
         },
       ]),
-      stmtsFingerprintsResp: MockSqlResponse([]),
+      stmtsFingerprintsResp: mockSqlResponse([]),
       expected: {
         transactionExecutionID: contentionDetailsMock.waiting_txn_id,
         application: undefined,
@@ -151,8 +163,8 @@ describe("test txn insights api functions", () => {
     },
     {
       name: "all info available",
-      contentionResp: MockSqlResponse([contentionDetailsMock]),
-      txnFingerprintsResp: MockSqlResponse<TxnStmtFingerprintsResponseColumns>([
+      contentionResp: mockSqlResponse([contentionDetailsMock]),
+      txnFingerprintsResp: mockSqlResponse<TxnStmtFingerprintsResponseColumns>([
         {
           transaction_fingerprint_id:
             contentionDetailsMock.blocking_txn_fingerprint_id,
@@ -160,7 +172,7 @@ describe("test txn insights api functions", () => {
           app_name: undefined,
         },
       ]),
-      stmtsFingerprintsResp: MockSqlResponse<FingerprintStmtsResponseColumns>([
+      stmtsFingerprintsResp: mockSqlResponse<FingerprintStmtsResponseColumns>([
         {
           statement_fingerprint_id: "a",
           query: "select 1",

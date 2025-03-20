@@ -102,10 +102,7 @@ go_test(
     name = "opgen_test",
     size = "small",
     srcs = ["register_test.go"],
+    args = ["-test.timeout=55s"],
     embed = [":opgen"],
-    exec_properties = select({
-        "//build/toolchains:is_heavy": {"Pool": "heavy"},
-        "//conditions:default": {"Pool": "default"},
-    }),
     deps = ["//pkg/sql/schemachanger/scpb"],
 )

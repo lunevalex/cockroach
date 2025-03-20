@@ -36,11 +36,8 @@ go_test(
     name = "eventpb_test",
     size = "small",
     srcs = ["event_test.go"],
+    args = ["-test.timeout=55s"],
     embed = [":eventpb"],
-    exec_properties = select({
-        "//build/toolchains:is_heavy": {"Pool": "heavy"},
-        "//conditions:default": {"Pool": "default"},
-    }),
     deps = [
         "//pkg/util/log/logpb",
         "@com_github_cockroachdb_redact//:redact",

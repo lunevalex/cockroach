@@ -1,10 +1,7 @@
 // Copyright 2020 The Cockroach Authors.
 //
-// Licensed as a CockroachDB Enterprise file under the Cockroach Community
-// License (the "License"); you may not use this file except in compliance with
-// the License. You may obtain a copy of the License at
-//
-//     https://github.com/cockroachdb/cockroach/blob/master/licenses/CCL.txt
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package streamingest
 
@@ -16,7 +13,6 @@ import (
 
 	"github.com/cockroachdb/cockroach/pkg/base"
 	"github.com/cockroachdb/cockroach/pkg/ccl/backupccl"
-	"github.com/cockroachdb/cockroach/pkg/ccl/revertccl"
 	"github.com/cockroachdb/cockroach/pkg/ccl/streamingccl"
 	"github.com/cockroachdb/cockroach/pkg/ccl/streamingccl/streamclient"
 	"github.com/cockroachdb/cockroach/pkg/jobs"
@@ -68,35 +64,9 @@ func startDistIngestion(
 	} else {
 		heartbeatTimestamp = initialScanTimestamp
 	}
+
 	msg := redact.Sprintf("resuming stream (producer job %d) from %s", streamID, heartbeatTimestamp)
-
-	if streamProgress.InitialRevertRequired {
-		updateRunningStatus(ctx, ingestionJob, jobspb.InitializingReplication, "reverting existing data to prepare for replication")
-
-		log.Infof(ctx, "reverting tenant %s to time %s before starting replication", details.DestinationTenantID, replicatedTime)
-
-		spanToRevert := keys.MakeTenantSpan(details.DestinationTenantID)
-		if err := revertccl.RevertSpansFanout(ctx, execCtx.ExecCfg().DB, execCtx,
-			[]roachpb.Span{spanToRevert},
-			replicatedTime,
-			false, /* ignoreGCThreshold */
-			revertccl.RevertDefaultBatchSize,
-			nil, /* onCompletedCallback */
-		); err != nil {
-			return err
-		}
-
-		if err := ingestionJob.NoTxn().Update(ctx, func(txn isql.Txn, md jobs.JobMetadata, ju *jobs.JobUpdater) error {
-			md.Progress.GetStreamIngest().InitialRevertRequired = false
-			ju.UpdateProgress(md.Progress)
-			updateRunningStatusInternal(md, ju, jobspb.InitializingReplication, string(msg))
-			return nil
-		}); err != nil {
-			return errors.Wrap(err, "failed to update job progress")
-		}
-	} else {
-		updateRunningStatus(ctx, ingestionJob, jobspb.InitializingReplication, msg)
-	}
+	updateRunningStatus(ctx, ingestionJob, jobspb.InitializingReplication, msg)
 
 	client, err := connectToActiveClient(ctx, ingestionJob, execCtx.ExecCfg().InternalDB,
 		streamclient.WithStreamID(streamID))
@@ -235,18 +205,6 @@ func startDistIngestion(
 	if !streamProgress.InitialSplitComplete {
 		codec := execCtx.ExtendedEvalContext().Codec
 		splitter := &dbSplitAndScatter{db: execCtx.ExecCfg().DB}
-		countNumOfSplitsAndScatters := func() int {
-			numSplitsAndScatters := 0
-			for _, partition := range planner.initialTopology.Partitions {
-				for range partition.Spans {
-					numSplitsAndScatters++
-				}
-			}
-			return numSplitsAndScatters
-		}
-		msg := redact.Sprintf("creating %d initial splits based on the source cluster's topology",
-			countNumOfSplitsAndScatters())
-		updateRunningStatus(ctx, ingestionJob, jobspb.CreatingInitialSplits, msg)
 		if err := createInitialSplits(ctx, codec, splitter, planner.initialTopology, len(planner.initialDestinationNodes), details.DestinationTenantID); err != nil {
 			return err
 		}
@@ -402,7 +360,7 @@ func splitAndScatterWorker(
 			// 	splitKey = newSplitKey
 			// }
 			//
-			if err := splitAndScatter(ctx, splitKey, splitter); err != nil {
+			if err := splitAndScatter(ctx, roachpb.Key(splitKey), splitter); err != nil {
 				return err
 			}
 
@@ -416,7 +374,7 @@ var splitAndScatterSitckyBitDuration = time.Hour
 func splitAndScatter(
 	ctx context.Context, splitAndScatterKey roachpb.Key, s splitAndScatterer,
 ) error {
-	log.VInfof(ctx, 1, "splitting and scattering at %s", splitAndScatterKey)
+	log.Infof(ctx, "splitting and scattering at %s", splitAndScatterKey)
 	expirationTime := s.now().AddDuration(splitAndScatterSitckyBitDuration)
 	if err := s.split(ctx, splitAndScatterKey, expirationTime); err != nil {
 		return err

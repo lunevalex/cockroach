@@ -1,12 +1,7 @@
 // Copyright 2018 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 // {{/*
 //go:build execgen_template
@@ -60,19 +55,7 @@ const _CANONICAL_TYPE_FAMILY = types.UnknownFamily
 // _TYPE_WIDTH is the template variable.
 const _TYPE_WIDTH = 0
 
-// _ALLOC_CODE is the template variable that is replaced in agg_gen_util.go by
-// the template code for sharing allocator objects.
-const _ALLOC_CODE = 0
-
 // */}}
-
-// {{if eq "_AGGKIND" "Ordered"}}
-
-const anyNotNullNumOverloads = 11
-
-// {{end}}
-
-var _ = _ALLOC_CODE
 
 func newAnyNotNull_AGGKINDAggAlloc(
 	allocator *colmem.Allocator, t *types.T, allocSize int64,

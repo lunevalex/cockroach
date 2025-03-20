@@ -1,12 +1,7 @@
 // Copyright 2020 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 // Package concurrency provides a concurrency manager structure that
 // encapsulates the details of concurrency control and contention handling for
@@ -27,7 +22,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/storage/enginepb"
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
 	"github.com/cockroachdb/cockroach/pkg/util/uuid"
-	"github.com/cockroachdb/redact"
 )
 
 // Manager is a structure that sequences incoming requests and provides
@@ -433,10 +427,6 @@ type Request struct {
 	// passed to SequenceReq. Only supplied to SequenceReq if the method is
 	// not also passed an exiting Guard.
 	LockSpans *lockspanset.LockSpanSet
-
-	// The SafeFormatter capable of formatting the request. This is used to enrich
-	// logging with request level information when latches conflict.
-	BaFmt redact.SafeFormatter
 }
 
 // Guard is returned from Manager.SequenceReq. The guard is passed back in to
@@ -515,7 +505,7 @@ type latchManager interface {
 	// WaitFor waits for conflicting latches on the specified spans without adding
 	// any latches itself. Fast path for operations that only require flushing out
 	// old operations without blocking any new ones.
-	WaitFor(ctx context.Context, spans *spanset.SpanSet, pp poison.Policy, baFmt redact.SafeFormatter) *Error
+	WaitFor(ctx context.Context, spans *spanset.SpanSet, pp poison.Policy) *Error
 
 	// Poison a guard's latches, allowing waiters to fail fast.
 	Poison(latchGuard)
@@ -801,7 +791,7 @@ type lockTableGuard interface {
 	// for conflicts. This helps prevent a stream of locking SKIP LOCKED requests
 	// from starving out regular locking requests. In such cases, true is
 	// returned, but so is nil.
-	IsKeyLockedByConflictingTxn(context.Context, roachpb.Key, lock.Strength) (bool, *enginepb.TxnMeta, error)
+	IsKeyLockedByConflictingTxn(roachpb.Key, lock.Strength) (bool, *enginepb.TxnMeta, error)
 }
 
 // lockTableWaiter is concerned with waiting in lock wait-queues for locks held

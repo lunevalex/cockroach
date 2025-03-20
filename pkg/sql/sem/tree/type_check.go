@@ -1,12 +1,7 @@
 // Copyright 2015 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package tree
 
@@ -97,6 +92,10 @@ type SemaProperties struct {
 	// Ancestors is mutated during semantic analysis to provide contextual
 	// information for each descendent during traversal of sub-expressions.
 	Ancestors ScalarAncestors
+
+	// IgnoreUnpreferredOverloads is set to true when "unpreferred" overloads
+	// should not be used during type-checking and overload resolution.
+	IgnoreUnpreferredOverloads bool
 }
 
 type semaRequirements struct {
@@ -1269,10 +1268,7 @@ func (expr *FuncExpr) TypeCheck(
 		if procErr := procedureDoesNotExistErr(expr.Func.String(), semaCtx); procErr != nil {
 			return nil, procErr
 		}
-		return nil, errors.WithHint(
-			pgerror.Newf(pgcode.UndefinedFunction, "unknown signature: %s", getFuncSig(expr, s.typedExprs, desired)),
-			"No function matches the given name and argument types. You might need to add explicit type casts.",
-		)
+		return nil, pgerror.Newf(pgcode.UndefinedFunction, "unknown signature: %s", getFuncSig(expr, s.typedExprs, desired))
 	}
 
 	var favoredOverload QualifiedOverload
@@ -1833,10 +1829,12 @@ func (expr *Array) TypeCheck(
 	}
 
 	if len(expr.Exprs) == 0 {
-		if desiredParam == types.Any {
-			return nil, errAmbiguousArrayType
+		if expr.typ == nil || expr.typ.Family() != types.ArrayFamily {
+			if desiredParam.Family() == types.AnyFamily {
+				return nil, errAmbiguousArrayType
+			}
+			expr.typ = types.MakeArray(desiredParam)
 		}
-		expr.typ = types.MakeArray(desiredParam)
 		return expr, nil
 	}
 
@@ -2712,7 +2710,7 @@ func typeCheckSameTypedExprs(
 			return nil, nil, err
 		}
 		typ := typedExpr.ResolvedType()
-		if typ == types.Unknown && !desired.IsWildcardType() {
+		if typ == types.Unknown && desired != types.Any {
 			// The expression had a NULL type, so we can return the desired type as
 			// the expression type.
 			typ = desired
@@ -2795,7 +2793,7 @@ func typeCheckSameTypedExprs(
 				}
 				return typedExprs, typ, nil
 			default:
-				if !desired.IsWildcardType() {
+				if desired != types.Any {
 					return typedExprs, desired, nil
 				}
 				return typedExprs, types.Unknown, nil
@@ -2890,7 +2888,7 @@ func typeCheckSameTypedConsts(
 	}
 
 	// If typ is not a wildcard, all consts try to become typ.
-	if !typ.IsWildcardType() {
+	if typ.Family() != types.AnyFamily {
 		all := true
 		for i, ok := s.constIdxs.Next(0); ok; i, ok = s.constIdxs.Next(i + 1) {
 			if !canConstantBecome(s.exprs[i].(Constant), typ) {
@@ -2929,7 +2927,7 @@ func typeCheckSameTypedConsts(
 		if typ := typedExpr.ResolvedType(); !typ.Equivalent(reqTyp) {
 			return nil, unexpectedTypeError(s.exprs[i], reqTyp, typ)
 		}
-		if reqTyp.IsWildcardType() {
+		if reqTyp.Family() == types.AnyFamily {
 			reqTyp = typedExpr.ResolvedType()
 		}
 	}

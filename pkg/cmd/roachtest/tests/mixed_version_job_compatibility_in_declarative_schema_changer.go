@@ -1,17 +1,13 @@
 // Copyright 2022 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package tests
 
 import (
 	"context"
+	gosql "database/sql"
 	"math/rand"
 
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/cluster"
@@ -72,21 +68,26 @@ func executeSupportedDDLs(
 	r *rand.Rand,
 	testingUpgradedNodes bool,
 ) error {
-	nodes := option.NodeListOption{helper.RandomNode(r, c.All())}
+	nodes := c.All().SeededRandNode(r)
 	// We are not always guaranteed to be in a mixed-version binary state.
 	// If we are, update the set of nodes; otherwise, we will choose a random
 	// node.
-	if helper.Context.MixedBinary() {
+	if helper.Context().MixedBinary() {
 		if testingUpgradedNodes {
 			// In this case, we test that older nodes are able to adopt desc. jobs from newer nodes.
-			nodes = helper.Context.NodesInNextVersion() // N.B. this is the set of upgradedNodes.
+			nodes = helper.Context().NodesInNextVersion() // N.B. this is the set of upgradedNodes.
 		} else {
 			// In this case, we test that newer nodes are able to adopt desc. jobs from older nodes.
-			nodes = helper.Context.NodesInPreviousVersion() // N.B. this is the set of oldNodes.
+			nodes = helper.Context().NodesInPreviousVersion() // N.B. this is the set of oldNodes.
 		}
 	}
-	testUtils, err := newCommonTestUtils(ctx, t, c, helper.Context.CockroachNodes, false)
-	defer testUtils.CloseConnections()
+	connectFunc := func(node int) (*gosql.DB, error) { return helper.Connect(node), nil }
+	// NOTE: we intentionally don't call `testutils.CloseConnections()`
+	// here because these connnections are managed by the mixedversion
+	// framework, which already closes them at the end of the test.
+	testUtils, err := newCommonTestUtils(
+		ctx, t, c, connectFunc, helper.DefaultService().Descriptor.Nodes, false,
+	)
 	if err != nil {
 		return err
 	}
@@ -158,7 +159,13 @@ func runDeclarativeSchemaChangerJobCompatibilityInMixedVersion(
 	ctx context.Context, t test.Test, c cluster.Cluster,
 ) {
 	mvt := mixedversion.NewTest(
-		ctx, t, t.L(), c, c.All(), mixedversion.NumUpgrades(1),
+		ctx, t, t.L(), c, c.All(),
+		// Disable version skipping and limit the test to only one upgrade as the workload is only
+		// compatible with the branch it was built from and the major version before that.
+		mixedversion.NumUpgrades(1),
+		mixedversion.DisableSkipVersionUpgrades,
+		// Multi-tenant mode for this test only works on 23.2+
+		mixedversion.EnabledDeploymentModes(mixedversion.SystemOnlyDeployment),
 	)
 
 	// Set up the testing state (e.g. create a few databases and tables) and always use declarative schema

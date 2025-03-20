@@ -1,12 +1,7 @@
 // Copyright 2020 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package serverpb
 
@@ -87,10 +82,6 @@ type TenantStatusServer interface {
 	// SpanStats is used to access MVCC stats from KV
 	SpanStats(context.Context, *roachpb.SpanStatsRequest) (*roachpb.SpanStatsResponse, error)
 	Nodes(context.Context, *NodesRequest) (*NodesResponse, error)
-	// TODO(adityamaru): DownloadSpan has the side effect of telling the engine to
-	// download remote files. A method that mutates state should not be on the
-	// status server and so in the long run we should move it.
-	DownloadSpan(ctx context.Context, request *DownloadSpanRequest) (*DownloadSpanResponse, error)
 }
 
 // OptionalNodesStatusServer returns the wrapped NodesStatusServer, if it is

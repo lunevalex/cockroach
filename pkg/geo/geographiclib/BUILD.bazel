@@ -25,11 +25,8 @@ go_test(
     name = "geographiclib_test",
     size = "small",
     srcs = ["geographiclib_test.go"],
+    args = ["-test.timeout=55s"],
     embed = [":geographiclib"],
-    exec_properties = select({
-        "//build/toolchains:is_heavy": {"Pool": "heavy"},
-        "//conditions:default": {"Pool": "default"},
-    }),
     deps = [
         "@com_github_golang_geo//s1",
         "@com_github_golang_geo//s2",

@@ -21,11 +21,8 @@ go_test(
     name = "tracker_test",
     size = "small",
     srcs = ["tracker_test.go"],
+    args = ["-test.timeout=55s"],
     embed = [":tracker"],
-    exec_properties = select({
-        "//build/toolchains:is_heavy": {"Pool": "heavy"},
-        "//conditions:default": {"Pool": "default"},
-    }),
     deps = [
         "//pkg/testutils/skip",
         "//pkg/util/ctxgroup",

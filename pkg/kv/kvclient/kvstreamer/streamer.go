@@ -1,12 +1,7 @@
 // Copyright 2022 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package kvstreamer
 
@@ -348,6 +343,13 @@ var streamerConcurrencyLimit = settings.RegisterIntSetting(
 	settings.PositiveInt,
 )
 
+func max(a, b int64) int64 {
+	if a > b {
+		return a
+	}
+	return b
+}
+
 // NewStreamer creates a new Streamer.
 //
 // txn must be a LeafTxn that is not used by anything other than this Streamer.
@@ -573,9 +575,11 @@ func (s *Streamer) Enqueue(ctx context.Context, reqs []kvpb.RequestUnion) (retEr
 		// ranges.
 		if s.truncationHelper == nil {
 			// The streamer can process the responses in an arbitrary order, so
-			// we don't require the helper to preserve the order of requests and
-			// allow it to reorder the reqs slice too.
-			const mustPreserveOrder = false
+			// we don't require the helper to preserve the order of requests,
+			// unless we're in the InOrder mode when we must maintain increasing
+			// positions. We unconditionally allow reordering of the reqs slice
+			// though.
+			var mustPreserveOrder = s.mode == InOrder
 			const canReorderRequestsSlice = true
 			s.truncationHelper, err = kvcoord.NewBatchTruncationHelper(
 				scanDir, reqs, mustPreserveOrder, canReorderRequestsSlice,
@@ -875,28 +879,26 @@ func (w *workerCoordinator) mainLoop(ctx context.Context) {
 	defer log.VEvent(ctx, 2, "exiting coordinator main loop")
 	defer w.s.waitGroup.Done()
 	for {
-		if shouldExit := w.waitForRequests(ctx); shouldExit {
+		if err := w.waitForRequests(ctx); err != nil {
+			w.s.results.setError(err)
 			return
 		}
 
+		var atLeastBytes int64
+		// The higher the value of priority is, the lower the actual priority of
+		// spilling. Use the maximum value by default.
+		spillingPriority := math.MaxInt64
 		w.s.requestsToServe.Lock()
-		// The coordinator goroutine is the only one that removes requests from
-		// w.s.requestsToServe, so we can keep the reference to next request
-		// without holding the lock.
-		//
-		// Note that it's possible that by the time we get into
-		// issueRequestsForAsyncProcessing() another request with higher urgency
-		// is added; however, this is not a problem - we wait for available
-		// budget here on a best-effort basis.
-		nextReq := w.s.requestsToServe.nextLocked()
+		if !w.s.requestsToServe.emptyLocked() {
+			// If we already have minTargetBytes set on the first request to be
+			// issued, then use that.
+			atLeastBytes = w.s.requestsToServe.nextLocked().minTargetBytes
+			// The first request has the highest urgency among all current
+			// requests to serve, so we use its priority to spill everything
+			// with less urgency when necessary to free up the budget.
+			spillingPriority = w.s.requestsToServe.nextLocked().priority()
+		}
 		w.s.requestsToServe.Unlock()
-		// If we already have minTargetBytes set on the first request to be
-		// issued, then use that.
-		atLeastBytes := nextReq.minTargetBytes
-		// The first request has the highest urgency among all current requests
-		// to serve, so we use its priority to spill everything with less
-		// urgency when necessary to free up the budget.
-		spillingPriority := nextReq.priority()
 
 		avgResponseSize, shouldExit := w.getAvgResponseSize()
 		if shouldExit {
@@ -932,31 +934,28 @@ func (w *workerCoordinator) mainLoop(ctx context.Context) {
 // tracing span of the Streamer's user. Some time has been spent to figure it
 // out but led to no success. This should be cleaned up.
 func (w *workerCoordinator) logStatistics(ctx context.Context) {
-	if log.ExpensiveLogEnabled(ctx, 1) {
-		avgResponseSize, _ := w.getAvgResponseSize()
-		log.Eventf(
-			ctx,
-			"enqueueCalls=%d enqueuedRequests=%d enqueuedSingleRangeRequests=%d kvPairsRead=%d "+
-				"batchRequestsIssued=%d resumeBatchRequests=%d resumeSingleRangeRequests=%d "+
-				"numSpilledResults=%d emptyBatchResponses=%d droppedBatchResponses=%d avgResponseSize=%s",
-			w.s.enqueueCalls,
-			w.s.enqueuedRequests,
-			w.s.enqueuedSingleRangeRequests,
-			atomic.LoadInt64(w.s.atomics.kvPairsRead),
-			atomic.LoadInt64(w.s.atomics.batchRequestsIssued),
-			atomic.LoadInt64(&w.s.atomics.resumeBatchRequests),
-			atomic.LoadInt64(&w.s.atomics.resumeSingleRangeRequests),
-			w.s.results.numSpilledResults(),
-			atomic.LoadInt64(&w.s.atomics.emptyBatchResponses),
-			atomic.LoadInt64(&w.s.atomics.droppedBatchResponses),
-			humanizeutil.IBytes(avgResponseSize),
-		)
-	}
+	avgResponseSize, _ := w.getAvgResponseSize()
+	log.VEventf(
+		ctx, 1,
+		"enqueueCalls=%d enqueuedRequests=%d enqueuedSingleRangeRequests=%d kvPairsRead=%d "+
+			"batchRequestsIssued=%d resumeBatchRequests=%d resumeSingleRangeRequests=%d "+
+			"numSpilledResults=%d emptyBatchResponses=%d droppedBatchResponses=%d avgResponseSize=%s",
+		w.s.enqueueCalls,
+		w.s.enqueuedRequests,
+		w.s.enqueuedSingleRangeRequests,
+		atomic.LoadInt64(w.s.atomics.kvPairsRead),
+		atomic.LoadInt64(w.s.atomics.batchRequestsIssued),
+		atomic.LoadInt64(&w.s.atomics.resumeBatchRequests),
+		atomic.LoadInt64(&w.s.atomics.resumeSingleRangeRequests),
+		w.s.results.numSpilledResults(),
+		atomic.LoadInt64(&w.s.atomics.emptyBatchResponses),
+		atomic.LoadInt64(&w.s.atomics.droppedBatchResponses),
+		humanizeutil.IBytes(avgResponseSize),
+	)
 }
 
 // waitForRequests blocks until there is at least one request to be served.
-// Boolean indicating whether the coordinator should exit is returned.
-func (w *workerCoordinator) waitForRequests(ctx context.Context) (shouldExit bool) {
+func (w *workerCoordinator) waitForRequests(ctx context.Context) error {
 	w.s.requestsToServe.Lock()
 	defer w.s.requestsToServe.Unlock()
 	if w.s.requestsToServe.emptyLocked() {
@@ -964,21 +963,21 @@ func (w *workerCoordinator) waitForRequests(ctx context.Context) (shouldExit boo
 		// Check if the Streamer has been canceled or closed while we were
 		// waiting.
 		if ctx.Err() != nil {
-			w.s.results.setError(ctx.Err())
-			return true
+			return ctx.Err()
 		}
 		w.s.mu.Lock()
-		shouldExit = w.s.results.error() != nil || w.s.mu.done
+		shouldExit := w.s.results.error() != nil || w.s.mu.done
 		w.s.mu.Unlock()
 		if shouldExit {
-			return true
+			return nil
 		}
-		if w.s.requestsToServe.emptyLocked() {
-			w.s.results.setError(errors.AssertionFailedf("unexpectedly zero requests to serve after waiting"))
-			return true
+		if buildutil.CrdbTestBuild {
+			if w.s.requestsToServe.emptyLocked() {
+				panic(errors.AssertionFailedf("unexpectedly zero requests to serve after waiting "))
+			}
 		}
 	}
-	return false
+	return nil
 }
 
 func (w *workerCoordinator) getAvgResponseSize() (avgResponseSize int64, shouldExit bool) {
@@ -1360,6 +1359,20 @@ func (w *workerCoordinator) performRequestAsync(
 			ba.AdmissionHeader.NoMemoryReservedAtSource = false
 			ba.Requests = req.reqs
 
+			if buildutil.CrdbTestBuild {
+				if w.s.mode == InOrder {
+					for i := range req.positions[:len(req.positions)-1] {
+						if req.positions[i] >= req.positions[i+1] {
+							w.s.results.setError(errors.AssertionFailedf(
+								"positions aren't ascending: %d before %d at index %d",
+								req.positions[i], req.positions[i+1], i,
+							))
+							return
+						}
+					}
+				}
+			}
+
 			// TODO(yuzefovich): in Enqueue we split all requests into
 			// single-range batches, so ideally ba touches a single range in
 			// which case we hit the fast path in the DistSender. However, if
@@ -1447,11 +1460,6 @@ func (w *workerCoordinator) performRequestAsync(
 						// TODO(yuzefovich): consider updating the
 						// avgResponseSize and/or storing the information about
 						// the returned bytes size in req.
-
-						// The KV layer doesn't allow evaluation of the same
-						// Gets and Scans multiple times, so we need to make
-						// fresh copies of them.
-						req.deepCopyRequests(w.s)
 						w.s.requestsToServe.add(req)
 						return
 					}
@@ -1482,6 +1490,13 @@ func (w *workerCoordinator) performRequestAsync(
 
 			// Finally, process the results and add the ResumeSpans to be
 			// processed as well.
+			log.VEventf(ctx, 2,
+				"responses:%d targetBytes:%d {footprint:%v overhead:%v resumeMem:%v gets:%v scans:%v incpGets:%v "+
+					"incpScans:%v startedScans:%v kvs:%v}",
+				len(br.Responses), targetBytes, fp.memoryFootprintBytes, fp.responsesOverhead,
+				fp.resumeReqsMemUsage, fp.numGetResults, fp.numScanResults, fp.numIncompleteGets,
+				fp.numIncompleteScans, fp.numStartedScans, fp.kvPairsRead,
+			)
 			processSingleRangeResponse(ctx, w.s, req, br, fp)
 		}); err != nil {
 		// The new goroutine for the request wasn't spun up, so we have to
@@ -1627,13 +1642,6 @@ func processSingleRangeResults(
 	br *kvpb.BatchResponse,
 	fp singleRangeBatchResponseFootprint,
 ) {
-	log.VEventf(ctx, 2,
-		"responses:%d {footprint:%v overhead:%v resumeMem:%v gets:%v scans:%v incpGets:%v "+
-			"incpScans:%v startedScans:%v kvs:%v}",
-		len(br.Responses), fp.memoryFootprintBytes, fp.responsesOverhead, fp.resumeReqsMemUsage,
-		fp.numGetResults, fp.numScanResults, fp.numIncompleteGets, fp.numIncompleteScans,
-		fp.numStartedScans, fp.kvPairsRead,
-	)
 	// If there are no results, this function has nothing to do.
 	if !fp.hasResults() {
 		log.VEvent(ctx, 2, "no results")
@@ -1795,6 +1803,9 @@ func buildResumeSingleRangeBatch(
 	// We've already reconciled the budget with the actual reservation for the
 	// requests with the ResumeSpans.
 	resumeReq.reqsReservedBytes = fp.resumeReqsMemUsage
+	// TODO(yuzefovich): add heuristic for making fresh allocation of slices
+	// whenever only a fraction of them will be used by the resume batch. This
+	// will allow us to return most of overheadAccountedFor to the budget.
 	resumeReq.overheadAccountedFor = req.overheadAccountedFor
 	// Note that due to limitations of the KV layer (#75452) we cannot reuse
 	// original requests because the KV doesn't allow mutability (and all

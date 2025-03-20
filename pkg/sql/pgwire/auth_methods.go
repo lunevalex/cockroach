@@ -1,12 +1,7 @@
 // Copyright 2019 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package pgwire
 
@@ -34,6 +29,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/log/eventpb"
 	"github.com/cockroachdb/cockroach/pkg/util/uuid"
 	"github.com/cockroachdb/errors"
+	"github.com/cockroachdb/redact"
 	"github.com/xdg-go/scram"
 )
 
@@ -344,13 +340,13 @@ func scramAuthenticator(
 			// SASLResponse messages contain just the SASL payload.
 			//
 			rb := pgwirebase.ReadBuffer{Msg: resp}
-			reqMethod, err := rb.GetString()
+			reqMethod, err := rb.GetUnsafeString()
 			if err != nil {
 				c.LogAuthFailed(ctx, eventpb.AuthFailReason_PRE_HOOK_ERROR, err)
 				return err
 			}
 			if reqMethod != "SCRAM-SHA-256" {
-				c.LogAuthInfof(ctx, "client requests unknown scram method %q", reqMethod)
+				c.LogAuthInfof(ctx, redact.Sprintf("client requests unknown scram method %q", redact.SafeString(reqMethod)))
 				err := unimplemented.NewWithIssue(74300, "channel binding not supported")
 				// We need to manually report the unimplemented error because it is not
 				// passed through to the client as-is (authn errors are hidden behind
@@ -448,6 +444,14 @@ func authCert(
 		}
 		return hook(ctx, systemIdentity, clientConnection)
 	})
+	if len(tlsState.PeerCertificates) > 0 && hbaEntry.GetOption("map") != "" {
+		// The common name in the certificate is set as the system identity in case we have an HBAEntry for db user.
+		commonName, err := username.MakeSQLUsernameFromUserInput(tlsState.PeerCertificates[0].Subject.CommonName, username.PurposeValidation)
+		if err != nil {
+			return nil, err
+		}
+		b.SetReplacementIdentity(commonName)
+	}
 	return b, nil
 }
 
@@ -686,11 +690,24 @@ func authSessionRevivalToken(token []byte) AuthMethod {
 // This interface has a method that validates whether a given JWT token is a proper
 // credential for a given user to login.
 type JWTVerifier interface {
-	ValidateJWTLogin(_ *cluster.Settings,
+	ValidateJWTLogin(_ context.Context, _ *cluster.Settings,
 		_ username.SQLUsername,
 		_ []byte,
 		_ *identmap.Conf,
-	) error
+	) (detailedErrorMsg redact.RedactableString, authError error)
+
+	// RetrieveIdentity retrieves the user identity from the JWT.
+	//
+	// If a user identity is provided as input, it matches it against the token
+	// principals. In case of a match, it returns the matched user and no
+	// error. Otherwise, it returns the input user along with the error.
+	//
+	// If a user identity is not provided as input, and there is a single token
+	// principal to match against, it returns this user identity and no error.
+	// If there are multiple matches, then it returns an error.
+	RetrieveIdentity(
+		_ context.Context, _ username.SQLUsername, _ []byte, _ *identmap.Conf,
+	) (retrievedUser username.SQLUsername, authError error)
 }
 
 var jwtVerifier JWTVerifier
@@ -698,9 +715,15 @@ var jwtVerifier JWTVerifier
 type noJWTConfigured struct{}
 
 func (c *noJWTConfigured) ValidateJWTLogin(
-	_ *cluster.Settings, _ username.SQLUsername, _ []byte, _ *identmap.Conf,
-) error {
-	return errors.New("JWT token authentication requires CCL features")
+	_ context.Context, _ *cluster.Settings, _ username.SQLUsername, _ []byte, _ *identmap.Conf,
+) (detailedErrorMsg redact.RedactableString, authError error) {
+	return "", errors.New("JWT token authentication requires CCL features")
+}
+
+func (c *noJWTConfigured) RetrieveIdentity(
+	_ context.Context, u username.SQLUsername, _ []byte, _ *identmap.Conf,
+) (retrievedUser username.SQLUsername, authError error) {
+	return u, errors.New("JWT token authentication requires CCL features")
 }
 
 // ConfigureJWTAuth is a hook for the `jwtauthccl` library to add JWT login support. It's called to
@@ -765,11 +788,11 @@ func authJwtToken(
 		if len(token) == 0 {
 			return security.NewErrPasswordUserAuthFailed(user)
 		}
-		if err = jwtVerifier.ValidateJWTLogin(execCfg.Settings, user, []byte(token), identMap); err != nil {
-			c.LogAuthFailed(ctx, eventpb.AuthFailReason_CREDENTIALS_INVALID, err)
-			return err
+		if detailedErrors, authError := jwtVerifier.ValidateJWTLogin(ctx, execCfg.Settings, user, []byte(token), identMap); authError != nil {
+			c.LogAuthFailed(ctx, eventpb.AuthFailReason_CREDENTIALS_INVALID,
+				errors.Join(authError, errors.Newf("%s", detailedErrors)))
+			return authError
 		}
-		c.LogAuthOK(ctx)
 		return nil
 	})
 	return b, nil

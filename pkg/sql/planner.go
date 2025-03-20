@@ -1,12 +1,7 @@
 // Copyright 2016 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package sql
 
@@ -438,6 +433,7 @@ func newInternalPlanner(
 	p.extendedEvalCtx.Sequence = p
 	p.extendedEvalCtx.Tenant = p
 	p.extendedEvalCtx.Regions = p
+	p.extendedEvalCtx.JoinTokenCreator = p
 	p.extendedEvalCtx.Gossip = p
 	p.extendedEvalCtx.JobsProfiler = p
 	p.extendedEvalCtx.ClusterID = execCfg.NodeInfo.LogicalClusterID()
@@ -553,6 +549,22 @@ func internalExtendedEvalCtx(
 	ret.SetDeprecatedContext(ctx)
 	ret.copyFromExecCfg(execCfg)
 	return ret
+}
+
+// ExtendedEvalContextCopyAndReset returns a function that produces
+// extendedEvalContexts for parallel subquery, cascade, and check execution.
+func (p *planner) ExtendedEvalContextCopyAndReset() *extendedEvalContext {
+	evalCtx := p.ExtendedEvalContextCopy()
+	p.ExtendedEvalContextReset(evalCtx)
+	return evalCtx
+}
+
+// ExtendedEvalContextReset resets context fields so that the context may be
+// reused across subquery, cascade, and check execution.
+func (p *planner) ExtendedEvalContextReset(evalCtx *extendedEvalContext) {
+	evalCtx.Placeholders = &p.semaCtx.Placeholders
+	evalCtx.Annotations = &p.semaCtx.Annotations
+	evalCtx.SessionID = p.ExtendedEvalContext().SessionID
 }
 
 // SemaCtx provides access to the planner's SemaCtx.

@@ -1,10 +1,7 @@
 // Copyright 2021 The Cockroach Authors.
 //
-// Licensed as a CockroachDB Enterprise file under the Cockroach Community
-// License (the "License"); you may not use this file except in compliance with
-// the License. You may obtain a copy of the License at
-//
-//     https://github.com/cockroachdb/cockroach/blob/master/licenses/CCL.txt
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package kvfeed
 
@@ -12,6 +9,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/kv"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvclient/kvcoord"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvpb"
+	"github.com/cockroachdb/cockroach/pkg/util/hlc"
 )
 
 // TestingKnobs are the testing knobs for kvfeed.
@@ -29,6 +27,9 @@ type TestingKnobs struct {
 	// EndTimeReached is a callback that may return true to indicate the
 	// feed should exit because its end time has been reached.
 	EndTimeReached func() bool
+	// ModifyTimestamps is called on the timestamp for each RangefeedMessage
+	// before converting it into a kv event.
+	ModifyTimestamps func(*hlc.Timestamp)
 	// RangefeedOptions lets the kvfeed override rangefeed settings.
 	RangefeedOptions []kvcoord.RangeFeedOption
 }

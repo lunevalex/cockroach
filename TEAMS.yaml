@@ -37,19 +37,13 @@ cockroachdb/sql-queries:
   # there is no triage column ID.
   # See .github/workflows/add-issues-to-project.yml.
   label: T-sql-queries
-cockroachdb/cluster-observability:
-  triage_column_id: 12618343
-  label: T-cluster-observability
+  silence_mentions: true
 cockroachdb/kv:
   aliases:
     cockroachdb/kv-triage: roachtest
     cockroachdb/kv-prs: other
   triage_column_id: 14242655
   label: T-kv
-cockroachdb/replication:
-  aliases:
-    cockroachdb/repl-prs: other
-  label: T-kv-replication
 cockroachdb/spatial:
   triage_column_id: 9487269
   label: T-spatial
@@ -87,21 +81,8 @@ cockroachdb/server:
   aliases:
     cockroachdb/cli-prs: other
     cockroachdb/server-prs: other
+  label: T-db-server
   triage_column_id: 2521812
-cockroachdb/admin-ui:
-  aliases:
-    cockroachdb/admin-ui-prs: other
-  triage_column_id: 6598672
-  label: T-observability-inf
-cockroachdb/obs-inf-prs:
-  aliases:
-    cockroachdb/http-api-prs: other
-  triage_column_id: 14196277
-  label: T-observability-inf
-cockroachdb/multi-tenant:
-  # Multi-tenant team uses GH projects v2, which doesn't have a REST API, so no triage column ID
-  # see .github/workflows/add-issues-to-project.yml
-  label: T-multitenant
 cockroachdb/jobs:
   aliases:
     cockroachdb/jobs-prs: other
@@ -118,5 +99,11 @@ cockroachdb/migrations:
   label: T-migrations
   triage_column_id: 18330909
 cockroachdb/release-eng:
+  aliases:
+    cockroachdb/release-eng-prs: other
+    cockroachdb/upgrade-prs: other
   label: T-release
   triage_column_id: 9149730
+cockroachdb/obs-prs:
+  # The observability team uses Jira for managing issues. So there is no triage column ID.
+  label: T-observability

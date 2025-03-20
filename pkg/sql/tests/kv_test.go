@@ -1,12 +1,7 @@
 // Copyright 2016 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package tests_test
 
@@ -22,6 +17,7 @@ import (
 	"testing"
 
 	"github.com/cockroachdb/cockroach/pkg/base"
+	"github.com/cockroachdb/cockroach/pkg/clusterversion"
 	kv2 "github.com/cockroachdb/cockroach/pkg/kv"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvpb"
 	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
@@ -66,6 +62,11 @@ func newKVNative(b *testing.B) kvInterface {
 
 func newKVNativeAndEngine(tb testing.TB, valueBlocks bool) (*kvNative, storage.Engine) {
 	st := cluster.MakeTestingClusterSettings()
+	version := st.Version.ActiveVersionOrEmpty(context.Background())
+	if version.Less(clusterversion.ByKey(
+		clusterversion.V23_1EnablePebbleFormatSSTableValueBlocks)) {
+		tb.Fatalf("cluster version is too old %s", version.String())
+	}
 	storage.ValueBlocksEnabled.Override(context.Background(), &st.SV, valueBlocks)
 	s, _, db := serverutils.StartServer(tb, base.TestServerArgs{Settings: st})
 	engines := s.Engines()

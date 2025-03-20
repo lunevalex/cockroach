@@ -1,12 +1,7 @@
 // Copyright 2014 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 syntax = "proto3";
 package cockroach.roachpb;
@@ -19,7 +14,6 @@ import "roachpb/data.proto";
 import "kv/kvpb/errors.proto";
 import "roachpb/metadata.proto";
 import "roachpb/span_config.proto";
-import "rpc/rpcpb/rpc.proto";
 import "settings/encoding.proto";
 import "sql/catalog/fetchpb/index_fetch.proto";
 import "storage/enginepb/mvcc.proto";
@@ -2116,23 +2110,22 @@ message AddSSTableRequest {
   // is likely non-empty. See AddSSTableResponse.FollowingLikelyNonEmptySpanStart.
   bool return_following_likely_non_empty_span_start = 9;
 
-  // RemoteFile indicates that the span indicated by the request start and end
+  // RemoteFile indicates that the span indicated by the request start and end 
   // key of the file specified should be added. Data cannot be set if RemoteFile
   // is non-empty, and many other request parameters such as collision/shadow
   // checking, write-at-request-timestamp, or ingest-as-writes are unsupported.
   //
   // TODO(dt, msbutler, bilal): This is unsupported.
-  // TODO(dt, msbutler, bilal): support sst_timestamp_to_request_timestamp.
+  // TOOD(dt, msbutler, bilal): support sst_timestamp_to_request_timestamp.
   // TODO(msbutler): rename to ExternalFile.
   message  RemoteFile {
     string locator = 1;
     string path = 2;
     uint64 backing_file_size = 3;
-    uint64 approximate_physical_size = 4;
   }
   RemoteFile remote_file = 10 [(gogoproto.nullable) = false];
-
-  // AddSSTableRequest_PrefixReplacement is used to represent a prefix to be
+  
+  // AddSSTableRequest_PrefixReplacement is used to represent a prefix to be 
   // replaced and the prefix with which to replace it.
   message PrefixReplacement {
     bytes from = 1;
@@ -2141,7 +2134,7 @@ message AddSSTableRequest {
 
   // PrefixReplacement is used to that keys in the sst with the prefix specified
   // in "from" should instead appear to have that prefix replaced by "to", when
-  // during iteration, seeking, or other reads. For example, an SST containing
+  // during iteration, seeking, or other reads. For example, an SST containing 
   // keys a1, a2, and a3 when added with PrefixReplacement={From: a, To:x} would
   // produce the same results for subsequent operations as adding an SST with
   // the keys x1, x2, x3 instead. The implementaiton may however elect to defer
@@ -2151,8 +2144,8 @@ message AddSSTableRequest {
   PrefixReplacement prefix_replacement = 11 [(gogoproto.nullable) = false];
 
   // IgnoreKeysAboveTimestamp is used when ingesting an SSTable that contains
-  // keys, including mvcc revisions of keys, captured over a time range, to
-  // indicate that readers of that sstable should read it "as of" a the fixed
+  // keys, including mvcc revisions of keys, captured over a time range, to 
+  // indicate that readers of that sstable should read it "as of" a the fixed 
   // time, ignoring any keys with later timestamps.
   //
   // TODO(dt,msbutler,bilal): This is unsupported.
@@ -2311,8 +2304,8 @@ message SubsumeResponse {
   //    through a range merge, to make the merge less disruptive to writes on
   //    the post-merge range because the timestamp cache won't be bumped as
   //    high.
-  // 2. it can transfer information about reads with future-time timestamps,
-  //    which are not otherwise captured by the FreezeStart clock timestamp.
+  // 2. it can transfer information about reads with synthetic timestamps, which
+  //    are not otherwise captured by the FreezeStart clock timestamp.
   kv.kvserver.readsummary.ReadSummary read_summary = 7;
 }
 
@@ -2919,20 +2912,9 @@ message Header {
   // and/or been explicitly committed by a RecoverTxn request. See #103817.
   bool ambiguous_replay_protection = 32;
 
-  // ConnectionClass specifies the preferred RPC connection class to use for
-  // sending or retransmitting this BatchRequest.
-  //
-  // This is only a hint. Senders of this request may override this preference.
-  // For example, requests to some critical system ranges can be "upgraded" to
-  // the SYSTEM class.
-  //
-  // If the enum value is unknown (for instance, may happen when the cluster is
-  // in a mixed-version state after a new value got added), DEFAULT is assumed.
-  cockroach.rpc.ConnectionClass connection_class = 33;
-
   reserved 7, 10, 12, 14, 20;
 
-  // Next ID: 34
+  // Next ID: 33
 }
 
 // BoundedStalenessHeader contains configuration values pertaining to bounded
@@ -3425,7 +3407,15 @@ message TenantSettingsEvent {
   // can't do that yet due to a dependency cycle. We should break the cycle.
   uint32 service_mode = 9;
 
-  // NEXT ID: 10
+  // ClusterInitGracePeriodEndTS is the timestamp (in seconds since the Unix epoch)
+  // marking the end of the grace period for clusters without a license. After this
+  // timestamp, if no license is installed, the cluster will be subject to throttling.
+  // Since secondary tenants cannot access the KV store where this is saved, the value
+  // is propagated through the tenant settings. This is only set when the event type is
+  // METADATA_EVENT.
+  int64 ClusterInitGracePeriodEndTS = 10;
+
+  // NEXT ID: 11
 }
 
 // TenantSetting contains the setting key and value of a tenant setting.
@@ -3553,9 +3543,8 @@ message JoinNodeResponse {
 service Internal {
   rpc Batch              (BatchRequest)              returns (BatchResponse)                  {}
   rpc RangeLookup        (RangeLookupRequest)        returns (RangeLookupResponse)            {}
-  // RangeFeed RPC is deprecated. Use MuxRangeFeed instead.
-  // This should be removed when support is no longer needed in
-  // mixed-version clusters, possibly in 24.2.
+  // RangeFeed RPC is deprecated.  Use MuxRangeFeed instead.
+  // To be removed at version 23.1
   rpc RangeFeed          (RangeFeedRequest)          returns (stream RangeFeedEvent)          {}
   rpc MuxRangeFeed       (stream RangeFeedRequest)   returns (stream MuxRangeFeedEvent) {}
   rpc GossipSubscription (GossipSubscriptionRequest) returns (stream GossipSubscriptionEvent) {}
@@ -3599,9 +3588,6 @@ service Internal {
 message GetRangeDescriptorsRequest {
   // Span over which to request range descriptors.
   Span span = 1 [(gogoproto.nullable) = false];
-  // BatchSize if set non-zero streams batches incrementally (which may not be
-  // consistent).
-  int64 batch_size = 2;
 }
 
 // GetRangeDescriptorsResponse lists out the requested range descriptors.

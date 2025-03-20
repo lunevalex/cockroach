@@ -16,6 +16,7 @@ go_library(
         "//pkg/clusterversion",
         "//pkg/jobs/jobspb",
         "//pkg/keys",
+        "//pkg/security/username",
         "//pkg/sql/catalog",
         "//pkg/sql/catalog/catpb",
         "//pkg/sql/catalog/catprivilege",
@@ -41,10 +42,7 @@ go_test(
     name = "schemadesc_test",
     size = "small",
     srcs = ["schema_desc_test.go"],
-    exec_properties = select({
-        "//build/toolchains:is_heavy": {"Pool": "heavy"},
-        "//conditions:default": {"Pool": "default"},
-    }),
+    args = ["-test.timeout=55s"],
     deps = [
         ":schemadesc",
         "//pkg/clusterversion",

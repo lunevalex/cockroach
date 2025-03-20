@@ -1,12 +1,7 @@
 // Copyright 2018 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package pgwire
 
@@ -50,6 +45,10 @@ import (
 	"github.com/lib/pq/oid"
 )
 
+// readTimeout is the timeout after which readTimeoutConn checks the
+// connection for cancellation.
+const readTimeout = 1 * time.Second
+
 // conn implements a pgwire network connection (version 3 of the protocol,
 // implemented by Postgres v7.4 and later). conn.serve() reads protocol
 // messages, transforms them into commands that it pushes onto a StmtBuf (where
@@ -67,6 +66,9 @@ type conn struct {
 
 	sessionArgs sql.SessionArgs
 	metrics     *tenantSpecificMetrics
+
+	curDestMetrics atomic.Pointer[destinationMetrics]
+	destMetrics    func() *destinationMetrics
 
 	// startTime is the time when the connection attempt was first received
 	// by the server.
@@ -134,8 +136,8 @@ func (c *conn) sendError(ctx context.Context, err error) error {
 	return err
 }
 
-func (c *conn) authLogEnabled() bool {
-	return c.alwaysLogAuthActivity || logSessionAuth.Get(c.sv)
+func (c *conn) verboseAuthLogEnabled() bool {
+	return c.alwaysLogAuthActivity || logVerboseSessionAuth.Get(c.sv)
 }
 
 // processCommands authenticates the connection and then processes commands
@@ -165,7 +167,7 @@ func (c *conn) processCommands(
 	defer func() {
 		// Release resources, if we still own them.
 		if reservedOwned {
-			reserved.Close(ctx)
+			reserved.Clear(ctx)
 		}
 		// Notify the connection's goroutine that we're terminating. The
 		// connection might know already, as it might have triggered this
@@ -341,7 +343,7 @@ func (c *conn) handleSimpleQuery(
 	timeReceived time.Time,
 	unqualifiedIntSize *types.T,
 ) error {
-	query, err := buf.GetString()
+	query, err := buf.GetUnsafeString()
 	if err != nil {
 		return c.stmtBuf.Push(ctx, sql.SendError{Err: err})
 	}
@@ -488,11 +490,11 @@ func (c *conn) handleSimpleQuery(
 // the connection should be considered toast.
 func (c *conn) handleParse(ctx context.Context, nakedIntSize *types.T) error {
 	telemetry.Inc(sqltelemetry.ParseRequestCounter)
-	name, err := c.readBuf.GetString()
+	name, err := c.readBuf.GetUnsafeString()
 	if err != nil {
 		return c.stmtBuf.Push(ctx, sql.SendError{Err: err})
 	}
-	query, err := c.readBuf.GetString()
+	query, err := c.readBuf.GetUnsafeString()
 	if err != nil {
 		return c.stmtBuf.Push(ctx, sql.SendError{Err: err})
 	}
@@ -603,7 +605,7 @@ func (c *conn) handleDescribe(ctx context.Context) error {
 	if err != nil {
 		return c.stmtBuf.Push(ctx, sql.SendError{Err: err})
 	}
-	name, err := c.readBuf.GetString()
+	name, err := c.readBuf.GetUnsafeString()
 	if err != nil {
 		return c.stmtBuf.Push(ctx, sql.SendError{Err: err})
 	}
@@ -623,7 +625,7 @@ func (c *conn) handleClose(ctx context.Context) error {
 	if err != nil {
 		return c.stmtBuf.Push(ctx, sql.SendError{Err: err})
 	}
-	name, err := c.readBuf.GetString()
+	name, err := c.readBuf.GetUnsafeString()
 	if err != nil {
 		return c.stmtBuf.Push(ctx, sql.SendError{Err: err})
 	}
@@ -645,11 +647,11 @@ var formatCodesAllText = []pgwirebase.FormatCode{pgwirebase.FormatText}
 // the connection should be considered toast.
 func (c *conn) handleBind(ctx context.Context) error {
 	telemetry.Inc(sqltelemetry.BindRequestCounter)
-	portalName, err := c.readBuf.GetString()
+	portalName, err := c.readBuf.GetUnsafeString()
 	if err != nil {
 		return c.stmtBuf.Push(ctx, sql.SendError{Err: err})
 	}
-	statementName, err := c.readBuf.GetString()
+	statementName, err := c.readBuf.GetUnsafeString()
 	if err != nil {
 		return c.stmtBuf.Push(ctx, sql.SendError{Err: err})
 	}
@@ -771,7 +773,7 @@ func (c *conn) handleExecute(
 	ctx context.Context, timeReceived time.Time, followedBySync bool,
 ) error {
 	telemetry.Inc(sqltelemetry.ExecuteRequestCounter)
-	portalName, err := c.readBuf.GetString()
+	portalName, err := c.readBuf.GetUnsafeString()
 	if err != nil {
 		return c.stmtBuf.Push(ctx, sql.SendError{Err: err})
 	}
@@ -898,10 +900,10 @@ func (c *conn) bufferRow(ctx context.Context, row tree.Datums, r *commandResult)
 		}
 	}
 	if err := c.msgBuilder.finishMsg(&c.writerState.buf); err != nil {
-		return errors.NewAssertionErrorWithWrappedErrf(err, "unexpected err from buffer")
+		return err
 	}
 	if err := c.maybeFlush(r.pos, r.bufferingDisabled); err != nil {
-		return errors.NewAssertionErrorWithWrappedErrf(err, "unexpected err from buffer")
+		return err
 	}
 	c.maybeReallocate()
 	return nil
@@ -943,7 +945,7 @@ func (c *conn) bufferBatch(ctx context.Context, batch coldata.Batch, r *commandR
 				}
 			}
 			if err := c.msgBuilder.finishMsg(&c.writerState.buf); err != nil {
-				panic(fmt.Sprintf("unexpected err from buffer: %s", err))
+				return err
 			}
 			if err := c.maybeFlush(r.pos, r.bufferingDisabled); err != nil {
 				return err
@@ -1247,9 +1249,7 @@ func (c *conn) Flush(pos sql.CmdPos) error {
 
 	c.writerState.fi.lastFlushed = pos
 	// Make sure that the entire cmdStarts buffer is drained.
-	// Use (*ring.Buffer).Reset instead of (*ring.Buffer).Discard to preserve
-	// the underlying ring buffer memory for reuse.
-	c.writerState.fi.cmdStarts.Reset()
+	c.writerState.fi.cmdStarts.Discard()
 
 	_ /* n */, err := c.writerState.buf.WriteTo(c.conn)
 	if err != nil {
@@ -1432,14 +1432,14 @@ var _ pgwirebase.BufferedReader = &pgwireReader{}
 // Read is part of the pgwirebase.BufferedReader interface.
 func (r *pgwireReader) Read(p []byte) (int, error) {
 	n, err := r.conn.rd.Read(p)
-	r.conn.metrics.BytesInCount.Inc(int64(n))
+	r.conn.destMetrics().BytesInCount.Inc(int64(n))
 	return n, err
 }
 
 // ReadString is part of the pgwirebase.BufferedReader interface.
 func (r *pgwireReader) ReadString(delim byte) (string, error) {
 	s, err := r.conn.rd.ReadString(delim)
-	r.conn.metrics.BytesInCount.Inc(int64(len(s)))
+	r.conn.destMetrics().BytesInCount.Inc(int64(len(s)))
 	return s, err
 }
 
@@ -1447,7 +1447,7 @@ func (r *pgwireReader) ReadString(delim byte) (string, error) {
 func (r *pgwireReader) ReadByte() (byte, error) {
 	b, err := r.conn.rd.ReadByte()
 	if err == nil {
-		r.conn.metrics.BytesInCount.Inc(1)
+		r.conn.destMetrics().BytesInCount.Inc(1)
 	}
 	return b, err
 }
@@ -1495,7 +1495,6 @@ func (c *readTimeoutConn) Read(b []byte) (int, error) {
 	// read before checking for exit conditions. The tradeoff is between the
 	// time it takes to react to session context cancellation and the overhead
 	// of waking up and checking for exit conditions.
-	const readTimeout = 1 * time.Second
 
 	// Remove the read deadline when returning from this function to avoid
 	// unexpected behavior.

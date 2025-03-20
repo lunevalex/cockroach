@@ -1,18 +1,12 @@
 // Copyright 2022 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 //
 
 package raftlog
 
 import (
-	"context"
 	"fmt"
 	"math"
 	"strings"
@@ -156,7 +150,7 @@ func TestIteratorEmptyLog(t *testing.T) {
 	eng := storage.NewDefaultInMemForTesting()
 	defer eng.Close()
 	for _, hi := range []kvpb.RaftIndex{0, 1} {
-		it, err := NewIterator(context.Background(), rangeID, eng, IterOptions{Hi: hi})
+		it, err := NewIterator(rangeID, eng, IterOptions{Hi: hi})
 		require.NoError(t, err)
 		ok, err := it.SeekGE(0)
 		it.Close()
@@ -252,7 +246,7 @@ func TestIterator(t *testing.T) {
 						hi = 0
 					}
 					t.Run(fmt.Sprintf("lo=%s,hi=%s", indToName(lo), indToName(hi)), func(t *testing.T) {
-						it, err := NewIterator(context.Background(), rangeID, eng, IterOptions{Hi: hi})
+						it, err := NewIterator(rangeID, eng, IterOptions{Hi: hi})
 						require.NoError(t, err)
 						sl, err := consumeIter(it, lo)
 						it.Close()

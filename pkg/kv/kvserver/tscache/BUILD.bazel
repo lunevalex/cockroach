@@ -37,11 +37,8 @@ go_test(
         "interval_skl_test.go",
         "tree_impl_test.go",
     ],
+    args = ["-test.timeout=295s"],
     embed = [":tscache"],
-    exec_properties = select({
-        "//build/toolchains:is_heavy": {"Pool": "heavy"},
-        "//conditions:default": {"Pool": "default"},
-    }),
     deps = [
         "//pkg/roachpb",
         "//pkg/testutils",

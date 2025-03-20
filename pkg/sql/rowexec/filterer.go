@@ -1,12 +1,7 @@
 // Copyright 2020 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package rowexec
 
@@ -26,7 +21,7 @@ import (
 type filtererProcessor struct {
 	execinfra.ProcessorBase
 	input  execinfra.RowSource
-	filter execinfrapb.ExprHelper
+	filter *execinfrapb.ExprHelper
 }
 
 var _ execinfra.Processor = &filtererProcessor{}
@@ -58,6 +53,7 @@ func newFiltererProcessor(
 		return nil, err
 	}
 
+	f.filter = &execinfrapb.ExprHelper{}
 	if err := f.filter.Init(ctx, spec.Filter, types, &f.SemaCtx, f.EvalCtx); err != nil {
 		return nil, err
 	}

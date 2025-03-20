@@ -1,10 +1,7 @@
 // Copyright 2023 The Cockroach Authors.
 //
-// Licensed as a CockroachDB Enterprise file under the Cockroach Community
-// License (the "License"); you may not use this file except in compliance with
-// the License. You may obtain a copy of the License at
-//
-//     https://github.com/cockroachdb/cockroach/blob/master/licenses/CCL.txt
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package backupccl
 
@@ -18,6 +15,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/ccl/backupccl/backuppb"
 	"github.com/cockroachdb/cockroach/pkg/clusterversion"
 	"github.com/cockroachdb/cockroach/pkg/jobs/jobspb"
+	"github.com/cockroachdb/cockroach/pkg/kv"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/security/username"
 	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
@@ -32,7 +30,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
 	"github.com/cockroachdb/cockroach/pkg/testutils/serverutils"
 	"github.com/cockroachdb/cockroach/pkg/util/leaktest"
-	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/errors"
 	"github.com/stretchr/testify/require"
 	"golang.org/x/exp/slices"
@@ -132,10 +129,10 @@ func TestBackupManifestVersionCompatibility(t *testing.T) {
 		},
 		{
 			name:                    "alpha-restore",
-			backupVersion:           roachpb.Version{Major: 1000022, Minor: 2, Internal: 14},
+			backupVersion:           roachpb.Version{Major: 100022, Minor: 2, Internal: 14},
 			clusterVersion:          roachpb.Version{Major: 23, Minor: 1},
 			minimumSupportedVersion: roachpb.Version{Major: 22, Minor: 2},
-			expectedError:           "backup from version 1000022.2-upgrading-to-1000023.1-step-014 is newer than current version 23.1",
+			expectedError:           "backup from version 100022.2-14 is newer than current version 23.1",
 		},
 		{
 			name:                    "old-backup",
@@ -175,12 +172,13 @@ func TestBackupManifestVersionCompatibility(t *testing.T) {
 
 func TestAllocateDescriptorRewrites(t *testing.T) {
 	defer leaktest.AfterTest(t)()
-	defer log.Scope(t).Close(t)
-
 	ctx := context.Background()
 	opName := "allocate-descriptor-rewrites"
-	s, db, kvDB := serverutils.StartServer(t, base.TestServerArgs{})
+	s, db, kvDB := serverutils.StartServer(t, base.TestServerArgs{
+		DefaultTestTenant: base.TestIsSpecificToStorageLayerAndNeedsASystemTenant,
+	})
 	defer s.Stopper().Stop(ctx)
+	execCfg := s.ExecutorConfig().(sql.ExecutorConfig)
 
 	var defaultDB *dbdesc.Mutable
 	var db1 *dbdesc.Mutable
@@ -198,12 +196,10 @@ func TestAllocateDescriptorRewrites(t *testing.T) {
 
 	var planner sql.PlanHookState
 
-	srv := s.ApplicationLayer()
-	execCfg := srv.ExecutorConfig().(sql.ExecutorConfig)
 	setupPlanner := func() {
 		plannerAsInterface, cleanup := sql.NewInternalPlanner(
 			opName,
-			srv.DB().NewTxn(ctx, "test-allocate-descriptor-rewrite"),
+			kv.NewTxn(ctx, kvDB, s.NodeID()),
 			username.RootUserName(),
 			&sql.MemoryMetrics{},
 			&execCfg,
@@ -241,7 +237,7 @@ func TestAllocateDescriptorRewrites(t *testing.T) {
 
 		txn := planner.InternalSQLTxn()
 		col := txn.Descriptors()
-		cat, err := col.GetAll(ctx, kvDB.NewTxn(ctx, "test-get-all"))
+		cat, err := col.GetAll(ctx, kv.NewTxn(ctx, kvDB, s.NodeID()))
 		require.NoError(t, err)
 		sqlDescs := cat.OrderedDescriptors()
 

@@ -1,12 +1,7 @@
 // Copyright 2021 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package main
 
@@ -60,7 +55,7 @@ var (
 	useTreeDist           = true
 	sig                   = 9
 	waitFlag              = false
-	maxWait               = 0
+	gracePeriod           = 0
 	createVMOpts          = vm.DefaultCreateOpts()
 	startOpts             = roachprod.DefaultStartOpts()
 	stageOS               string
@@ -80,11 +75,11 @@ var (
 
 	// storageCluster is used for cluster virtualization and multi-tenant functionality.
 	storageCluster string
-	// externalProcessNodes indicates the cluster/nodes where external
-	// process SQL instances should be deployed.
-	externalProcessNodes string
 
-	revertUpdate bool
+	roachprodUpdateRevert bool
+	roachprodUpdateBranch string
+	roachprodUpdateOS     string
+	roachprodUpdateArch   string
 )
 
 func initFlags() {
@@ -171,7 +166,7 @@ func initFlags() {
 	pgurlCmd.Flags().BoolVar(&external,
 		"external", false, "return pgurls for external connections")
 	pgurlCmd.Flags().StringVar(&pgurlCertsDir,
-		"certs-dir", "./certs", "cert dir to use for secure connections")
+		"certs-dir", install.CockroachNodeCertsDir, "cert dir to use for secure connections")
 
 	pprofCmd.Flags().DurationVar(&pprofOpts.Duration,
 		"duration", 30*time.Second, "Duration of profile to capture")
@@ -202,25 +197,18 @@ func initFlags() {
 		"init-target", startOpts.InitTarget, "node on which to run initialization")
 	startCmd.Flags().IntVar(&startOpts.StoreCount,
 		"store-count", startOpts.StoreCount, "number of stores to start each node with")
-	startCmd.Flags().BoolVar(&startOpts.ScheduleBackups,
-		"schedule-backups", startOpts.ScheduleBackups,
-		"create a cluster backup schedule once the cluster has started (by default, "+
-			"full backup hourly and incremental every 15 minutes)")
-	startCmd.Flags().StringVar(&startOpts.ScheduleBackupArgs, "schedule-backup-args", "",
-		`Recurrence and scheduled backup options specification.
-Default is "RECURRING '*/15 * * * *' FULL BACKUP '@hourly' WITH SCHEDULE OPTIONS first_run = 'now'"`)
 
 	startInstanceCmd.Flags().StringVarP(&storageCluster, "storage-cluster", "S", "", "storage cluster")
 	_ = startInstanceCmd.MarkFlagRequired("storage-cluster")
 	startInstanceCmd.Flags().IntVar(&startOpts.SQLInstance,
 		"sql-instance", 0, "specific SQL/HTTP instance to connect to (this is a roachprod abstraction for separate-process deployments distinct from the internal instance ID)")
-	startInstanceCmd.Flags().StringVar(&externalProcessNodes, "external-cluster", externalProcessNodes, "start service in external mode, as a separate process in the given nodes")
+	startInstanceCmd.Flags().StringVar(&startOpts.VirtualClusterLocation, "external-nodes", startOpts.VirtualClusterLocation, "if set, starts service in external mode, as a separate process in the given nodes")
 
 	// Flags for processes that stop (kill) processes.
 	for _, stopProcessesCmd := range []*cobra.Command{stopCmd, stopInstanceCmd} {
 		stopProcessesCmd.Flags().IntVar(&sig, "sig", sig, "signal to pass to kill")
 		stopProcessesCmd.Flags().BoolVar(&waitFlag, "wait", waitFlag, "wait for processes to exit")
-		stopProcessesCmd.Flags().IntVar(&maxWait, "max-wait", maxWait, "approx number of seconds to wait for processes to exit")
+		stopProcessesCmd.Flags().IntVar(&gracePeriod, "grace-period", gracePeriod, "approx number of seconds to wait for processes to exit, before a forceful shutdown (SIGKILL) is performed")
 	}
 
 	syncCmd.Flags().BoolVar(&listOpts.IncludeVolumes, "include-volumes", false, "Include volumes when syncing")
@@ -316,8 +304,11 @@ Default is "RECURRING '*/15 * * * *' FULL BACKUP '@hourly' WITH SCHEDULE OPTIONS
 			" the provider chosen for the cluster. If no volume type is provided the provider default will be used. "+
 			"Note: This volume will be deleted once the VM is deleted.")
 
-	updateCmd.Flags().BoolVar(&revertUpdate, "revert", false, "restore roachprod to the previous version "+
+	updateCmd.Flags().BoolVar(&roachprodUpdateRevert, "revert", false, "restore roachprod to the previous version "+
 		"which would have been renamed to roachprod.bak during the update process")
+	updateCmd.Flags().StringVarP(&roachprodUpdateBranch, "branch", "b", "master", "git branch")
+	updateCmd.Flags().StringVarP(&roachprodUpdateOS, "os", "o", "linux", "OS")
+	updateCmd.Flags().StringVarP(&roachprodUpdateArch, "arch", "a", "amd64", "CPU architecture")
 
 	for _, cmd := range []*cobra.Command{adminurlCmd, grafanaURLCmd, jaegerURLCmd} {
 		cmd.Flags().BoolVar(&urlOpen, "open", false, "Open the url in a browser")
@@ -337,8 +328,19 @@ Default is "RECURRING '*/15 * * * *' FULL BACKUP '@hourly' WITH SCHEDULE OPTIONS
 	}
 
 	for _, cmd := range []*cobra.Command{startCmd, startInstanceCmd} {
+		cmd.Flags().BoolVar(&startOpts.ScheduleBackups,
+			"schedule-backups", startOpts.ScheduleBackups,
+			"create a cluster backup schedule once the cluster has started (by default, "+
+				"full backup hourly and incremental every 15 minutes)")
+		cmd.Flags().StringVar(&startOpts.ScheduleBackupArgs,
+			"schedule-backup-args", startOpts.ScheduleBackupArgs,
+			"Recurrence and scheduled backup options specification")
 		cmd.Flags().Int64Var(&startOpts.NumFilesLimit, "num-files-limit", startOpts.NumFilesLimit,
 			"limit the number of files that can be created by the cockroach process")
+		cmd.Flags().IntVar(&startOpts.SQLPort,
+			"sql-port", startOpts.SQLPort, "port on which to listen for SQL clients")
+		cmd.Flags().IntVar(&startOpts.AdminUIPort,
+			"admin-ui-port", startOpts.AdminUIPort, "port to serve the admin UI on")
 	}
 
 	for _, cmd := range []*cobra.Command{

@@ -1,12 +1,7 @@
 // Copyright 2022 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package ttljob_test
 
@@ -837,8 +832,7 @@ func TestRowLevelTTLJobRandomEntries(t *testing.T) {
 			th, cleanupFunc := newRowLevelTTLTestJobTestHelper(
 				t,
 				&sql.TTLTestingKnobs{
-					AOSTDuration:     &zeroDuration,
-					ReturnStatsError: true,
+					AOSTDuration: &zeroDuration,
 				},
 				tc.numSplits == 0 && !tc.forceNonMultiTenant, // SPLIT AT does not work with multi-tenant
 				1, /* numNodes */
@@ -929,6 +923,41 @@ func TestRowLevelTTLJobRandomEntries(t *testing.T) {
 			th.verifyExpiredRowsJobOnly(t, tc.numExpiredRows)
 		})
 	}
+}
+
+func TestRowLevelTTLCancelStats(t *testing.T) {
+	defer leaktest.AfterTest(t)()
+	defer log.Scope(t).Close(t)
+
+	th, cleanupFunc := newRowLevelTTLTestJobTestHelper(
+		t,
+		&sql.TTLTestingKnobs{
+			AOSTDuration:     &zeroDuration,
+			ReturnStatsError: true,
+			ExtraStatsQuery:  "SELECT pg_sleep(100)",
+		},
+		false, /* testMultiTenant */
+		1,     /* numNodes */
+	)
+	defer cleanupFunc()
+
+	th.sqlDB.Exec(t, `
+CREATE TABLE t (
+  id INT PRIMARY KEY,
+  expire_at TIMESTAMPTZ
+) WITH (
+  ttl_expiration_expression = 'expire_at',
+  ttl_row_stats_poll_interval = '1 minute'
+)`)
+	th.sqlDB.Exec(t, `INSERT INTO t (id, expire_at) VALUES (1, '2020-01-01')`)
+
+	// Force the schedule to execute. Normally, the job would not fail due to a
+	// stats error, but we have set the ReturnStatsError knob to true in this
+	// test.
+	th.waitForScheduledJob(t, jobs.StatusFailed, "cancelling TTL stats query because TTL job completed")
+
+	results := th.sqlDB.QueryStr(t, "SELECT * FROM t")
+	require.Empty(t, results)
 }
 
 func TestOutboundForeignKey(t *testing.T) {

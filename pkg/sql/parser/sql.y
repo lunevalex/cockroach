@@ -402,8 +402,8 @@ func (u *sqlSymUnion) storageParams() []tree.StorageParam {
     }
     return nil
 }
-func (u *sqlSymUnion) storageParamKeys() []tree.Name {
-    if params, ok := u.val.([]tree.Name); ok {
+func (u *sqlSymUnion) storageParamKeys() []string {
+    if params, ok := u.val.([]string); ok {
         return params
     }
     return nil
@@ -886,9 +886,6 @@ func (u *sqlSymUnion) showCreateFormatOption() tree.ShowCreateFormatOption {
 func (u *sqlSymUnion) beginTransaction() *tree.BeginTransaction {
     return u.val.(*tree.BeginTransaction)
 }
-func (u *sqlSymUnion) showFingerprintOptions() *tree.ShowFingerprintOptions {
-    return u.val.(*tree.ShowFingerprintOptions)
-}
 %}
 
 // NB: the %token definitions must come before the %type definitions in this
@@ -938,7 +935,7 @@ func (u *sqlSymUnion) showFingerprintOptions() *tree.ShowFingerprintOptions {
 
 %token <str> FAILURE FALSE FAMILY FETCH FETCHVAL FETCHTEXT FETCHVAL_PATH FETCHTEXT_PATH
 %token <str> FILES FILTER
-%token <str> FIRST FLOAT FLOAT4 FLOAT8 FLOORDIV FOLLOWING FOR FORCE FORCE_INDEX
+%token <str> FIRST FLOAT FLOAT4 FLOAT8 FLOORDIV FOLLOWING FOR FORCE FORCE_INDEX FORCE_INVERTED_INDEX
 %token <str> FORCE_NOT_NULL FORCE_NULL FORCE_QUOTE FORCE_ZIGZAG
 %token <str> FOREIGN FORMAT FORWARD FREEZE FROM FULL FUNCTION FUNCTIONS
 
@@ -949,7 +946,7 @@ func (u *sqlSymUnion) showFingerprintOptions() *tree.ShowFingerprintOptions {
 %token <str> HAVING HASH HEADER HIGH HISTOGRAM HOLD HOUR
 
 %token <str> IDENTITY
-%token <str> IF IFERROR IFNULL IGNORE_FOREIGN_KEYS ILIKE IMMEDIATE IMMEDIATELY IMMUTABLE IMPORT IN INCLUDE
+%token <str> IF IFERROR IFNULL IGNORE_FOREIGN_KEYS ILIKE IMMEDIATE IMMUTABLE IMPORT IN INCLUDE
 %token <str> INCLUDING INCLUDE_ALL_SECONDARY_TENANTS INCLUDE_ALL_VIRTUAL_CLUSTERS INCREMENT INCREMENTAL INCREMENTAL_LOCATION
 %token <str> INET INET_CONTAINED_BY_OR_EQUALS
 %token <str> INET_CONTAINS_OR_EQUALS INDEX INDEXES INHERITS INJECT INITIALLY
@@ -1105,7 +1102,6 @@ func (u *sqlSymUnion) showFingerprintOptions() *tree.ShowFingerprintOptions {
 // Other ALTER VIRTUAL CLUSTER statements.
 %type <tree.Statement> alter_virtual_cluster_replication_stmt
 %type <tree.Statement> alter_virtual_cluster_rename_stmt
-%type <tree.Statement> alter_virtual_cluster_reset_stmt
 %type <tree.Statement> alter_virtual_cluster_service_stmt
 
 // ALTER PARTITION
@@ -1290,7 +1286,7 @@ func (u *sqlSymUnion) showFingerprintOptions() *tree.ShowFingerprintOptions {
 %type <tree.Statement> show_databases_stmt
 %type <tree.Statement> show_default_privileges_stmt
 %type <tree.Statement> show_enums_stmt
-%type <tree.Statement> show_fingerprints_stmt opt_with_show_fingerprints_options fingerprint_options_list fingerprint_options
+%type <tree.Statement> show_fingerprints_stmt
 %type <tree.Statement> show_functions_stmt
 %type <tree.Statement> show_procedures_stmt
 %type <tree.Statement> show_grants_stmt
@@ -1363,7 +1359,7 @@ func (u *sqlSymUnion) showFingerprintOptions() *tree.ShowFingerprintOptions {
 %type <*tree.CopyOptions> opt_with_copy_options copy_options copy_options_list copy_generic_options copy_generic_options_list
 %type <str> import_format
 %type <str> storage_parameter_key
-%type <tree.NameList> storage_parameter_key_list
+%type <[]string> storage_parameter_key_list
 %type <tree.StorageParam> storage_parameter
 %type <[]tree.StorageParam> storage_parameter_list opt_table_with opt_with_storage_parameter_list
 
@@ -1479,7 +1475,7 @@ func (u *sqlSymUnion) showFingerprintOptions() *tree.ShowFingerprintOptions {
 %type <*tree.Tuple> expr_tuple1_ambiguous expr_tuple_unambiguous
 %type <tree.NameList> attrs
 %type <[]string> session_var_parts
-%type <tree.SelectExprs> opt_target_list target_list
+%type <tree.SelectExprs> target_list
 %type <tree.UpdateExprs> set_clause_list
 %type <*tree.UpdateExpr> set_clause multiple_set_clause
 %type <tree.ArraySubscripts> array_subscripts
@@ -2933,7 +2929,7 @@ alter_column_default:
   }
 
 alter_column_on_update:
-  SET ON UPDATE a_expr
+  SET ON UPDATE b_expr
   {
     $$.val = $4.expr()
   }
@@ -3535,14 +3531,6 @@ alter_backup_schedule_cmd:
 		$$.val = &tree.AlterBackupScheduleSetScheduleOption{
 		  Option:  $4.kvOption(),
 		}
-  }
-| EXECUTE IMMEDIATELY
-  {
-    $$.val = &tree.AlterBackupScheduleNextRun{}
-  }
-| EXECUTE FULL IMMEDIATELY
-  {
-    $$.val = &tree.AlterBackupScheduleNextRun{Full: true}
   }
 
 // sconst_or_placeholder matches a simple string, or a placeholder.
@@ -4451,6 +4439,10 @@ comment_stmt:
       sqllex.Error(fmt.Sprintf("invalid column name: %q", tree.ErrString($4.unresolvedName())))
             return 1
     }
+    if columnItem != nil && columnItem.TableName != nil {
+      aIdx := sqllex.(*lexer).NewAnnotation()
+      columnItem.TableName.AnnotatedNode = tree.AnnotatedNode{AnnIdx: aIdx}
+    }
     $$.val = &tree.CommentOnColumn{ColumnItem: columnItem, Comment: $6.strPtr()}
   }
 | COMMENT ON INDEX table_index_name IS comment_text
@@ -4597,9 +4589,9 @@ replication_options:
     $$.val = &tree.TenantReplicationOptions{Retention: $3.expr()}
   }
 |
-  EXPIRATION WINDOW '=' d_expr
+  RESUME TIMESTAMP '=' d_expr
   {
-      $$.val = &tree.TenantReplicationOptions{ExpirationWindow: $4.expr()}
+    $$.val = &tree.TenantReplicationOptions{ResumeTimestamp: $4.expr()}
   }
 
 // %Help: CREATE SCHEDULE
@@ -4656,7 +4648,7 @@ create_func_stmt:
       Replace: $2.bool(),
       Name: name,
       Params: $6.routineParams(),
-      ReturnType: &tree.RoutineReturnType{
+      ReturnType: tree.RoutineReturnType{
         Type: $11.typeReference(),
         SetOf: $10.bool(),
       },
@@ -4664,20 +4656,6 @@ create_func_stmt:
       RoutineBody: $13.routineBody(),
     }
   }
-| CREATE opt_or_replace FUNCTION routine_create_name '(' opt_routine_param_with_default_list ')'
-    opt_create_routine_opt_list opt_routine_body
-    {
-        name := $4.unresolvedObjectName().ToRoutineName()
-        $$.val = &tree.CreateRoutine{
-          IsProcedure: false,
-          Replace: $2.bool(),
-          Name: name,
-          Params: $6.routineParams(),
-          ReturnType: (*tree.RoutineReturnType)(nil),
-          Options: $8.routineOptions(),
-          RoutineBody: $9.routineBody(),
-        }
-    }
 | CREATE opt_or_replace FUNCTION error // SHOW HELP: CREATE FUNCTION
 
 // %Help: CREATE PROCEDURE - define a new procedure
@@ -4701,7 +4679,9 @@ create_proc_stmt:
       Params: $6.routineParams(),
       Options: $8.routineOptions(),
       RoutineBody: $9.routineBody(),
-      ReturnType: (*tree.RoutineReturnType)(nil),
+      ReturnType: tree.RoutineReturnType{
+        Type: types.Void,
+      },
     }
   }
 | CREATE opt_or_replace PROCEDURE error // SHOW HELP: CREATE PROCEDURE
@@ -4789,9 +4769,9 @@ routine_param:
 
 routine_param_class:
   IN { $$.val = tree.RoutineParamIn }
-| OUT { $$.val = tree.RoutineParamOut }
-| INOUT { $$.val = tree.RoutineParamInOut }
-| IN OUT { $$.val = tree.RoutineParamInOut }
+| OUT { return unimplementedWithIssueDetail(sqllex, 100405, "create function with 'OUT' argument class") }
+| INOUT { return unimplementedWithIssueDetail(sqllex, 100405, "create function with 'INOUT' argument class") }
+| IN OUT { return unimplementedWithIssueDetail(sqllex, 100405, "create function with 'IN OUT' argument class") }
 | VARIADIC { return unimplementedWithIssueDetail(sqllex, 88947, "variadic user-defined functions") }
 
 routine_param_type:
@@ -6177,11 +6157,6 @@ show_virtual_cluster_options:
     /* SKIP DOC */
     $$.val = tree.ShowTenantOptions{WithCapabilities: true}
   }
-| PRIOR REPLICATION DETAILS
-  {
-    /* SKIP DOC */
-    $$.val = tree.ShowTenantOptions{WithPriorReplication: true}
-  }
 | show_virtual_cluster_options ',' REPLICATION STATUS
   {
     /* SKIP DOC */
@@ -6194,13 +6169,6 @@ show_virtual_cluster_options:
     /* SKIP DOC */
     o := $1.showTenantOpts()
     o.WithCapabilities = true
-    $$.val = o
-  }
-| show_virtual_cluster_options ',' PRIOR REPLICATION DETAILS
-  {
-    /* SKIP DOC */
-    o := $1.showTenantOpts()
-    o.WithPriorReplication = true
     $$.val = o
   }
 
@@ -6801,13 +6769,12 @@ set_csetting_stmt:
 // %Text:
 // ALTER VIRTUAL CLUSTER REPLICATION, ALTER VIRTUAL CLUSTER SETTING,
 // ALTER VIRTUAL CLUSTER CAPABILITY, ALTER VIRTUAL CLUSTER RENAME,
-// ALTER VIRTUAL CLUSTER RESET, ALTER VIRTUAL CLUSTER SERVICE
+// ALTER VIRTUAL CLUSTER SERVICE
 alter_virtual_cluster_stmt:
   alter_virtual_cluster_replication_stmt // EXTEND WITH HELP: ALTER VIRTUAL CLUSTER REPLICATION
 | alter_virtual_cluster_csetting_stmt    // EXTEND WITH HELP: ALTER VIRTUAL CLUSTER SETTING
 | alter_virtual_cluster_capability_stmt  // EXTEND WITH HELP: ALTER VIRTUAL CLUSTER CAPABILITY
 | alter_virtual_cluster_rename_stmt      // EXTEND WITH HELP: ALTER VIRTUAL CLUSTER RENAME
-| alter_virtual_cluster_reset_stmt       // EXTEND WITH HELP: ALTER VIRTUAL CLUSTER RESET
 | alter_virtual_cluster_service_stmt     // EXTEND WITH HELP: ALTER VIRTUAL CLUSTER SERVICE
 | ALTER virtual_cluster error   // SHOW HELP: ALTER VIRTUAL CLUSTER
 
@@ -6816,21 +6783,6 @@ virtual_cluster_spec:
   { $$.val = &tree.TenantSpec{IsName: true, Expr: $1.expr()} }
 | '[' a_expr ']'
   { $$.val = &tree.TenantSpec{IsName: false, Expr: $2.expr()} }
-
-
-// %Help: ALTER VIRTUAL CLUSTER RESET - reset data state of a virtual cluster
-// %Category: Experimental
-// %Text:
-// ALTER VIRTUAL CLUSTER <virtual_cluster_spec> RESET DATA TO SYSTEM TIME <time>
-alter_virtual_cluster_reset_stmt:
-  ALTER virtual_cluster virtual_cluster_spec  RESET DATA TO SYSTEM TIME a_expr
-  {
-    /* SKIP DOC */
-    $$.val = &tree.AlterTenantReset{
-      TenantSpec: $3.tenantSpec(),
-      Timestamp: $9.expr(),
-    }
-  }
 
 // %Help: ALTER VIRTUAL CLUSTER RENAME - rename a virtual cluster
 // %Category: Experimental
@@ -6932,16 +6884,6 @@ alter_virtual_cluster_replication_stmt:
     $$.val = &tree.AlterTenantReplication{
       TenantSpec: $3.tenantSpec(),
       Options: *$6.tenantReplicationOptions(),
-    }
-  }
-| ALTER virtual_cluster virtual_cluster_spec START REPLICATION OF d_expr ON d_expr opt_with_replication_options
-  {
-    /* SKIP DOC */
-    $$.val = &tree.AlterTenantReplication{
-      TenantSpec: $3.tenantSpec(),
-      ReplicationSourceTenantName: &tree.TenantSpec{IsName: true, Expr: $7.expr()},
-      ReplicationSourceAddress: $9.expr(),
-      Options: *$10.tenantReplicationOptions(),
     }
   }
 
@@ -9098,46 +9040,12 @@ show_fingerprints_stmt:
     /* SKIP DOC */
     $$.val = &tree.ShowFingerprints{Table: $5.unresolvedObjectName()}
   }
-| SHOW EXPERIMENTAL_FINGERPRINTS FROM virtual_cluster virtual_cluster_spec opt_with_show_fingerprints_options
+|
+  SHOW EXPERIMENTAL_FINGERPRINTS FROM virtual_cluster virtual_cluster_spec
   {
     /* SKIP DOC */
-    $$.val = &tree.ShowFingerprints{TenantSpec: $5.tenantSpec(), Options: *$6.showFingerprintOptions()}
+    $$.val = &tree.ShowFingerprints{TenantSpec: $5.tenantSpec()}
   }
-
-opt_with_show_fingerprints_options:
-  WITH fingerprint_options_list
-  {
-    $$.val = $2.showFingerprintOptions()
-  }
-| WITH OPTIONS '(' fingerprint_options_list ')'
-  {
-    $$.val = $4.showFingerprintOptions()
-  }
-| /* EMPTY */
-  {
-    $$.val = &tree.ShowFingerprintOptions{}
-  }
-
-fingerprint_options_list:
-  // Require at least one option
-  fingerprint_options
-  {
-    $$.val = $1.showFingerprintOptions()
-  }
-| fingerprint_options_list ',' fingerprint_options
-  {
-    if err := $1.showFingerprintOptions().CombineWith($3.showFingerprintOptions()); err != nil {
-      return setErr(sqllex, err)
-    }
-  }
-
-// List of valid backup options.
-fingerprint_options:
-  START TIMESTAMP '=' d_expr
-  {
-    $$.val = &tree.ShowFingerprintOptions{StartTimestamp: $4.expr()}
-  }
-
 
 show_full_scans_stmt:
   SHOW FULL TABLE SCANS
@@ -9761,17 +9669,17 @@ storage_parameter_key:
 storage_parameter_key_list:
   storage_parameter_key
   {
-    $$.val = []tree.Name{tree.Name($1)}
+    $$.val = []string{$1}
   }
 | storage_parameter_key_list ',' storage_parameter_key
   {
-    $$.val = append($1.storageParamKeys(), tree.Name($3))
+    $$.val = append($1.storageParamKeys(), $3)
   }
 
 storage_parameter:
   storage_parameter_key '=' var_value
   {
-    $$.val = tree.StorageParam{Key: tree.Name($1), Value: $3.expr()}
+    $$.val = tree.StorageParam{Key: $1, Value: $3.expr()}
   }
 
 storage_parameter_list:
@@ -9873,7 +9781,7 @@ table_elem:
   {
     def := $1.constraintDef()
     valBehavior := $2.validationBehavior()
-    if u, ok := def.(*tree.UniqueConstraintTableDef); ok && valBehavior == tree.ValidationSkip && !u.WithoutIndex {
+    if u, ok := def.(*tree.UniqueConstraintTableDef); ok && valBehavior == tree.ValidationSkip {
       typ := "PRIMARY KEY"
       if !u.PrimaryKey {
         typ = "UNIQUE"
@@ -12102,7 +12010,6 @@ opt_comma:
 transaction_mode:
   transaction_iso_level
   {
-    /* SKIP DOC */
     $$.val = tree.TransactionModes{Isolation: $1.isoLevel()}
   }
 | transaction_user_priority
@@ -12410,23 +12317,27 @@ upsert_stmt:
 | opt_with_clause UPSERT error // SHOW HELP: UPSERT
 
 insert_target:
-  table_name
+  table_name_opt_idx
   {
-    name := $1.unresolvedObjectName().ToTableName()
-    $$.val = &name
+    $$.val = $1.tblExpr()
   }
 // Can't easily make AS optional here, because VALUES in insert_rest would have
 // a shift/reduce conflict with VALUES as an optional alias. We could easily
 // allow unreserved_keywords as optional aliases, but that'd be an odd
 // divergence from other places. So just require AS for now.
-| table_name AS table_alias_name
+| table_name_opt_idx AS table_alias_name
   {
-    name := $1.unresolvedObjectName().ToTableName()
-    $$.val = &tree.AliasedTableExpr{Expr: &name, As: tree.AliasClause{Alias: tree.Name($3)}}
+    alias := $1.tblExpr().(*tree.AliasedTableExpr)
+    alias.As = tree.AliasClause{Alias: tree.Name($3)}
+    $$.val = alias
   }
-| numeric_table_ref
+| numeric_table_ref opt_index_flags
   {
-    $$.val = $1.tblExpr()
+    /* SKIP DOC */
+    $$.val = &tree.AliasedTableExpr{
+      Expr: $1.tblExpr(),
+      IndexFlags: $2.indexFlags(),
+    }
   }
 
 insert_rest:
@@ -12821,7 +12732,7 @@ simple_select:
 //        [ OFFSET <expr> [ ROW | ROWS ] ]
 // %SeeAlso: WEBDOCS/select-clause.html
 simple_select_clause:
-  SELECT opt_all_clause opt_target_list
+  SELECT opt_all_clause target_list
     from_clause opt_where_clause
     group_clause having_clause window_clause
   {
@@ -12863,6 +12774,7 @@ simple_select_clause:
       Window:     $8.window(),
     }
   }
+| SELECT error // SHOW HELP: SELECT
 
 set_operation:
   select_clause UNION all_or_distinct select_clause
@@ -13364,34 +13276,33 @@ index_flags_param:
   {
     $$.val = &tree.IndexFlags{NoIndexJoin: true}
   }
-|
-  NO_ZIGZAG_JOIN
+| NO_ZIGZAG_JOIN
   {
     $$.val = &tree.IndexFlags{NoZigzagJoin: true}
   }
-|
-  NO_FULL_SCAN
+| NO_FULL_SCAN
   {
     $$.val = &tree.IndexFlags{NoFullScan: true}
   }
-|
-  IGNORE_FOREIGN_KEYS
+| IGNORE_FOREIGN_KEYS
   {
     /* SKIP DOC */
     $$.val = &tree.IndexFlags{IgnoreForeignKeys: true}
   }
-|
-  FORCE_ZIGZAG
+| FORCE_INVERTED_INDEX
+  {
+    /* SKIP DOC */
+     $$.val = &tree.IndexFlags{ForceInvertedIndex: true}
+  }
+| FORCE_ZIGZAG
   {
      $$.val = &tree.IndexFlags{ForceZigzag: true}
   }
-|
-  FORCE_ZIGZAG '=' index_name
+| FORCE_ZIGZAG '=' index_name
   {
      $$.val = &tree.IndexFlags{ZigzagIndexes: []tree.UnrestrictedName{tree.UnrestrictedName($3)}}
   }
-|
-  FORCE_ZIGZAG '=' '[' iconst64 ']'
+| FORCE_ZIGZAG '=' '[' iconst64 ']'
   {
     /* SKIP DOC */
      $$.val = &tree.IndexFlags{ZigzagIndexIDs: []tree.IndexID{tree.IndexID($4.int64())}}
@@ -16316,16 +16227,6 @@ target_list:
     $$.val = append($1.selExprs(), $3.selExpr())
   }
 
-opt_target_list:
-  target_list
-  {
-    $$.val = $1.selExprs()
-  }
-| /* EMPTY */
-  {
-    $$.val = tree.SelectExprs{}
-  }
-
 target_elem:
   a_expr AS target_name
   {
@@ -17016,6 +16917,7 @@ unreserved_keyword:
 | FORCE_NULL
 | FORCE_QUOTE
 | FORCE_INDEX
+| FORCE_INVERTED_INDEX
 | FORCE_ZIGZAG
 | FORWARD
 | FREEZE
@@ -17042,7 +16944,6 @@ unreserved_keyword:
 | HOUR
 | IDENTITY
 | IMMEDIATE
-| IMMEDIATELY
 | IMMUTABLE
 | IMPORT
 | INCLUDE
@@ -17527,6 +17428,7 @@ bare_label_keywords:
 | FORCE_NULL
 | FORCE_QUOTE
 | FORCE_INDEX
+| FORCE_INVERTED_INDEX
 | FORCE_ZIGZAG
 | FOREIGN
 | FORMAT
@@ -17564,7 +17466,6 @@ bare_label_keywords:
 | IGNORE_FOREIGN_KEYS
 | ILIKE
 | IMMEDIATE
-| IMMEDIATELY
 | IMMUTABLE
 | IMPORT
 | IN

@@ -1,12 +1,7 @@
 // Copyright 2019 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 // reduce reduces SQL passed from the input file using cockroach demo. The input
 // file is simplified such that -contains argument is present as an error during
@@ -51,7 +46,6 @@ var (
 	flags             = flag.NewFlagSet(os.Args[0], flag.ExitOnError)
 	binary            = flags.String("binary", "./cockroach", "path to cockroach binary")
 	file              = flags.String("file", "", "the path to a file containing SQL queries to reduce; required")
-	outFlag           = flags.String("out", "", "if set, the path to a new file where reduced result will be written to")
 	verbose           = flags.Bool("v", false, "print progress to standard output and the original test case output if it is not interesting")
 	contains          = flags.String("contains", "", "error regex to search for")
 	unknown           = flags.Bool("unknown", false, "print unknown types during walk")
@@ -126,16 +120,7 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	if *outFlag != "" {
-		file, err := os.Create(*outFlag)
-		if err != nil {
-			log.Fatal(err)
-		}
-		defer file.Close()
-		fmt.Fprint(file, out)
-	} else {
-		fmt.Println(out)
-	}
+	fmt.Println(out)
 }
 
 func reduceSQL(

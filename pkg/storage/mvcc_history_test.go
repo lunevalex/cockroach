@@ -1,12 +1,7 @@
 // Copyright 2019 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package storage_test
 
@@ -209,8 +204,8 @@ func TestMVCCHistories(t *testing.T) {
 			var hasData bool
 
 			for _, span := range spans {
-				err = engine.MVCCIterate(context.Background(), span.Key, span.EndKey, storage.MVCCKeyAndIntentsIterKind, storage.IterKeyTypeRangesOnly,
-					storage.UnknownReadCategory,
+				err = engine.MVCCIterate(
+					span.Key, span.EndKey, storage.MVCCKeyAndIntentsIterKind, storage.IterKeyTypeRangesOnly,
 					func(_ storage.MVCCKeyValue, rangeKeys storage.MVCCRangeKeyStack) error {
 						hasData = true
 						buf.Printf("rangekey: %s/[", rangeKeys.Bounds)
@@ -229,8 +224,8 @@ func TestMVCCHistories(t *testing.T) {
 					return err
 				}
 
-				err = engine.MVCCIterate(context.Background(), span.Key, span.EndKey, storage.MVCCKeyAndIntentsIterKind, storage.IterKeyTypePointsOnly,
-					storage.UnknownReadCategory,
+				err = engine.MVCCIterate(
+					span.Key, span.EndKey, storage.MVCCKeyAndIntentsIterKind, storage.IterKeyTypePointsOnly,
 					func(r storage.MVCCKeyValue, _ storage.MVCCRangeKeyStack) error {
 						hasData = true
 						if r.Key.Timestamp.IsEmpty() {
@@ -300,8 +295,10 @@ func TestMVCCHistories(t *testing.T) {
 				return err
 			} else if rdIter != nil {
 				defer func() { _ = rdIter.Close() }()
-				s, err := rdIter.First()
-				for ; s != nil; s, err = rdIter.Next() {
+				for s := rdIter.SeekGE(nil); s != nil; s = rdIter.Next() {
+					if err := rdIter.Error(); err != nil {
+						return err
+					}
 					start, err := storage.DecodeMVCCKey(s.Start)
 					if err != nil {
 						return err
@@ -315,9 +312,6 @@ func TestMVCCHistories(t *testing.T) {
 							roachpb.Span{Key: start.Key, EndKey: end.Key})
 					}
 				}
-				if err != nil {
-					return err
-				}
 			}
 
 			// Dump range keys.
@@ -325,8 +319,10 @@ func TestMVCCHistories(t *testing.T) {
 				return err
 			} else if rkIter != nil {
 				defer func() { _ = rkIter.Close() }()
-				s, err := rkIter.First()
-				for ; s != nil; s, err = rkIter.Next() {
+				for s := rkIter.SeekGE(nil); s != nil; s = rkIter.Next() {
+					if err := rkIter.Error(); err != nil {
+						return err
+					}
 					start, err := storage.DecodeMVCCKey(s.Start)
 					if err != nil {
 						return err
@@ -355,9 +351,6 @@ func TestMVCCHistories(t *testing.T) {
 						buf.Printf("\n")
 					}
 				}
-				if err != nil {
-					return err
-				}
 			}
 			return nil
 		}
@@ -367,7 +360,7 @@ func TestMVCCHistories(t *testing.T) {
 			// Replicated locks.
 			ltStart := keys.LocalRangeLockTablePrefix
 			ltEnd := keys.LocalRangeLockTablePrefix.PrefixEnd()
-			iter, err := engine.NewEngineIterator(context.Background(), storage.IterOptions{UpperBound: ltEnd})
+			iter, err := engine.NewEngineIterator(storage.IterOptions{UpperBound: ltEnd})
 			if err != nil {
 				return err
 			}
@@ -412,9 +405,9 @@ func TestMVCCHistories(t *testing.T) {
 				}
 				sort.Strings(ks)
 				for _, k := range ks {
-					info := e.unreplLocks[k]
+					txn := e.unreplLocks[k]
 					buf.Printf("lock (%s): %v/%s -> %+v\n",
-						lock.Unreplicated, k, info.str, info.txn)
+						lock.Unreplicated, k, lock.Exclusive, txn)
 				}
 			}
 			return nil
@@ -666,13 +659,12 @@ func TestMVCCHistories(t *testing.T) {
 					var msEngineBefore enginepb.MVCCStats
 					if stats {
 						for _, span := range spans {
-							ms, err := storage.ComputeStats(ctx, e.engine, span.Key, span.EndKey, statsTS)
+							ms, err := storage.ComputeStats(e.engine, span.Key, span.EndKey, statsTS)
 							require.NoError(t, err)
 							msEngineBefore.Add(ms)
 
 							lockSpan := lockTableSpan(span)
-							lockMs, err := storage.ComputeStats(
-								ctx, e.engine, lockSpan.Key, lockSpan.EndKey, statsTS)
+							lockMs, err := storage.ComputeStats(e.engine, lockSpan.Key, lockSpan.EndKey, statsTS)
 							require.NoError(t, err)
 							msEngineBefore.Add(lockMs)
 						}
@@ -698,13 +690,12 @@ func TestMVCCHistories(t *testing.T) {
 						// command, and compare them with the real computed stats diff.
 						var msEngineDiff enginepb.MVCCStats
 						for _, span := range spans {
-							ms, err := storage.ComputeStats(ctx, e.engine, span.Key, span.EndKey, statsTS)
+							ms, err := storage.ComputeStats(e.engine, span.Key, span.EndKey, statsTS)
 							require.NoError(t, err)
 							msEngineDiff.Add(ms)
 
 							lockSpan := lockTableSpan(span)
-							lockMs, err := storage.ComputeStats(
-								ctx, e.engine, lockSpan.Key, lockSpan.EndKey, statsTS)
+							lockMs, err := storage.ComputeStats(e.engine, lockSpan.Key, lockSpan.EndKey, statsTS)
 							require.NoError(t, err)
 							msEngineDiff.Add(lockMs)
 						}
@@ -752,13 +743,12 @@ func TestMVCCHistories(t *testing.T) {
 				if stats && (dataChange || locksChange) {
 					var msFinal enginepb.MVCCStats
 					for _, span := range spans {
-						ms, err := storage.ComputeStats(ctx, e.engine, span.Key, span.EndKey, statsTS)
+						ms, err := storage.ComputeStats(e.engine, span.Key, span.EndKey, statsTS)
 						require.NoError(t, err)
 						msFinal.Add(ms)
 
 						lockSpan := lockTableSpan(span)
-						lockMs, err := storage.ComputeStats(
-							ctx, e.engine, lockSpan.Key, lockSpan.EndKey, statsTS)
+						lockMs, err := storage.ComputeStats(e.engine, lockSpan.Key, lockSpan.EndKey, statsTS)
 						require.NoError(t, err)
 						msFinal.Add(lockMs)
 					}
@@ -1122,7 +1112,7 @@ func cmdCheckIntent(e *evalCtx) error {
 
 	return e.withReader(func(r storage.Reader) error {
 		var meta enginepb.MVCCMetadata
-		iter, err := r.NewMVCCIterator(context.Background(), storage.MVCCKeyAndIntentsIterKind, storage.IterOptions{Prefix: true})
+		iter, err := r.NewMVCCIterator(storage.MVCCKeyAndIntentsIterKind, storage.IterOptions{Prefix: true})
 		if err != nil {
 			return err
 		}
@@ -1154,11 +1144,7 @@ func cmdCheckIntent(e *evalCtx) error {
 func cmdAddUnreplicatedLock(e *evalCtx) error {
 	txn := e.getTxn(mandatory)
 	key := e.getKey()
-	str := lock.Exclusive // assume exclusive locks unless told otherwise
-	if e.hasArg("str") {
-		str = e.getStrength()
-	}
-	e.unreplLocks[string(key)] = unreplicatedLockInfo{txn: &txn.TxnMeta, str: str}
+	e.unreplLocks[string(key)] = &txn.TxnMeta
 	return nil
 }
 
@@ -1248,7 +1234,7 @@ func cmdGCClearRange(e *evalCtx) error {
 	key, endKey := e.getKeyRange()
 	gcTs := e.getTs(nil)
 	return e.withWriter("gc_clear_range", func(rw storage.ReadWriter) error {
-		cms, err := storage.ComputeStats(context.Background(), rw, key, endKey, 100e9)
+		cms, err := storage.ComputeStats(rw, key, endKey, 100e9)
 		require.NoError(e.t, err, "failed to compute range stats")
 		return storage.MVCCGarbageCollectWholeRange(e.ctx, rw, e.ms, key, endKey, gcTs, cms)
 	})
@@ -1425,7 +1411,7 @@ func cmdDeleteRangeTombstone(e *evalCtx) error {
 		// before the start key -- don't attempt to compute covered stats for these
 		// to avoid iterator panics.
 		if key.Compare(endKey) < 0 && key.Compare(keys.LocalMax) >= 0 {
-			ms, err := storage.ComputeStats(context.Background(), e.engine, key, endKey, ts.WallTime)
+			ms, err := storage.ComputeStats(e.engine, key, endKey, ts.WallTime)
 			if err != nil {
 				return err
 			}
@@ -1487,7 +1473,7 @@ func cmdGet(e *evalCtx) error {
 	}
 	if e.hasArg("skipLocked") {
 		opts.SkipLocked = true
-		opts.LockTable = e.newLockTableView(txn, ts, e.getStrength())
+		opts.LockTable = e.newLockTableView(txn, ts)
 	}
 	if e.hasArg("tombstones") {
 		opts.Tombstones = true
@@ -1793,7 +1779,7 @@ func cmdScan(e *evalCtx) error {
 	}
 	if e.hasArg("skipLocked") {
 		opts.SkipLocked = true
-		opts.LockTable = e.newLockTableView(txn, ts, e.getStrength())
+		opts.LockTable = e.newLockTableView(txn, ts)
 	}
 	if e.hasArg("tombstones") {
 		opts.Tombstones = true
@@ -1936,7 +1922,7 @@ func cmdIterNew(e *evalCtx) error {
 	}
 
 	r := e.newReader()
-	iter, err := r.NewMVCCIterator(context.Background(), kind, opts)
+	iter, err := r.NewMVCCIterator(kind, opts)
 	if err != nil {
 		return err
 	}
@@ -2003,7 +1989,7 @@ func cmdIterNewIncremental(e *evalCtx) error {
 	}
 
 	r := e.newReader()
-	mvccIter, err := storage.NewMVCCIncrementalIterator(context.Background(), r, opts)
+	mvccIter, err := storage.NewMVCCIncrementalIterator(r, opts)
 	if err != nil {
 		return err
 	}
@@ -2036,7 +2022,7 @@ func cmdIterNewReadAsOf(e *evalCtx) error {
 		opts.UpperBound = keys.MaxKey
 	}
 	r := e.newReader()
-	mvccIter, err := r.NewMVCCIterator(context.Background(), storage.MVCCKeyIterKind, opts)
+	mvccIter, err := r.NewMVCCIterator(storage.MVCCKeyIterKind, opts)
 	if err != nil {
 		return err
 	}
@@ -2381,7 +2367,7 @@ type boundSettingReader struct {
 
 // NewMVCCIterator implements the Reader interface.
 func (b boundSettingReader) NewMVCCIterator(
-	ctx context.Context, iterKind storage.MVCCIterKind, opts storage.IterOptions,
+	iterKind storage.MVCCIterKind, opts storage.IterOptions,
 ) (storage.MVCCIterator, error) {
 	if !opts.Prefix {
 		if len(opts.LowerBound) == 0 {
@@ -2403,7 +2389,7 @@ func (b boundSettingReader) NewMVCCIterator(
 			}
 		}
 	}
-	return b.Reader.NewMVCCIterator(ctx, iterKind, opts)
+	return b.Reader.NewMVCCIterator(iterKind, opts)
 }
 
 // evalCtx stored the current state of the environment of a running
@@ -2424,7 +2410,7 @@ type evalCtx struct {
 	td                *datadriven.TestData
 	txns              map[string]*roachpb.Transaction
 	txnCounter        uint32
-	unreplLocks       map[string]unreplicatedLockInfo
+	unreplLocks       map[string]*enginepb.TxnMeta
 	ms                *enginepb.MVCCStats
 	sstWriter         *storage.SSTWriter
 	sstFile           *storage.MemObject
@@ -2440,7 +2426,7 @@ func newEvalCtx(ctx context.Context, engine storage.Engine) *evalCtx {
 		st:          cluster.MakeTestingClusterSettings(),
 		engine:      engine,
 		txns:        make(map[string]*roachpb.Transaction),
-		unreplLocks: make(map[string]unreplicatedLockInfo),
+		unreplLocks: make(map[string]*enginepb.TxnMeta),
 	}
 }
 
@@ -2793,62 +2779,33 @@ func (e *evalCtx) lookupTxn(txnName string) (*roachpb.Transaction, error) {
 }
 
 func (e *evalCtx) newLockTableView(
-	txn *roachpb.Transaction, ts hlc.Timestamp, str lock.Strength,
+	txn *roachpb.Transaction, ts hlc.Timestamp,
 ) storage.LockTableView {
-	return &mockLockTableView{unreplLocks: e.unreplLocks, txn: txn, ts: ts, str: str}
+	return &mockLockTableView{unreplLocks: e.unreplLocks, txn: txn, ts: ts}
 }
 
 // mockLockTableView is a mock implementation of LockTableView.
 type mockLockTableView struct {
-	unreplLocks map[string]unreplicatedLockInfo
+	unreplLocks map[string]*enginepb.TxnMeta
 	txn         *roachpb.Transaction
 	ts          hlc.Timestamp
-	str         lock.Strength
 }
 
 func (lt *mockLockTableView) IsKeyLockedByConflictingTxn(
-	_ context.Context, k roachpb.Key,
+	k roachpb.Key, s lock.Strength,
 ) (bool, *enginepb.TxnMeta, error) {
-	info, ok := lt.unreplLocks[string(k)]
+	holder, ok := lt.unreplLocks[string(k)]
 	if !ok {
 		return false, nil, nil
 	}
-	holder := info.txn
-	heldStr := info.str
 	if lt.txn != nil && lt.txn.ID == holder.ID {
 		return false, nil, nil
 	}
-
-	switch lt.str {
-	case lock.None:
-		switch heldStr {
-		case lock.Shared:
-			return false, nil, nil
-		case lock.Exclusive:
-			if lt.ts.Less(holder.WriteTimestamp) {
-				return false, nil, nil
-			}
-			return true, holder, nil
-		default:
-			panic(fmt.Sprintf("unexpected held strength %s", heldStr))
-		}
-	case lock.Shared:
-		switch heldStr {
-		case lock.Shared:
-			return false, nil, nil
-		case lock.Exclusive:
-			return true, holder, nil
-		default:
-			panic(fmt.Sprintf("unexpected held strength %s", heldStr))
-		}
-	case lock.Exclusive:
-		return true, holder, nil
-	default:
-		panic(fmt.Sprintf("unexpected lock strength %s", lt.str))
+	if s == lock.None && lt.ts.Less(holder.WriteTimestamp) {
+		return false, nil, nil
 	}
+	return true, holder, nil
 }
-
-func (lt *mockLockTableView) Close() {}
 
 func (e *evalCtx) visitWrappedIters(fn func(it storage.SimpleMVCCIterator) (done bool)) {
 	iter := e.iter
@@ -3038,10 +2995,3 @@ type noopCloseReader struct {
 }
 
 func (noopCloseReader) Close() {}
-
-// unreplicatedLockInfo captures information about an unreplicated lock. It
-// represents an unreplicated lock when associated with a key.
-type unreplicatedLockInfo struct {
-	txn *enginepb.TxnMeta
-	str lock.Strength
-}

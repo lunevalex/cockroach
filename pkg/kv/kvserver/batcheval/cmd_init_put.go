@@ -1,12 +1,7 @@
 // Copyright 2014 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package batcheval
 
@@ -33,7 +28,10 @@ func InitPut(
 	args := cArgs.Args.(*kvpb.InitPutRequest)
 	h := cArgs.Header
 
-	failOnTombstones := args.FailOnTombstones && !cArgs.EvalCtx.EvalKnobs().DisableInitPutFailOnTombstones
+	if args.FailOnTombstones && cArgs.EvalCtx.EvalKnobs().DisableInitPutFailOnTombstones {
+		args.FailOnTombstones = false
+	}
+
 	opts := storage.MVCCWriteOptions{
 		Txn:                            h.Txn,
 		LocalTimestamp:                 cArgs.Now,
@@ -41,17 +39,16 @@ func InitPut(
 		ReplayWriteTimestampProtection: h.AmbiguousReplayProtection,
 		OmitInRangefeeds:               cArgs.OmitInRangefeeds,
 		MaxLockConflicts:               storage.MaxConflictsPerLockConflictError.Get(&cArgs.EvalCtx.ClusterSettings().SV),
-		Category:                       storage.BatchEvalReadCategory,
 	}
 
 	var err error
 	var acq roachpb.LockAcquisition
 	if args.Blind {
 		acq, err = storage.MVCCBlindInitPut(
-			ctx, readWriter, args.Key, h.Timestamp, args.Value, failOnTombstones, opts)
+			ctx, readWriter, args.Key, h.Timestamp, args.Value, args.FailOnTombstones, opts)
 	} else {
 		acq, err = storage.MVCCInitPut(
-			ctx, readWriter, args.Key, h.Timestamp, args.Value, failOnTombstones, opts)
+			ctx, readWriter, args.Key, h.Timestamp, args.Value, args.FailOnTombstones, opts)
 	}
 	if err != nil {
 		return result.Result{}, err

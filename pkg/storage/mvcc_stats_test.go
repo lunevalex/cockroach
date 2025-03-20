@@ -1,12 +1,7 @@
 // Copyright 2014 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package storage
 
@@ -70,8 +65,7 @@ func assertEqImpl(
 		}
 		// NOTE: we use ComputeStats for the lock table stats because it is not
 		// supported by ComputeStatsForIter.
-		compLockMS, err := ComputeStats(
-			context.Background(), rw, lockKeyMin, lockKeyMax, ms.LastUpdateNanos)
+		compLockMS, err := ComputeStats(rw, lockKeyMin, lockKeyMax, ms.LastUpdateNanos)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -1745,13 +1739,13 @@ var mvccStatsTests = []struct {
 	{
 		name: "ComputeStats",
 		fn: func(r Reader, start, end roachpb.Key, nowNanos int64) (enginepb.MVCCStats, error) {
-			return ComputeStats(context.Background(), r, start, end, nowNanos)
+			return ComputeStats(r, start, end, nowNanos)
 		},
 	},
 	{
 		name: "ComputeStatsForIter",
 		fn: func(r Reader, start, end roachpb.Key, nowNanos int64) (enginepb.MVCCStats, error) {
-			iter, err := r.NewMVCCIterator(context.Background(), MVCCKeyAndIntentsIterKind, IterOptions{
+			iter, err := r.NewMVCCIterator(MVCCKeyAndIntentsIterKind, IterOptions{
 				KeyTypes:   IterKeyTypePointsAndRanges,
 				LowerBound: start,
 				UpperBound: end,
@@ -1826,6 +1820,12 @@ func (s *randomTest) step(t *testing.T) {
 			// aren't something we're interested in, and besides, they corrupt
 			// everything.
 			s.TS.WallTime = 0
+		}
+		// If this is a transactional request, ensure the request timestamp is the
+		// same as the transaction's read timestamp. Otherwise, writes will return
+		// an error from mvccPutInternal.
+		if s.Txn != nil {
+			s.TS = s.Txn.ReadTimestamp
 		}
 	} else {
 		s.TS = hlc.Timestamp{}
@@ -1924,54 +1924,38 @@ func TestMVCCStatsRandomized(t *testing.T) {
 	}
 
 	actions["Put"] = func(s *state) (bool, string) {
-		ts := s.TS
-		if s.Txn != nil {
-			ts = s.Txn.ReadTimestamp
-		}
 		opts := MVCCWriteOptions{
 			Txn:   s.Txn,
 			Stats: s.MSDelta,
 		}
-		if _, err := MVCCPut(ctx, s.batch, s.key, ts, s.rngVal(), opts); err != nil {
+		if _, err := MVCCPut(ctx, s.batch, s.key, s.TS, s.rngVal(), opts); err != nil {
 			return false, err.Error()
 		}
 		return true, ""
 	}
 	actions["InitPut"] = func(s *state) (bool, string) {
-		ts := s.TS
-		if s.Txn != nil {
-			ts = s.Txn.ReadTimestamp
-		}
 		opts := MVCCWriteOptions{
 			Txn:   s.Txn,
 			Stats: s.MSDelta,
 		}
 		failOnTombstones := s.rng.Intn(2) == 0
 		desc := fmt.Sprintf("failOnTombstones=%t", failOnTombstones)
-		if _, err := MVCCInitPut(ctx, s.batch, s.key, ts, s.rngVal(), failOnTombstones, opts); err != nil {
+		if _, err := MVCCInitPut(ctx, s.batch, s.key, s.TS, s.rngVal(), failOnTombstones, opts); err != nil {
 			return false, desc + ": " + err.Error()
 		}
 		return true, desc
 	}
 	actions["Del"] = func(s *state) (bool, string) {
-		ts := s.TS
-		if s.Txn != nil {
-			ts = s.Txn.ReadTimestamp
-		}
 		opts := MVCCWriteOptions{
 			Txn:   s.Txn,
 			Stats: s.MSDelta,
 		}
-		if _, _, err := MVCCDelete(ctx, s.batch, s.key, ts, opts); err != nil {
+		if _, _, err := MVCCDelete(ctx, s.batch, s.key, s.TS, opts); err != nil {
 			return false, err.Error()
 		}
 		return true, ""
 	}
 	actions["DelRange"] = func(s *state) (bool, string) {
-		ts := s.TS
-		if s.Txn != nil {
-			ts = s.Txn.ReadTimestamp
-		}
 		opts := MVCCWriteOptions{
 			Txn:   s.Txn,
 			Stats: s.MSDelta,
@@ -1998,7 +1982,7 @@ func TestMVCCStatsRandomized(t *testing.T) {
 			}
 
 			if !s.inline && s.rng.Intn(2) == 0 {
-				predicates.StartTime.WallTime = s.rng.Int63n(ts.WallTime + 1)
+				predicates.StartTime.WallTime = s.rng.Int63n(s.TS.WallTime + 1)
 			}
 		}
 
@@ -2013,7 +1997,7 @@ func TestMVCCStatsRandomized(t *testing.T) {
 		if !mvccRangeDel {
 			desc = fmt.Sprintf("mvccDeleteRange=%s, returnKeys=%t, max=%d", keySpan, returnKeys, max)
 			_, _, _, _, err = MVCCDeleteRange(
-				ctx, s.batch, keySpan.Key, keySpan.EndKey, max, ts, opts, returnKeys,
+				ctx, s.batch, keySpan.Key, keySpan.EndKey, max, s.TS, opts, returnKeys,
 			)
 		} else if predicates == (kvpb.DeleteRangePredicates{}) {
 			desc = fmt.Sprintf("mvccDeleteRangeUsingTombstone=%s",
@@ -2022,7 +2006,7 @@ func TestMVCCStatsRandomized(t *testing.T) {
 			const maxLockConflicts = 0 // unlimited
 			msCovered := (*enginepb.MVCCStats)(nil)
 			err = MVCCDeleteRangeUsingTombstone(
-				ctx, s.batch, s.MSDelta, mvccRangeDelKey, mvccRangeDelEndKey, ts, hlc.ClockTimestamp{}, nil, /* leftPeekBound */
+				ctx, s.batch, s.MSDelta, mvccRangeDelKey, mvccRangeDelEndKey, s.TS, hlc.ClockTimestamp{}, nil, /* leftPeekBound */
 				nil /* rightPeekBound */, idempotent, maxLockConflicts, msCovered,
 			)
 		} else {
@@ -2031,7 +2015,7 @@ func TestMVCCStatsRandomized(t *testing.T) {
 				roachpb.Span{Key: mvccRangeDelKey, EndKey: mvccRangeDelEndKey}, predicates, rangeTombstoneThreshold)
 			const maxLockConflicts = 0 // unlimited
 			_, err = MVCCPredicateDeleteRange(ctx, s.batch, s.MSDelta, mvccRangeDelKey, mvccRangeDelEndKey,
-				ts, hlc.ClockTimestamp{}, nil /* leftPeekBound */, nil, /* rightPeekBound */
+				s.TS, hlc.ClockTimestamp{}, nil /* leftPeekBound */, nil, /* rightPeekBound */
 				predicates, 0, 0, rangeTombstoneThreshold, maxLockConflicts)
 		}
 		if err != nil {
@@ -2055,7 +2039,7 @@ func TestMVCCStatsRandomized(t *testing.T) {
 
 		// TODO(nvanbenschoten): this should be pushed into MVCCClearTimeRange, which
 		// does not currently handle replicated locks correctly.
-		locks, err := ScanLocks(ctx, s.batch, keySpan.Key, keySpan.EndKey, 1, 0, UnknownReadCategory)
+		locks, err := ScanLocks(ctx, s.batch, keySpan.Key, keySpan.EndKey, 1, 0)
 		if err == nil && len(locks) > 0 {
 			err = &kvpb.LockConflictError{Locks: locks}
 		}

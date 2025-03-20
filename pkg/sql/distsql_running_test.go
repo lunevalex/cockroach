@@ -1,12 +1,7 @@
 // Copyright 2018 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package sql
 
@@ -527,6 +522,7 @@ func TestDistSQLReceiverReportsContention(t *testing.T) {
 
 		metrics := s.DistSQLServer().(*distsql.ServerImpl).Metrics
 		metrics.ContendedQueriesCount.Clear()
+		metrics.CumulativeContentionNanos.Clear()
 		contentionRegistry := s.ExecutorConfig().(ExecutorConfig).ContentionRegistry
 		otherConn, err := db.Conn(ctx)
 		require.NoError(t, err)
@@ -549,12 +545,14 @@ func TestDistSQLReceiverReportsContention(t *testing.T) {
 			// Soft check to protect against flakiness where an internal query
 			// causes the contention metric to increment.
 			require.GreaterOrEqual(t, metrics.ContendedQueriesCount.Count(), int64(1))
+			require.Positive(t, metrics.CumulativeContentionNanos.Count())
 		} else {
 			require.Zero(
 				t,
 				metrics.ContendedQueriesCount.Count(),
 				"contention metric unexpectedly non-zero when no contention events are produced",
 			)
+			require.Zero(t, metrics.CumulativeContentionNanos.Count())
 		}
 
 		require.Equal(t, contention, strings.Contains(contentionRegistry.String(), contentionEventSubstring))

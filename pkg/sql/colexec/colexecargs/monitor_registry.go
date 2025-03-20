@@ -1,12 +1,7 @@
 // Copyright 2021 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package colexecargs
 
@@ -246,8 +241,12 @@ func (r *MonitorRegistry) Close(ctx context.Context) {
 
 // Reset prepares the registry for reuse.
 func (r *MonitorRegistry) Reset() {
-	// There is no need to deeply reset the memory monitoring infra slices
-	// because these objects are very tiny in the grand scheme of things.
+	for i := range r.accounts {
+		r.accounts[i] = nil
+	}
+	for i := range r.monitors {
+		r.monitors[i] = nil
+	}
 	r.accounts = r.accounts[:0]
 	r.monitors = r.monitors[:0]
 }

@@ -1,12 +1,7 @@
 // Copyright 2017 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package importer
 
@@ -64,6 +59,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
 	"github.com/cockroachdb/cockroach/pkg/sql/stats"
 	"github.com/cockroachdb/cockroach/pkg/sql/tests"
+	"github.com/cockroachdb/cockroach/pkg/storage"
 	"github.com/cockroachdb/cockroach/pkg/testutils"
 	"github.com/cockroachdb/cockroach/pkg/testutils/datapathutils"
 	"github.com/cockroachdb/cockroach/pkg/testutils/jobutils"
@@ -3896,8 +3892,6 @@ func benchUserUpload(b *testing.B, uploadBaseURI string) {
 			`IMPORT INTO t CSV DATA ('%s%s')`,
 			uploadBaseURI, testFileBase,
 		))
-
-	b.StopTimer()
 }
 
 // goos: darwin
@@ -4811,6 +4805,8 @@ func TestImportComputed(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
 
+	skip.UnderRace(t)
+
 	const nodes = 3
 
 	ctx := context.Background()
@@ -5321,8 +5317,9 @@ func TestImportWorkerFailure(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
 
-	skip.UnderDeadlock(t, "test is flaky under deadlock")
-	skip.UnderStressRace(t, "test is flaky under stressrace")
+	skip.UnderStressWithIssue(t, 108547, "flaky test")
+	skip.UnderDeadlockWithIssue(t, 108547, "flaky test")
+	skip.UnderRaceWithIssue(t, 108547, "flaky test")
 
 	allowResponse := make(chan struct{})
 	params := base.TestClusterArgs{}
@@ -5419,8 +5416,6 @@ func TestImportMVCCChecksums(t *testing.T) {
 func TestImportMysql(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
-
-	skip.UnderStressRace(t)
 
 	const (
 		nodes = 3
@@ -5551,7 +5546,6 @@ func TestImportMysql(t *testing.T) {
 func TestImportIntoMysql(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
-
 	const (
 		nodes = 3
 	)
@@ -6290,6 +6284,7 @@ func TestImportPgDumpSchemas(t *testing.T) {
 	baseDir := datapathutils.TestDataPath(t, "pgdump")
 	mkArgs := func() base.TestServerArgs {
 		s := cluster.MakeTestingClusterSettings()
+		storage.MVCCRangeTombstonesEnabledInMixedClusters.Override(ctx, &s.SV, true)
 		return base.TestServerArgs{
 			Settings:      s,
 			ExternalIODir: baseDir,

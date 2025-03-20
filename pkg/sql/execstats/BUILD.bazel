@@ -32,11 +32,8 @@ go_test(
         "traceanalyzer_test.go",
         "utils_test.go",
     ],
+    args = ["-test.timeout=55s"],
     embed = [":execstats"],
-    exec_properties = select({
-        "//build/toolchains:is_heavy": {"Pool": "heavy"},
-        "//conditions:default": {"Pool": "default"},
-    }),
     deps = [
         "//pkg/base",
         "//pkg/kv/kvpb",

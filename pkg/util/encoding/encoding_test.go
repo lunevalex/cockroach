@@ -1,12 +1,7 @@
 // Copyright 2014 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package encoding
 
@@ -962,8 +957,8 @@ func TestKeyEncodeDecodeBitArrayRand(t *testing.T) {
 				buf = EncodeBitArrayAscending(nil, test)
 				remainder, x, err = DecodeBitArrayAscending(buf)
 			} else {
-				buf = EncodeBitArrayDescending(nil, test)
-				remainder, x, err = DecodeBitArrayDescending(buf)
+				buf = EncodeBitArrayAscending(nil, test)
+				remainder, x, err = DecodeBitArrayAscending(buf)
 			}
 			if err != nil {
 				t.Fatalf("%+v", err)
@@ -2629,32 +2624,27 @@ func TestUnsafeConvertStringToBytes(t *testing.T) {
 	skip.UnderStress(t)
 
 	testCases := []struct {
-		desc           string
-		input          string
-		expectNil      bool
-		expectedLength int
+		desc     string
+		input    string
+		expected []byte
 	}{
 		{
-			desc:      "empty",
-			input:     "",
-			expectNil: true,
+			desc:     "empty",
+			input:    "",
+			expected: nil,
 		},
 		{
 			// Previous impl could not handle strings longer than math.MaxInt32.
 			// See https://github.com/cockroachdb/cockroach/issues/111626
-			desc:           "large input",
-			input:          string(make([]byte, math.MaxInt32+1)),
-			expectedLength: math.MaxInt32 + 1,
+			desc:     "large input",
+			input:    string(make([]byte, math.MaxInt32+1)),
+			expected: make([]byte, math.MaxInt32+1),
 		},
 	}
 	for _, tc := range testCases {
 		t.Run(tc.desc, func(t *testing.T) {
 			actual := UnsafeConvertStringToBytes(tc.input)
-			if tc.expectNil {
-				require.Nil(t, actual)
-			} else {
-				require.Equal(t, len(actual), tc.expectedLength)
-			}
+			require.Equal(t, tc.expected, actual)
 		})
 	}
 }

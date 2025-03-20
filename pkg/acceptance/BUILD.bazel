@@ -44,6 +44,8 @@ go_test(
         "generated_cli_test.go",
         "main_test.go",
     ],
+    # Note: we overide bazel timeout to 1800s using test_timeout.
+    args = ["-test.timeout=1795s"],
     data = glob([
         "testdata/**",
         "compose/**",
@@ -51,12 +53,10 @@ go_test(
         "//pkg/cli:interactive_tests",
     ],
     embed = [":acceptance"],
+    exec_properties = {"Pool": "large"},
     gotags = ["acceptance"],
     shard_count = 16,
-    tags = [
-        "integration",
-        "no-remote-exec",
-    ],
+    tags = ["integration"],
     deps = [
         "//pkg/acceptance/cluster",
         "//pkg/build/bazel",

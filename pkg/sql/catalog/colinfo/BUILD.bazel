@@ -42,11 +42,8 @@ go_test(
         "column_type_properties_test.go",
         "result_columns_test.go",
     ],
+    args = ["-test.timeout=55s"],
     embed = [":colinfo"],
-    exec_properties = select({
-        "//build/toolchains:is_heavy": {"Pool": "heavy"},
-        "//conditions:default": {"Pool": "default"},
-    }),
     deps = [
         "//pkg/sql/catalog/colinfo/colinfotestutils",
         "//pkg/sql/sem/tree",

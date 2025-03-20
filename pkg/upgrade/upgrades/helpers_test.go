@@ -1,12 +1,7 @@
 // Copyright 2021 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package upgrades
 
@@ -52,7 +47,7 @@ type Schema struct {
 func Upgrade(
 	t *testing.T, sqlDB *gosql.DB, key clusterversion.Key, done chan struct{}, expectError bool,
 ) {
-	UpgradeToVersion(t, sqlDB, key.Version(), done, expectError)
+	UpgradeToVersion(t, sqlDB, clusterversion.ByKey(key), done, expectError)
 }
 
 func UpgradeToVersion(
@@ -206,7 +201,7 @@ func ExecForCountInTxns(
 func ValidateSystemDatabaseSchemaVersionBumped(
 	t *testing.T, sqlDB *gosql.DB, expectedVersion clusterversion.Key,
 ) {
-	expectedSchemaVersion := expectedVersion.Version()
+	expectedSchemaVersion := clusterversion.ByKey(expectedVersion)
 
 	var actualSchemaVersionBytes []byte
 	require.NoError(t, sqlDB.QueryRow(

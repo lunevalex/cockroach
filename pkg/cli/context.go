@@ -1,12 +1,7 @@
 // Copyright 2016 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package cli
 
@@ -530,6 +525,9 @@ func setStartContextDefaults() {
 	startCtx.serverSSLCertsDir = base.DefaultCertsDirectory
 	startCtx.serverCertPrincipalMap = nil
 	startCtx.serverListenAddr = ""
+	startCtx.initToken = ""
+	startCtx.numExpectedNodes = 0
+	startCtx.genCertsForSingleNode = false
 	startCtx.unencryptedLocalhostHTTP = false
 	startCtx.tempDir = ""
 	startCtx.externalIODir = ""
@@ -660,7 +658,7 @@ func setDemoContextDefaults() {
 	demoCtx.SQLPort, _ = strconv.Atoi(base.DefaultPort)
 	demoCtx.HTTPPort, _ = strconv.Atoi(base.DefaultHTTPPort)
 	demoCtx.WorkloadMaxQPS = 25
-	demoCtx.Multitenant = true
+	demoCtx.Multitenant = false
 	demoCtx.DisableServerController = false
 	demoCtx.DefaultEnableRangefeeds = true
 	demoCtx.AutoConfigProvider = acprovider.NoTaskProvider{}

@@ -1,12 +1,7 @@
 // Copyright 2022 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package ttljob
 
@@ -250,7 +245,8 @@ func (t *ttlProcessor) work(ctx context.Context) error {
 	return jobRegistry.UpdateJobWithTxn(
 		ctx,
 		jobID,
-		nil, /* txn */
+		nil,  /* txn */
+		true, /* useReadLock */
 		func(_ isql.Txn, md jobs.JobMetadata, ju *jobs.JobUpdater) error {
 			progress := md.Progress
 			rowLevelTTL := progress.Details.(*jobspb.Progress_RowLevelTTL).RowLevelTTL
@@ -301,6 +297,8 @@ func (t *ttlProcessor) runTTLOnQueryBounds(
 			ctx,
 			"pre-select-delete-statement",
 			nil, /* txn */
+			// This is a test-only knob, so we're ok not specifying custom
+			// InternalExecutorOverride.
 			sessiondata.RootUserSessionDataOverride,
 			preSelectStatement,
 		); err != nil {

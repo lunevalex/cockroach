@@ -48,11 +48,8 @@ go_test(
         "stats_test.go",
         "workload_test.go",
     ],
+    args = ["-test.timeout=55s"],
     embed = [":workload"],
-    exec_properties = select({
-        "//build/toolchains:is_heavy": {"Pool": "heavy"},
-        "//conditions:default": {"Pool": "default"},
-    }),
     deps = [
         "//pkg/col/coldata",
         "//pkg/security/securityassets",

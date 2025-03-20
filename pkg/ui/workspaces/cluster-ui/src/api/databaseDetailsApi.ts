@@ -1,12 +1,7 @@
 // Copyright 2022 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 import {
   combineQueryErrors,
@@ -73,8 +68,7 @@ function newDatabaseDetailsResponse(): DatabaseDetailsResponse {
     },
     stats: {
       replicaData: {
-        replicas: [],
-        regions: [],
+        storeIDs: [],
       },
       indexStats: { num_index_recommendations: 0 },
     },
@@ -87,7 +81,6 @@ function newDatabaseDetailsSpanStatsResponse(): DatabaseDetailsSpanStatsResponse
       approximate_disk_bytes: 0,
       live_bytes: 0,
       total_bytes: 0,
-      range_count: 0,
     },
     error: undefined,
   };
@@ -160,9 +153,21 @@ const getDatabaseGrantsQuery: DatabaseDetailsQuery<DatabaseGrantsRow> = {
   },
 };
 
+export type TableNameParts = {
+  // Raw unquoted, unescaped schema name.
+  schema: string;
+  // Raw unquoted, unescaped table name.
+  table: string;
+
+  // qualifiedNameWithSchemaAndTable is the qualifed
+  // table name containing escaped, quoted schema and
+  // table name parts.
+  qualifiedNameWithSchemaAndTable: string;
+};
+
 // Database Tables
 export type DatabaseTablesResponse = {
-  tables: string[];
+  tables: TableNameParts[];
 };
 
 type DatabaseTablesRow = {
@@ -176,7 +181,7 @@ const getDatabaseTablesQuery: DatabaseDetailsQuery<DatabaseTablesRow> = {
       sql: Format(
         `SELECT table_schema, table_name
          FROM %1.information_schema.tables
-         WHERE table_type != 'SYSTEM VIEW'
+         WHERE table_type NOT IN ('SYSTEM VIEW', 'VIEW')
          ORDER BY table_name`,
         [new Identifier(dbName)],
       ),
@@ -196,7 +201,11 @@ const getDatabaseTablesQuery: DatabaseDetailsQuery<DatabaseTablesRow> = {
           row.table_schema,
           row.table_name,
         ]).SQLString();
-        return resp.tablesResp.tables.push(escTableName);
+        resp.tablesResp.tables.push({
+          schema: row.table_schema,
+          table: row.table_name,
+          qualifiedNameWithSchemaAndTable: escTableName,
+        });
       });
     }
     if (txn_result.error) {
@@ -216,7 +225,7 @@ const getDatabaseTablesQuery: DatabaseDetailsQuery<DatabaseTablesRow> = {
         sql: Format(
           `SELECT table_schema, table_name
          FROM %1.information_schema.tables
-         WHERE table_type != 'SYSTEM VIEW'
+         WHERE table_type NOT IN ('SYSTEM VIEW', 'VIEW')
          ORDER BY table_name offset %2`,
           [new Identifier(dbName), dbDetail.tablesResp.tables.length],
         ),
@@ -309,7 +318,10 @@ const getDatabaseZoneConfig: DatabaseDetailsQuery<DatabaseZoneConfigRow> = {
 
 // Database Stats
 type DatabaseDetailsStats = {
-  replicaData: SqlApiQueryResponse<DatabaseReplicasRegionsRow>;
+  replicaData: {
+    storeIDs: number[];
+    error?: Error;
+  };
   indexStats: SqlApiQueryResponse<DatabaseIndexUsageStatsResponse>;
 };
 
@@ -317,7 +329,6 @@ export type DatabaseSpanStatsRow = {
   approximate_disk_bytes: number;
   live_bytes: number;
   total_bytes: number;
-  range_count: number;
 };
 
 function formatSpanStatsExecutionResult(
@@ -342,7 +353,6 @@ function formatSpanStatsExecutionResult(
   if (txn_result.rows.length === 1) {
     const row = txn_result.rows[0];
     out.spanStats.approximate_disk_bytes = row.approximate_disk_bytes;
-    out.spanStats.range_count = row.range_count;
     out.spanStats.live_bytes = row.live_bytes;
     out.spanStats.total_bytes = row.total_bytes;
   } else {
@@ -354,43 +364,34 @@ function formatSpanStatsExecutionResult(
 }
 
 type DatabaseReplicasRegionsRow = {
-  replicas: number[];
-  regions: string[];
+  store_ids: number[];
 };
 
 const getDatabaseReplicasAndRegions: DatabaseDetailsQuery<DatabaseReplicasRegionsRow> =
   {
     createStmt: dbName => {
+      // This query is meant to retrieve the per-database set of store ids.
       return {
         sql: Format(
-          `WITH replicasAndRegionsPerDbRange AS (
-            SELECT
-              r.replicas,
-              ARRAY(SELECT DISTINCT split_part(split_part(unnest(replica_localities), ',', 1), '=', 2)) AS regions
-            FROM crdb_internal.tables AS t
-                   JOIN %1.crdb_internal.table_spans AS s ON s.descriptor_id = t.table_id
-                   JOIN crdb_internal.ranges_no_leases AS r ON s.start_key < r.end_key AND s.end_key > r.start_key
-            WHERE t.database_name = $1
-          )
-           SELECT
-             array_agg(DISTINCT replica_val) AS replicas,
-             array_agg(DISTINCT region_val) AS regions
-           FROM replicasAndRegionsPerDbRange, unnest(replicas) AS replica_val, unnest(regions) AS region_val`,
+          `
+            SELECT array_agg(DISTINCT unnested_store_ids) AS store_ids
+            FROM [SHOW RANGES FROM DATABASE %1], unnest(replicas) AS unnested_store_ids
+`,
           [new Identifier(dbName)],
         ),
-        arguments: [dbName],
       };
     },
     addToDatabaseDetail: (
       txn_result: SqlTxnResult<DatabaseReplicasRegionsRow>,
       resp: DatabaseDetailsResponse,
     ) => {
-      if (!txnResultIsEmpty(txn_result)) {
-        resp.stats.replicaData.regions = txn_result.rows[0].regions;
-        resp.stats.replicaData.replicas = txn_result.rows[0].replicas;
-      }
       if (txn_result.error) {
         resp.stats.replicaData.error = txn_result.error;
+        // We don't expect to have any rows for this query on error.
+        return;
+      }
+      if (!txnResultIsEmpty(txn_result)) {
+        resp.stats.replicaData.storeIDs = txn_result?.rows[0]?.store_ids ?? [];
       }
     },
     handleMaxSizeError: (_dbName, _response, _dbDetail) => {
@@ -493,7 +494,6 @@ export function createDatabaseDetailsSpanStatsReq(
 ): SqlExecutionRequest {
   const statement = {
     sql: `SELECT
-            sum(range_count) as range_count,
             sum(approximate_disk_bytes) as approximate_disk_bytes,
             sum(live_bytes) as live_bytes,
             sum(total_bytes) as total_bytes

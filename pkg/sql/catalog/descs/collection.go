@@ -1,12 +1,7 @@
 // Copyright 2020 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 // Package descs provides abstractions for dealing with sets of descriptors.
 // It is utilized during schema changes and by catalog.Accessor implementations.
@@ -33,6 +28,8 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/schemadesc"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/systemschema"
 	"github.com/cockroachdb/cockroach/pkg/sql/isql"
+	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/pgcode"
+	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/pgerror"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/catconstants"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/catid"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
@@ -254,10 +251,7 @@ func (tc *Collection) AddUncommittedDescriptor(
 		return nil
 	}
 	defer func() {
-		if err != nil {
-			err = errors.NewAssertionErrorWithWrappedErrf(err, "adding uncommitted %s %q (%d) version %d",
-				desc.DescriptorType(), desc.GetName(), desc.GetID(), desc.GetVersion())
-		}
+		err = DecorateDescriptorError(desc, err)
 	}()
 	if tc.synthetic.getSyntheticByID(desc.GetID()) != nil {
 		return errors.AssertionFailedf(
@@ -1287,4 +1281,20 @@ func NewHistoricalInternalExecTxnRunner(
 		execHistoricalTxn: fn,
 		readAsOf:          readAsOf,
 	}
+}
+
+// DecorateDescriptorError will ensure that if we have an error we will wrap
+// additional context about the descriptor to aid in debugging.
+func DecorateDescriptorError(desc catalog.MutableDescriptor, err error) error {
+	if err != nil {
+		err = errors.Wrapf(err, "adding uncommitted %s %q (%d) version %d",
+			desc.DescriptorType(), desc.GetName(), desc.GetID(), desc.GetVersion())
+		// If this error doesn't have a pgerror code attached to it, lets ensure
+		// that it's marked as an assertion error. This ensures it gets flagged for
+		// things like sentry reports.
+		if pgerror.GetPGCode(err) == pgcode.Uncategorized {
+			err = errors.NewAssertionErrorWithWrappedErrf(err, "unexpected error occurred")
+		}
+	}
+	return err
 }

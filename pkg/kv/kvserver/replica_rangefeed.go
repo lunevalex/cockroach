@@ -1,12 +1,7 @@
 // Copyright 2018 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package kvserver
 
@@ -16,7 +11,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/cockroachdb/cockroach/pkg/clusterversion"
 	"github.com/cockroachdb/cockroach/pkg/keys"
 	"github.com/cockroachdb/cockroach/pkg/kv"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvpb"
@@ -29,6 +23,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/settings"
 	"github.com/cockroachdb/cockroach/pkg/storage"
 	"github.com/cockroachdb/cockroach/pkg/storage/enginepb"
+	"github.com/cockroachdb/cockroach/pkg/util"
 	"github.com/cockroachdb/cockroach/pkg/util/admission"
 	"github.com/cockroachdb/cockroach/pkg/util/admission/admissionpb"
 	"github.com/cockroachdb/cockroach/pkg/util/envutil"
@@ -77,6 +72,22 @@ var RangeFeedSmearInterval = settings.RegisterDurationSetting(
 	1*time.Millisecond,
 	settings.NonNegativeDuration,
 )
+
+// RangeFeedUseScheduler controls type of rangefeed processor is used to process
+// raft updates and sends updates to clients.
+var RangeFeedUseScheduler = settings.RegisterBoolSetting(
+	settings.SystemOnly,
+	"kv.rangefeed.scheduler.enabled",
+	"use shared fixed pool of workers for all range feeds instead of a "+
+		"worker per range (worker pool size is determined by "+
+		"COCKROACH_RANGEFEED_SCHEDULER_WORKERS env variable)",
+	util.ConstantWithMetamorphicTestBool("kv_rangefeed_scheduler_enabled", false),
+)
+
+// RangefeedSchedulerDisabled is a kill switch for scheduler based rangefeed
+// processors. To be removed in 24.1 after new processor becomes default.
+var RangefeedSchedulerDisabled = envutil.EnvOrDefaultBool("COCKROACH_RANGEFEED_DISABLE_SCHEDULER",
+	false)
 
 func init() {
 	// Inject into kvserverbase to allow usage from kvcoord.
@@ -186,29 +197,29 @@ func (tp *rangefeedTxnPusher) ResolveIntents(
 
 // Barrier is part of the rangefeed.TxnPusher interface.
 func (tp *rangefeedTxnPusher) Barrier(ctx context.Context) error {
-	// Check for v24.1 before issuing the request, in case the server binary is
-	// somehow upgraded from 23.2 to 24.1 while the response is in flight. This
-	// seems very unlikely, but it doesn't really cost us anything.
-	isV24_1 := tp.r.store.ClusterSettings().Version.IsActive(ctx, clusterversion.V24_1Start)
-
 	// Execute a Barrier on the leaseholder, and obtain its LAI. Error out on any
 	// range changes (e.g. splits/merges) that we haven't applied yet.
 	lai, desc, err := tp.r.store.db.BarrierWithLAI(ctx, tp.span.Key, tp.span.EndKey)
-	if err != nil {
-		if errors.HasType(err, &kvpb.RangeKeyMismatchError{}) {
-			return errors.Wrap(err, "range barrier failed, range split")
+	if err != nil && errors.HasType(err, &kvpb.RangeKeyMismatchError{}) {
+		// The DistSender may have a stale range descriptor, e.g. following a merge.
+		// Failed unsplittable requests don't trigger a refresh, so we have to
+		// attempt to refresh it by sending a Get request to the start key.
+		//
+		// TODO(erikgrinaker): the DistSender should refresh its cache instead.
+		if _, err := tp.r.store.db.Get(ctx, tp.span.Key); err != nil {
+			return errors.Wrap(err, "range barrier failed: range descriptor refresh failed")
 		}
+		// Retry the Barrier.
+		lai, desc, err = tp.r.store.db.BarrierWithLAI(ctx, tp.span.Key, tp.span.EndKey)
+	}
+	if err != nil {
 		return errors.Wrap(err, "range barrier failed")
 	}
 	if lai == 0 {
-		if !isV24_1 {
-			// We may be talking to a <24.1 binary which doesn't support
-			// BarrierRequest.WithLeaseAppliedIndex. We don't expect to see this,
-			// because those nodes won't support PushTxnResponse.AmbiguousAbort either,
-			// but if we do just return success and degrade to the old behavior.
-			return nil
-		}
-		return errors.AssertionFailedf("barrier response without LeaseAppliedIndex")
+		// We may be talking to a binary which doesn't support
+		// BarrierRequest.WithLeaseAppliedIndex, so just degrade to the previous
+		// (buggy) behavior.
+		return nil
 	}
 	if desc.RangeID != tp.r.RangeID {
 		return errors.Errorf("range barrier failed, range ID changed: %d -> %s", tp.r.RangeID, desc)
@@ -301,10 +312,7 @@ func (r *Replica) RangeFeed(
 	// Register the stream with a catch-up iterator.
 	var catchUpIter *rangefeed.CatchUpIterator
 	if usingCatchUpIter {
-		// Pass context.Background() since the context where the iter will be used
-		// is different.
-		catchUpIter, err = rangefeed.NewCatchUpIterator(
-			context.Background(), r.store.TODOEngine(), rSpan.AsRawSpanWithNoLocals(),
+		catchUpIter, err = rangefeed.NewCatchUpIterator(r.store.TODOEngine(), rSpan.AsRawSpanWithNoLocals(),
 			args.Timestamp, iterSemRelease, pacer)
 		if err != nil {
 			r.raftMu.Unlock()
@@ -466,6 +474,11 @@ func (r *Replica) registerWithRangefeedRaftMuLocked(
 	// Create a new rangefeed.
 	feedBudget := r.store.GetStoreConfig().RangefeedBudgetFactory.CreateBudget(isSystemSpan)
 
+	var sched *rangefeed.Scheduler
+	if shouldUseRangefeedScheduler(&r.ClusterSettings().SV) {
+		sched = r.store.getRangefeedScheduler()
+	}
+
 	desc := r.Desc()
 	tp := rangefeedTxnPusher{ir: r.store.intentResolver, r: r, span: desc.RSpan()}
 	cfg := rangefeed.Config{
@@ -476,12 +489,13 @@ func (r *Replica) registerWithRangefeedRaftMuLocked(
 		RangeID:          r.RangeID,
 		Span:             desc.RSpan(),
 		TxnPusher:        &tp,
+		PushTxnsInterval: r.store.TestingKnobs().RangeFeedPushTxnsInterval,
 		PushTxnsAge:      r.store.TestingKnobs().RangeFeedPushTxnsAge,
 		EventChanCap:     defaultEventChanCap,
 		EventChanTimeout: defaultEventChanTimeout,
 		Metrics:          r.store.metrics.RangeFeedMetrics,
 		MemBudget:        feedBudget,
-		Scheduler:        r.store.getRangefeedScheduler(),
+		Scheduler:        sched,
 		Priority:         isSystemSpan, // only takes effect when Scheduler != nil
 	}
 	p = rangefeed.NewProcessor(cfg)
@@ -494,7 +508,7 @@ func (r *Replica) registerWithRangefeedRaftMuLocked(
 		// waiting for the Register call below to return.
 		r.raftMu.AssertHeld()
 
-		scanner, err := rangefeed.NewSeparatedIntentScanner(ctx, r.store.TODOEngine(), desc.RSpan())
+		scanner, err := rangefeed.NewSeparatedIntentScanner(r.store.TODOEngine(), desc.RSpan())
 		if err != nil {
 			done.Set(err)
 			return nil
@@ -640,8 +654,7 @@ func populatePrevValsInLogicalOpLog(
 		// Read the previous value from the prev Reader. Unlike the new value
 		// (see handleLogicalOpLogRaftMuLocked), this one may be missing.
 		prevValRes, err := storage.MVCCGet(
-			ctx, prevReader, key, ts, storage.MVCCGetOptions{
-				Tombstones: true, Inconsistent: true, ReadCategory: storage.RangefeedReadCategory},
+			ctx, prevReader, key, ts, storage.MVCCGetOptions{Tombstones: true, Inconsistent: true},
 		)
 		if err != nil {
 			return errors.Wrapf(err, "consuming %T for key %v @ ts %v", op, key, ts)
@@ -656,14 +669,12 @@ func populatePrevValsInLogicalOpLog(
 }
 
 // handleLogicalOpLogRaftMuLocked passes the logical op log to the active
-// rangefeed, if one is running. The method accepts a batch, which is used to
+// rangefeed, if one is running. The method accepts a reader, which is used to
 // look up the values associated with key-value writes in the log before handing
 // them to the rangefeed processor. No-op if a rangefeed is not active. Requires
 // raftMu to be locked.
-//
-// REQUIRES: batch is an indexed batch.
 func (r *Replica) handleLogicalOpLogRaftMuLocked(
-	ctx context.Context, ops *kvserverpb.LogicalOpLog, batch storage.Batch,
+	ctx context.Context, ops *kvserverpb.LogicalOpLog, reader storage.Reader,
 ) {
 	p, filter := r.getRangefeedProcessorAndFilter()
 	if p == nil {
@@ -698,30 +709,17 @@ func (r *Replica) handleLogicalOpLogRaftMuLocked(
 	vhf := r.store.TestingKnobs().RangefeedValueHeaderFilter
 
 	// When reading straight from the Raft log, some logical ops will not be
-	// fully populated. Read from the batch to populate all fields.
+	// fully populated. Read from the Reader to populate all fields.
 	for _, op := range ops.Ops {
 		var key []byte
 		var ts hlc.Timestamp
 		var valPtr *[]byte
 		var omitInRangefeedsPtr *bool
-		valueInBatch := false
 		switch t := op.GetValue().(type) {
 		case *enginepb.MVCCWriteValueOp:
 			key, ts, valPtr, omitInRangefeedsPtr = t.Key, t.Timestamp, &t.Value, &t.OmitInRangefeeds
-			if !ts.IsEmpty() {
-				// 1PC transaction commit, and no intent was written, so the value
-				// must be in the batch.
-				valueInBatch = true
-			}
-			// Else, inline value. In case inline values are supported for
-			// rangefeeds, we don't assume that the value is in the batch, since
-			// inline values can use Pebble MERGE and the resulting value may
-			// involve merging with state in the engine. So, valueInBatch remains
-			// false.
 		case *enginepb.MVCCCommitIntentOp:
 			key, ts, valPtr, omitInRangefeedsPtr = t.Key, t.Timestamp, &t.Value, &t.OmitInRangefeeds
-			// Intent was committed. The now committed provisional value may be in
-			// the engine, so valueInBatch remains false.
 		case *enginepb.MVCCWriteIntentOp,
 			*enginepb.MVCCUpdateIntentOp,
 			*enginepb.MVCCAbortIntentOp,
@@ -732,8 +730,7 @@ func (r *Replica) handleLogicalOpLogRaftMuLocked(
 			if vhf == nil {
 				continue
 			}
-			valBytes, err := storage.MVCCLookupRangeKeyValue(
-				ctx, batch, t.StartKey, t.EndKey, t.Timestamp)
+			valBytes, err := storage.MVCCLookupRangeKeyValue(reader, t.StartKey, t.EndKey, t.Timestamp)
 			if err != nil {
 				panic(err)
 			}
@@ -748,7 +745,7 @@ func (r *Replica) handleLogicalOpLogRaftMuLocked(
 			panic(errors.AssertionFailedf("unknown logical op %T", t))
 		}
 
-		// Don't read values from the batch for operations that are not needed
+		// Don't read values from the reader for operations that are not needed
 		// by any rangefeed registration. We still need to inform the rangefeed
 		// processor of the changes to intents so that it can track unresolved
 		// intents, but we don't need to provide values.
@@ -760,10 +757,13 @@ func (r *Replica) handleLogicalOpLogRaftMuLocked(
 			continue
 		}
 
-		// Read the value directly from the batch. This is performed in the
+		// Read the value directly from the Reader. This is performed in the
 		// same raftMu critical section that the logical op's corresponding
 		// WriteBatch is applied, so the value should exist.
-		val, vh, err := storage.MVCCGetForKnownTimestampWithNoIntent(ctx, batch, key, ts, valueInBatch)
+		valRes, vh, err := storage.MVCCGetWithValueHeader(ctx, reader, key, ts, storage.MVCCGetOptions{Tombstones: true})
+		if valRes.Value == nil && err == nil {
+			err = errors.New("value missing in reader")
+		}
 		if err != nil {
 			r.disconnectRangefeedWithErr(p, kvpb.NewErrorf(
 				"error consuming %T for key %s @ ts %v: %v", op.GetValue(), roachpb.Key(key), ts, err,
@@ -774,7 +774,7 @@ func (r *Replica) handleLogicalOpLogRaftMuLocked(
 		if vhf != nil {
 			vhf(key, nil, ts, vh)
 		}
-		*valPtr = val.RawBytes
+		*valPtr = valRes.Value.RawBytes
 		*omitInRangefeedsPtr = vh.OmitInRangefeeds
 	}
 
@@ -921,6 +921,10 @@ func (r *Replica) ensureClosedTimestampStarted(ctx context.Context) *kvpb.Error 
 		}
 	}
 	return nil
+}
+
+func shouldUseRangefeedScheduler(sv *settings.Values) bool {
+	return RangeFeedUseScheduler.Get(sv) && !RangefeedSchedulerDisabled
 }
 
 // TestGetReplicaRangefeedProcessor exposes rangefeed processor for test

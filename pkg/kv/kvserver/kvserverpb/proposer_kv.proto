@@ -1,12 +1,7 @@
 // Copyright 2016 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 syntax = "proto3";
 package cockroach.kv.kvserver.storagepb;
@@ -123,28 +118,6 @@ message ReplicatedEvalResult {
   Merge merge = 4;
   ComputeChecksum compute_checksum = 21;
   bool is_lease_request = 6;
-  // Set to true for lease requests in v24.1 clusters, where new behavior in
-  // Lease.Equivalent is supported which allows for expiration-based leases to
-  // be promoted to epoch-based leases under the same lease sequence.
-  //
-  // The field is used to avoid divergence between replicas of a range that
-  // apply lease requests while running different versions of the binary.
-  //
-  // Deprecation notes:
-  // - in v24.1, we introduced this field and set it to true for lease requests
-  //   when the cluster version is detected to be v24.1 or higher. This ensures
-  //   that all replicas who may apply the lease request will correctly handle
-  //   the field.
-  // - in v24.2, we can set this field to true unconditionally for lease request
-  //   proposals. It must still be consulted during lease application, because
-  //   the raft proposal may have been performed by an older node.
-  // - in v24.2 or later, we run a Barrier migration to flush out old raft
-  //   entries from all replica's raft logs. This ensures that no replica will
-  //   ever apply a lease request with this field set to false.
-  // - in v25.1, we stop consulting this field below raft but keep setting it
-  //   to true above raft for mixed-version compatibility with v24.2 nodes.
-  // - in v25.2, we delete the field.
-  bool is_lease_request_with_expiration_to_epoch_equivalent = 26;
   bool is_probe = 23;
   // The timestamp at which this command is writing. Used to verify the validity
   // of the command against the GC threshold and to update the followers'
@@ -220,7 +193,6 @@ message ReplicatedEvalResult {
     string remote_file_loc = 5;
     string remote_file_path = 6;
     uint64 backing_file_size = 7;
-    uint64 approximate_physical_size = 8;
   }
   AddSSTable add_sstable = 17 [(gogoproto.customname) = "AddSSTable"];
 
@@ -241,8 +213,8 @@ message ReplicatedEvalResult {
   // 1. it can transfer a higher-resolution snapshot of the reads on the range
   //    through a lease transfer, to make the lease transfers less disruptive to
   //    writes because the timestamp cache won't be bumped as high.
-  // 2. it can transfer information about reads with future-time timestamps,
-  //    which are not otherwise captured by the new lease's start time.
+  // 2. it can transfer information about reads with synthetic timestamps, which
+  //    are not otherwise captured by the new lease's start time.
   //
   // When a ReadSummary is set in a ReplicatedEvalResult, there is always also a
   // write to the RangePriorReadSummaryKey in the RaftCommand.WriteBatch. The

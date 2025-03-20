@@ -1,17 +1,11 @@
 // Copyright 2020 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package concurrency
 
 import (
-	"context"
 	"fmt"
 	"sort"
 	"sync"
@@ -688,7 +682,7 @@ func (g *lockTableGuardImpl) CheckOptimisticNoConflicts(
 }
 
 func (g *lockTableGuardImpl) IsKeyLockedByConflictingTxn(
-	_ context.Context, key roachpb.Key, str lock.Strength,
+	key roachpb.Key, str lock.Strength,
 ) (bool, *enginepb.TxnMeta, error) {
 	iter := g.tableSnapshot.MakeIter()
 	iter.SeekGE(&keyLocks{key: key})
@@ -747,7 +741,7 @@ func (g *lockTableGuardImpl) IsKeyLockedByConflictingTxn(
 			// queuedLockingRequests is sorted in increasing order of sequence number.
 			break
 		}
-		if qqg.guard.txnMeta() != nil && g.isSameTxn(qqg.guard.txnMeta()) {
+		if g.isSameTxn(qqg.guard.txnMeta()) {
 			// A SKIP LOCKED request should not find another waiting request from its
 			// own transaction, at least not in the way that SQL uses KV. The only way
 			// we can end up finding another request in the lock's wait queue from our
@@ -1865,34 +1859,54 @@ func (kl *keyLocks) safeFormat(sb *redact.StringBuilder, txnStatusCache *txnStat
 	}
 }
 
-// collectLockStateInfo exports all locks held on the receiver's key as a list
-// of roachpb.LockStateInfos. If no locks are held, or the lock is uncontended
-// and includeUncontended is false, nothing is returned.
+// collectLockStateInfo converts receiver into exportable LockStateInfo metadata
+// and returns (true, valid LockStateInfo), or (false, empty LockStateInfo) if
+// it was filtered out due to being an empty lock or an uncontended lock (if
+// includeUncontended is false).
 func (kl *keyLocks) collectLockStateInfo(
-	includeUncontended bool, now time.Time, rangeID roachpb.RangeID,
-) []roachpb.LockStateInfo {
+	includeUncontended bool, now time.Time,
+) (bool, roachpb.LockStateInfo) {
 	kl.mu.Lock()
 	defer kl.mu.Unlock()
 
 	// Don't include locks that have neither lock holders, nor claims, nor
 	// waiting readers/locking requests.
 	if kl.isEmptyLock() {
-		return nil
+		return false, roachpb.LockStateInfo{}
 	}
 
-	// Filter out locks without waiting readers/active locking requests unless explicitly
+	// Filter out locks without waiting readers/locking requests unless explicitly
 	// requested.
+	//
+	// TODO(arul): This should consider the active/inactive status of all queued
+	// locking requests. If all waiting requests are inactive (and there are no
+	// waiting readers either), we should consider the lock to be uncontended.
+	// See https://github.com/cockroachdb/cockroach/issues/103894.
 	if !includeUncontended && kl.waitingReaders.Len() == 0 &&
-		!kl.hasActivelyWaitingLockingRequest() {
-		return nil
+		(kl.queuedLockingRequests.Len() == 0 ||
+			(kl.queuedLockingRequests.Len() == 1 && !kl.queuedLockingRequests.Front().Value.active)) {
+		return false, roachpb.LockStateInfo{}
 	}
 
-	return kl.lockStateInfo(now, rangeID)
+	return true, kl.lockStateInfo(now)
 }
 
 // lockStateInfo converts receiver to the roachpb.LockStateInfo structure.
 // REQUIRES: kl.mu is locked.
-func (kl *keyLocks) lockStateInfo(now time.Time, rangeID roachpb.RangeID) []roachpb.LockStateInfo {
+func (kl *keyLocks) lockStateInfo(now time.Time) roachpb.LockStateInfo {
+	var txnHolder *enginepb.TxnMeta
+
+	durability := lock.Unreplicated
+	if kl.isLocked() {
+		// This doesn't work with multiple lock holders. See
+		// https://github.com/cockroachdb/cockroach/issues/109081.
+		tl := kl.holders.Front().Value
+		txnHolder = tl.txn
+		if tl.isHeldReplicated() {
+			durability = lock.Replicated
+		}
+	}
+
 	waiterCount := kl.waitingReaders.Len() + kl.queuedLockingRequests.Len()
 	lockWaiters := make([]lock.Waiter, 0, waiterCount)
 
@@ -1923,39 +1937,13 @@ func (kl *keyLocks) lockStateInfo(now time.Time, rangeID roachpb.RangeID) []roac
 		g.mu.Unlock()
 	}
 
-	if !kl.isLocked() {
-		return []roachpb.LockStateInfo{
-			{
-				RangeID:      rangeID,
-				Key:          kl.key,
-				LockHolder:   nil,
-				Durability:   lock.Unreplicated,
-				HoldDuration: kl.lockHeldDuration(now),
-				Waiters:      lockWaiters,
-				LockStrength: lock.None,
-			},
-		}
+	return roachpb.LockStateInfo{
+		Key:          kl.key,
+		LockHolder:   txnHolder,
+		Durability:   durability,
+		HoldDuration: kl.lockHeldDuration(now),
+		Waiters:      lockWaiters,
 	}
-
-	var lockStateInfos []roachpb.LockStateInfo
-	for e := kl.holders.Front(); e != nil; e = e.Next() {
-		tl := e.Value
-		durability := lock.Unreplicated
-		if tl.isHeldReplicated() {
-			durability = lock.Replicated
-		}
-		lsi := roachpb.LockStateInfo{
-			RangeID:      rangeID,
-			Key:          kl.key,
-			LockHolder:   tl.txn,
-			Durability:   durability,
-			HoldDuration: now.Sub(tl.startTime),
-			Waiters:      lockWaiters,
-			LockStrength: tl.getLockMode().Strength,
-		}
-		lockStateInfos = append(lockStateInfos, lsi)
-	}
-	return lockStateInfos
 }
 
 // addToMetrics adds the receiver's state to the provided metrics struct.
@@ -2430,11 +2418,9 @@ func (kl *keyLocks) scanAndMaybeEnqueue(g *lockTableGuardImpl, notify bool) (wai
 	}
 
 	kl.claimBeforeProceeding(g)
-	// Now that this request has acquired a claim, requests actively waiting
-	// behind this request may be able to proceed by establishing a joint claim if
-	// they are compatible. recomputeWaitQueues will also inform active waiters
-	// that may need to be made aware that this request has acquired a claim.
-	kl.recomputeWaitQueues(g.lt.settings)
+	// Inform any active waiters that (may) need to be made aware that this
+	// request acquired a claim.
+	kl.informActiveWaiters()
 	return false /* wait */, nil
 }
 
@@ -3373,9 +3359,6 @@ func (kl *keyLocks) recomputeWaitQueues(st *cluster.Settings) {
 	// (which are the only ones that exist at the time of writing).
 	var strongestMode lock.Mode
 	// Go through the list of lock holders.
-	// TODO(arul): We should annotate each of the holders to reflect if the lock
-	// belongs to a finalized transaction or not. If it does, we should exclude
-	// it when computing strongestLockMode.
 	for e := kl.holders.Front(); e != nil; e = e.Next() {
 		mode := e.Value.getLockMode()
 		if strongestMode.Weaker(mode) {
@@ -4058,15 +4041,6 @@ func (kl *keyLocks) verify(st *cluster.Settings) error {
 	return nil
 }
 
-func (kl *keyLocks) hasActivelyWaitingLockingRequest() bool {
-	for e := kl.lockWaitQueue.queuedLockingRequests.Front(); e != nil; e = e.Next() {
-		if e.Value.active {
-			return true
-		}
-	}
-	return false
-}
-
 // Delete removes the specified lock from the tree.
 // REQUIRES: t.mu is locked.
 func (t *treeMu) Delete(l *keyLocks) {
@@ -4630,47 +4604,38 @@ func (t *lockTableImpl) QueryLockTableState(
 	var numLocks int64
 	var numBytes int64
 	var nextKey roachpb.Key
-	var nextNumBytes int64
+	var nextByteSize int64
 
 	// Iterate over locks and gather metadata.
 	iter := snap.MakeIter()
 	ltRange := &keyLocks{key: span.Key, endKey: span.EndKey}
 	for iter.FirstOverlap(ltRange); iter.Valid(); iter.NextOverlap(ltRange) {
 		l := iter.Cur()
-		nextKey = l.key
 
-		lInfos := l.collectLockStateInfo(opts.IncludeUncontended, now, t.rID)
-		nextNumBytes = 0
-		nextNumLocks := int64(len(lInfos))
-		for _, lInfo := range lInfos {
-			nextNumBytes += int64(lInfo.Size())
-		}
+		if ok, lInfo := l.collectLockStateInfo(opts.IncludeUncontended, now); ok {
+			nextKey = l.key
+			nextByteSize = int64(lInfo.Size())
+			lInfo.RangeID = t.rID
 
-		// We always return locks on at least one key, regardless of the byte or
-		// count limits.
-		if len(lockTableState) > 0 {
-			// Check if accumulating the result will cause byte limits to be exceeded.
-			if opts.TargetBytes > 0 && (numBytes+nextNumBytes) > opts.TargetBytes {
+			// Check if adding the lock would exceed our byte or count limits,
+			// though we must ensure we return at least one lock.
+			if len(lockTableState) > 0 && opts.TargetBytes > 0 && (numBytes+nextByteSize) > opts.TargetBytes {
 				resumeState.ResumeReason = kvpb.RESUME_BYTE_LIMIT
 				break
-			}
-			// Check if accumulating the result will cause lock count limits to be
-			// exceeded.
-			if opts.MaxLocks > 0 && (numLocks+nextNumLocks) > opts.MaxLocks {
+			} else if len(lockTableState) > 0 && opts.MaxLocks > 0 && numLocks >= opts.MaxLocks {
 				resumeState.ResumeReason = kvpb.RESUME_KEY_LIMIT
 				break
 			}
-		}
 
-		// Adding all locks on this key won't cause us to go over byte/count limits.
-		lockTableState = append(lockTableState, lInfos...)
-		numBytes += nextNumBytes
-		numLocks += nextNumLocks
+			lockTableState = append(lockTableState, lInfo)
+			numLocks++
+			numBytes += nextByteSize
+		}
 	}
 
 	// If we need to paginate results, set the continuation key in the ResumeSpan.
 	if resumeState.ResumeReason != 0 {
-		resumeState.ResumeNextBytes = nextNumBytes
+		resumeState.ResumeNextBytes = nextByteSize
 		resumeState.ResumeSpan = &roachpb.Span{Key: nextKey, EndKey: span.EndKey}
 	}
 	resumeState.TotalBytes = numBytes

@@ -1,10 +1,7 @@
 // Copyright 2021 The Cockroach Authors.
 //
-// Licensed as a CockroachDB Enterprise file under the Cockroach Community
-// License (the "License"); you may not use this file except in compliance with
-// the License. You may obtain a copy of the License at
-//
-//     https://github.com/cockroachdb/cockroach/blob/master/licenses/CCL.txt
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package backupccl
 
@@ -18,7 +15,6 @@ import (
 	"time"
 
 	"github.com/cockroachdb/cockroach/pkg/jobs"
-	"github.com/cockroachdb/cockroach/pkg/jobs/jobspb"
 	"github.com/cockroachdb/cockroach/pkg/jobs/jobsprotectedts"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/protectedts"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/protectedts/ptpb"
@@ -38,7 +34,7 @@ import (
 // Returns schedule IDs for full and incremental schedules, plus a cleanup function.
 func (th *testHelper) createSchedules(
 	t *testing.T, backupStmt string, opts ...string,
-) (jobspb.ScheduleID, jobspb.ScheduleID, func()) {
+) (int64, int64, func()) {
 	backupOpts := ""
 	if len(opts) > 0 {
 		backupOpts = fmt.Sprintf(" WITH %s", strings.Join(opts, ", "))
@@ -81,7 +77,7 @@ func checkPTSRecord(
 		require.NoError(t, err)
 		return nil
 	}))
-	encodedScheduleID := []byte(strconv.FormatInt(int64(schedule.ScheduleID()), 10))
+	encodedScheduleID := []byte(strconv.FormatInt(schedule.ScheduleID(), 10))
 	require.Equal(t, encodedScheduleID, ptsRecord.Meta)
 	require.Equal(t, jobsprotectedts.GetMetaType(jobsprotectedts.Schedules), ptsRecord.MetaType)
 	require.Equal(t, timestamp, ptsRecord.Timestamp)

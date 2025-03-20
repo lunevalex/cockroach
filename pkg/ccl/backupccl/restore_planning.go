@@ -1,10 +1,7 @@
 // Copyright 2016 The Cockroach Authors.
 //
-// Licensed as a CockroachDB Enterprise file under the Cockroach Community
-// License (the "License"); you may not use this file except in compliance with
-// the License. You may obtain a copy of the License at
-//
-//     https://github.com/cockroachdb/cockroach/blob/master/licenses/CCL.txt
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package backupccl
 
@@ -60,7 +57,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/catid"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
 	"github.com/cockroachdb/cockroach/pkg/sql/sessiondata"
-	"github.com/cockroachdb/cockroach/pkg/sql/sqlclustersettings"
 	"github.com/cockroachdb/cockroach/pkg/sql/sqlerrors"
 	"github.com/cockroachdb/cockroach/pkg/sql/syntheticprivilege"
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
@@ -1164,7 +1160,9 @@ func restoreJobDescription(
 	}
 
 	ann := p.ExtendedEvalContext().Annotations
-	return tree.AsStringWithFQNames(r, ann), nil
+	return tree.AsStringWithFlags(
+		r, tree.FmtAlwaysQualifyTableNames|tree.FmtShowFullURIs, tree.FmtAnnotations(ann),
+	), nil
 }
 
 func restoreTypeCheck(
@@ -1360,12 +1358,6 @@ func restorePlanHook(
 		if err != nil {
 			return nil, nil, nil, false, err
 		}
-	}
-
-	if restoreStmt.Options.ExperimentalOnline && !restoreStmt.Targets.TenantID.IsSet() {
-		// TODO(ssd): Disable this once it is less annoying to
-		// disable it in tests.
-		log.Warningf(ctx, "running non-tenant online RESTORE; this is dangerous and will only work if you know exactly what you are doing")
 	}
 
 	var newTenantID *roachpb.TenantID
@@ -1653,7 +1645,7 @@ func checkBackupManifestVersionCompatability(
 
 	// We support restoring a backup that was taken on a cluster with a cluster
 	// version >= the earliest binary version that we can interoperate with.
-	minimumRestoreableVersion := version.MinSupportedVersion()
+	minimumRestoreableVersion := version.BinaryMinSupportedVersion()
 	currentActiveVersion := version.ActiveVersion(ctx)
 
 	for i := range mainBackupManifests {
@@ -1856,14 +1848,6 @@ func doRestorePlan(
 	if err != nil {
 		return err
 	}
-	if restoreStmt.Options.ExperimentalOnline {
-		for _, uri := range defaultURIs {
-			if err := cloud.SchemeSupportsEarlyBoot(uri); err != nil {
-				return errors.Wrap(err, "backup URI not supported for online restore")
-			}
-		}
-	}
-
 	defer func() {
 		mem.Shrink(ctx, memReserved)
 	}()
@@ -1871,13 +1855,8 @@ func doRestorePlan(
 	err = checkBackupManifestVersionCompatability(ctx, p.ExecCfg().Settings.Version,
 		mainBackupManifests, restoreStmt.Options.UnsafeRestoreIncompatibleVersion)
 	if err != nil {
-		return err
-	}
 
-	if restoreStmt.Options.ExperimentalOnline {
-		if err := checkManifestsForOnlineCompat(ctx, mainBackupManifests); err != nil {
-			return err
-		}
+		return err
 	}
 
 	if restoreStmt.DescriptorCoverage == tree.AllDescriptors {
@@ -1889,16 +1868,64 @@ func doRestorePlan(
 		// Validate that we aren't in the middle of an upgrade. To avoid unforseen
 		// issues, we want to avoid full cluster restores if it is possible that an
 		// upgrade is in progress. We also check this during Resume.
-		latestVersion := p.ExecCfg().Settings.Version.LatestVersion()
+		binaryVersion := p.ExecCfg().Settings.Version.BinaryVersion()
 		clusterVersion := p.ExecCfg().Settings.Version.ActiveVersion(ctx).Version
-		if clusterVersion.Less(latestVersion) {
-			return clusterRestoreDuringUpgradeErr(clusterVersion, latestVersion)
+		if clusterVersion.Less(binaryVersion) {
+			return clusterRestoreDuringUpgradeErr(clusterVersion, binaryVersion)
 		}
 	}
+
+	backupCodec, err := backupinfo.MakeBackupCodec(mainBackupManifests[0])
+	if err != nil {
+		return err
+	}
+
+	// wasOffline tracks which tables were in an offline or adding state at some
+	// point in the incremental chain, meaning their spans would be seeing
+	// non-transactional bulk-writes. If that backup exported those spans, then it
+	// can't be trusted for that table/index since those bulk-writes can fail to
+	// be caught by backups.
+	wasOffline := make(map[tableAndIndex]hlc.Timestamp)
 
 	layerToIterFactory, err := backupinfo.GetBackupManifestIterFactories(ctx, p.ExecCfg().DistSQLSrv.ExternalStorage, mainBackupManifests, encryption, &kmsEnv)
 	if err != nil {
 		return err
+	}
+
+	for i, m := range mainBackupManifests {
+		spans := roachpb.Spans(m.Spans)
+		descIt := layerToIterFactory[i].NewDescIter(ctx)
+		defer descIt.Close()
+
+		for ; ; descIt.Next() {
+			if ok, err := descIt.Valid(); err != nil {
+				return err
+			} else if !ok {
+				break
+			}
+
+			table, _, _, _, _ := descpb.GetDescriptors(descIt.Value())
+			if table == nil {
+				continue
+			}
+			index := table.GetPrimaryIndex()
+			if len(index.Interleave.Ancestors) > 0 || len(index.InterleavedBy) > 0 {
+				return errors.Errorf("restoring interleaved tables is no longer allowed. table %s was found to be interleaved", table.Name)
+			}
+			if err := catalog.ForEachNonDropIndex(
+				tabledesc.NewBuilder(table).BuildImmutable().(catalog.TableDescriptor),
+				func(index catalog.Index) error {
+					if index.Adding() && spans.ContainsKey(backupCodec.IndexPrefix(uint32(table.ID), uint32(index.GetID()))) {
+						k := tableAndIndex{tableID: table.ID, indexID: index.GetID()}
+						if _, ok := wasOffline[k]; !ok {
+							wasOffline[k] = m.EndTime
+						}
+					}
+					return nil
+				}); err != nil {
+				return err
+			}
+		}
 	}
 
 	sqlDescs, restoreDBs, descsByTablePattern, tenants, err := selectTargets(
@@ -1908,6 +1935,25 @@ func doRestorePlan(
 		return errors.Wrap(err,
 			"failed to resolve targets in the BACKUP location specified by the RESTORE statement, "+
 				"use SHOW BACKUP to find correct targets")
+	}
+
+	if err := checkMissingIntroducedSpans(ctx, sqlDescs, mainBackupManifests, layerToIterFactory, endTime, backupCodec); err != nil {
+		return err
+	}
+
+	var revalidateIndexes []jobspb.RestoreDetails_RevalidateIndex
+	for _, desc := range sqlDescs {
+		tbl, ok := desc.(catalog.TableDescriptor)
+		if !ok {
+			continue
+		}
+		for _, idx := range tbl.ActiveIndexes() {
+			if _, ok := wasOffline[tableAndIndex{tableID: desc.GetID(), indexID: idx.GetID()}]; ok {
+				revalidateIndexes = append(revalidateIndexes, jobspb.RestoreDetails_RevalidateIndex{
+					TableID: desc.GetID(), IndexID: idx.GetID(),
+				})
+			}
+		}
 	}
 
 	err = ensureMultiRegionDatabaseRestoreIsAllowed(p, restoreDBs)
@@ -2075,13 +2121,6 @@ func doRestorePlan(
 	} else {
 		fromDescription = from
 	}
-
-	if restoreStmt.Options.ExperimentalOnline {
-		if err := checkRewritesAreNoops(descriptorRewrites); err != nil {
-			return err
-		}
-	}
-
 	description, err := restoreJobDescription(
 		ctx,
 		p,
@@ -2126,19 +2165,22 @@ func doRestorePlan(
 		overrideDBName = newDBName
 	}
 	if err := rewrite.TableDescs(tables, descriptorRewrites, overrideDBName); err != nil {
-		return errors.Wrapf(err, "table descriptor rewrite failed")
+		return err
 	}
 	if err := rewrite.DatabaseDescs(databases, descriptorRewrites, map[descpb.ID]struct{}{}); err != nil {
-		return errors.Wrapf(err, "database descriptor rewrite failed")
+		return err
 	}
 	if err := rewrite.SchemaDescs(schemas, descriptorRewrites); err != nil {
-		return errors.Wrapf(err, "schema descriptor rewrite failed")
+		return err
 	}
 	if err := rewrite.TypeDescs(types, descriptorRewrites); err != nil {
-		return errors.Wrapf(err, "type descriptor rewrite failed")
+		return err
 	}
 	if err := rewrite.FunctionDescs(functions, descriptorRewrites, overrideDBName); err != nil {
-		return errors.Wrapf(err, "function descriptor rewrite failed")
+		return err
+	}
+	for i := range revalidateIndexes {
+		revalidateIndexes[i].TableID = descriptorRewrites[revalidateIndexes[i].TableID].ID
 	}
 
 	encodedTables := make([]*descpb.TableDescriptor, len(tables))
@@ -2156,6 +2198,7 @@ func doRestorePlan(
 		OverrideDB:         overrideDBName,
 		DescriptorCoverage: restoreStmt.DescriptorCoverage,
 		Encryption:         encryption,
+		RevalidateIndexes:  revalidateIndexes,
 		DatabaseModifiers:  databaseModifiers,
 		DebugPauseOn:       debugPauseOn,
 
@@ -2393,7 +2436,7 @@ func planDatabaseModifiersForRestore(
 ) (map[descpb.ID]*jobspb.RestoreDetails_DatabaseModifier, []catalog.Descriptor, error) {
 	databaseModifiers := make(map[descpb.ID]*jobspb.RestoreDetails_DatabaseModifier)
 	defaultPrimaryRegion := catpb.RegionName(
-		sqlclustersettings.DefaultPrimaryRegion.Get(&p.ExecCfg().Settings.SV),
+		sql.DefaultPrimaryRegion.Get(&p.ExecCfg().Settings.SV),
 	)
 	if !p.ExecCfg().Codec.ForSystemTenant() &&
 		!sql.SecondaryTenantsMultiRegionAbstractionsEnabled.Get(&p.ExecCfg().Settings.SV) {
@@ -2405,12 +2448,12 @@ func planDatabaseModifiersForRestore(
 		return nil, nil, nil
 	}
 	if err := multiregionccl.CheckClusterSupportsMultiRegion(
-		p.ExecCfg().Settings,
+		p.ExecCfg().Settings, p.ExecCfg().NodeInfo.LogicalClusterID(),
 	); err != nil {
 		return nil, nil, errors.WithHintf(
 			err,
 			"try disabling the default PRIMARY REGION by using RESET CLUSTER SETTING %s",
-			sqlclustersettings.DefaultPrimaryRegionClusterSettingName,
+			sql.DefaultPrimaryRegionClusterSettingName,
 		)
 	}
 
@@ -2425,7 +2468,7 @@ func planDatabaseModifiersForRestore(
 		return nil, nil, errors.WithHintf(
 			err,
 			"set the default PRIMARY REGION to a region that exists (see SHOW REGIONS FROM CLUSTER) then using SET CLUSTER SETTING %s = 'region'",
-			sqlclustersettings.DefaultPrimaryRegionClusterSettingName,
+			sql.DefaultPrimaryRegionClusterSettingName,
 		)
 	}
 
@@ -2477,7 +2520,7 @@ func planDatabaseModifiersForRestore(
 				),
 				"to change the default primary region, use SET CLUSTER SETTING %[1]s = 'region' "+
 					"or use RESET CLUSTER SETTING %[1]s to disable this behavior",
-				sqlclustersettings.DefaultPrimaryRegionClusterSettingName,
+				sql.DefaultPrimaryRegionClusterSettingName,
 			),
 		)
 

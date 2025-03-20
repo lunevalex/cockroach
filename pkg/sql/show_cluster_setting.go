@@ -1,19 +1,13 @@
 // Copyright 2017 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package sql
 
 import (
 	"bytes"
 	"context"
-	"fmt"
 	"math"
 	"strings"
 	"time"
@@ -34,6 +28,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/retry"
 	"github.com/cockroachdb/cockroach/pkg/util/timeutil"
 	"github.com/cockroachdb/errors"
+	"github.com/cockroachdb/redact"
 )
 
 // getCurrentEncodedVersionSettingValue returns the encoded value of
@@ -54,7 +49,7 @@ func (p *planner) getCurrentEncodedVersionSettingValue(
 	// the same time guaranteeing that a node reporting a certain version has
 	// also processed the corresponding version bump (which is important as only
 	// then does the node update its persisted state; see #22796).
-	if err := timeutil.RunWithTimeout(ctx, fmt.Sprintf("show cluster setting %s", name), 2*time.Minute,
+	if err := timeutil.RunWithTimeout(ctx, redact.Sprintf("show cluster setting %s", name), 2*time.Minute,
 		func(ctx context.Context) error {
 			tBegin := timeutil.Now()
 
@@ -96,9 +91,9 @@ func (p *planner) getCurrentEncodedVersionSettingValue(
 						return errors.AssertionFailedf("no value found for version setting")
 					}
 
-					localVal := s.GetInternal(&st.SV)
+					localRawVal := []byte(s.Get(&st.SV))
 					if err := checkClusterSettingValuesAreEquivalent(
-						localVal.Encode(), kvRawVal,
+						localRawVal, kvRawVal,
 					); err != nil {
 						// NB: errors.Wrapf(nil, ...) returns nil.
 						// nolint:errwrap
@@ -153,8 +148,8 @@ func checkClusterSettingValuesAreEquivalent(localRawVal, kvRawVal []byte) error 
 		localVal, kvVal)
 }
 
-func settingNameDeprecationNotice(oldName, newName settings.SettingName) pgnotice.Notice {
-	return pgnotice.Newf("the name %q is deprecated; use %q instead", oldName, newName)
+func settingAlternateNameNotice(oldName, newName settings.SettingName) pgnotice.Notice {
+	return pgnotice.Newf("%q is now an alias for %q, the preferred setting name", oldName, newName)
 }
 
 func (p *planner) ShowClusterSetting(
@@ -170,7 +165,7 @@ func (p *planner) ShowClusterSetting(
 		return nil, errors.Errorf("unknown setting: %q", name)
 	}
 	if nameStatus != settings.NameActive {
-		p.BufferClientNotice(ctx, settingNameDeprecationNotice(name, setting.Name()))
+		p.BufferClientNotice(ctx, settingAlternateNameNotice(name, setting.Name()))
 		name = setting.Name()
 	}
 

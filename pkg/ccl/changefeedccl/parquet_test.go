@@ -1,15 +1,13 @@
 // Copyright 2022 The Cockroach Authors.
 //
-// Licensed as a CockroachDB Enterprise file under the Cockroach Community
-// License (the "License"); you may not use this file except in compliance with
-// the License. You may obtain a copy of the License at
-//
-//     https://github.com/cockroachdb/cockroach/blob/master/licenses/CCL.txt
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package changefeedccl
 
 import (
 	"context"
+	"fmt"
 	"math/rand"
 	"os"
 	"testing"
@@ -270,6 +268,71 @@ func TestParquetResolvedTimestamps(t *testing.T) {
 					nextResolved, firstResolved)
 			}
 			return nil
+		})
+	}
+
+	cdcTest(t, testFn, feedTestForceSink("cloudstorage"))
+}
+
+func TestParquetDuplicateColumns(t *testing.T) {
+	defer leaktest.AfterTest(t)()
+	defer log.Scope(t).Close(t)
+
+	testFn := func(t *testing.T, s TestServer, f cdctest.TestFeedFactory) {
+		sqlDB := sqlutils.MakeSQLRunner(s.DB)
+		sqlDB.Exec(t, `CREATE TABLE t (id INT8 PRIMARY KEY)`)
+		sqlDB.Exec(t, `INSERT INTO t VALUES (1)`)
+		foo := feed(t, f, `CREATE CHANGEFEED WITH format=parquet,initial_scan='only' AS SELECT id FROM t`)
+		defer closeFeed(t, foo)
+
+		// Test that this should not fail with this error:
+		// `Number of datums in parquet output row doesn't match number of distinct
+		// columns, Expected: %d, Recieved: %d`.
+		assertPayloads(t, foo, []string{
+			`t: [1]->{"id": 1}`,
+		})
+	}
+
+	cdcTest(t, testFn, feedTestForceSink("cloudstorage"))
+}
+
+func TestParquetSpecifiedDuplicateQueryColumns(t *testing.T) {
+	defer leaktest.AfterTest(t)()
+	defer log.Scope(t).Close(t)
+
+	testFn := func(t *testing.T, s TestServer, f cdctest.TestFeedFactory) {
+		sqlDB := sqlutils.MakeSQLRunner(s.DB)
+		sqlDB.Exec(t, `CREATE TABLE t (id INT8 PRIMARY KEY, a INT8)`)
+		sqlDB.Exec(t, `INSERT INTO t VALUES (1, 9)`)
+		foo := feed(t, f, `CREATE CHANGEFEED WITH format=parquet,initial_scan='only' AS SELECT a, a, id, id FROM t`)
+		defer closeFeed(t, foo)
+
+		// Test that this should not fail with this error:
+		// `Number of datums in parquet output row doesn't match number of distinct
+		// columns, Expected: %d, Recieved: %d`.
+		assertPayloads(t, foo, []string{
+			`t: [1]->{"a": 9, "a_1": 9, "id": 1, "id_1": 1}`,
+		})
+	}
+
+	cdcTest(t, testFn, feedTestForceSink("cloudstorage"))
+}
+
+func TestParquetNoUserDefinedPrimaryKey(t *testing.T) {
+	defer leaktest.AfterTest(t)()
+	defer log.Scope(t).Close(t)
+
+	testFn := func(t *testing.T, s TestServer, f cdctest.TestFeedFactory) {
+		sqlDB := sqlutils.MakeSQLRunner(s.DB)
+		sqlDB.Exec(t, `CREATE TABLE t (id INT8)`)
+		var rowId int
+		sqlDB.QueryRow(t, `INSERT INTO t VALUES (0) RETURNING rowid`).Scan(&rowId)
+		foo := feed(t, f, `CREATE CHANGEFEED WITH format=parquet,initial_scan='only' AS SELECT id FROM t`)
+		defer closeFeed(t, foo)
+
+		// The parquet output always includes the primary key.
+		assertPayloads(t, foo, []string{
+			fmt.Sprintf(`t: [%d]->{"id": 0}`, rowId),
 		})
 	}
 

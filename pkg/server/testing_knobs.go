@@ -1,12 +1,7 @@
 // Copyright 2019 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package server
 
@@ -16,6 +11,7 @@ import (
 	"time"
 
 	"github.com/cockroachdb/cockroach/pkg/blobs"
+	"github.com/cockroachdb/cockroach/pkg/clusterversion"
 	"github.com/cockroachdb/cockroach/pkg/config/zonepb"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/rpc"
@@ -69,18 +65,22 @@ type TestingKnobs struct {
 	// Case 1:
 	// ------
 	// If the test has not overridden the
-	// `cluster.Settings.Version.MinSupportedVersion`, then the cluster will be
-	// bootstrapped at `minSupportedVersion`  (if this server is the one
+	// `cluster.Settings.Version.BinaryMinSupportedVersion`, then the cluster will
+	// be bootstrapped at `binaryMinSupportedVersion`  (if this server is the one
 	// bootstrapping the cluster). After all the servers in the test cluster have
 	// been started, `SET CLUSTER SETTING version = BinaryVersionOverride` will be
 	// run to step through the upgrades until the specified override.
 	//
+	// TODO(adityamaru): We should force tests that set BinaryVersionOverride to
+	// also set BootstrapVersionKeyOverride so as to specify what image they would
+	// like the cluster bootstrapped at before upgrading to BinaryVersionOverride.
+	//
 	// Case 2:
 	// ------
 	// If the test has overridden the
-	// `cluster.Settings.Version.MinSupportedVersion` then it is not safe for us
-	// to bootstrap at `minSupportedVersion` as it might be less than the
-	// overridden minimum supported version. Furthermore, we do not have the
+	// `cluster.Settings.Version.BinaryMinSupportedVersion` then it is not safe
+	// for us to bootstrap at `binaryMinSupportedVersion` as it might be less than
+	// the overridden minimum supported version. Furthermore, we do not have the
 	// initial cluster data (system tables etc.) to bootstrap at the overridden
 	// minimum supported version. In this case we bootstrap at
 	// `BinaryVersionOverride` and populate the cluster with initial data
@@ -125,6 +125,10 @@ type TestingKnobs struct {
 	// StubTimeNow allows tests to override the timeutil.Now() function used
 	// in the jobs endpoint to calculate earliest_retained_time.
 	StubTimeNow func() time.Time
+
+	// We use clusterversion.Key rather than a roachpb.Version because it will be used
+	// to get initial values to use during bootstrap.
+	BootstrapVersionKeyOverride clusterversion.Key
 
 	// RequireGracefulDrain, if set, causes a shutdown to fail with a log.Fatal
 	// if the server is not gracefully drained prior to its stopper shutting down.
@@ -177,6 +181,9 @@ type TestingKnobs struct {
 	// waiting for any active configuration environments to
 	// complete their tasks.
 	AutoConfigProfileStartupWaitTime *time.Duration
+
+	// EnvironmentSampleInterval overrides base.DefaultMetricsSampleInterval when used to construct sampleEnvironmentCfg.
+	EnvironmentSampleInterval time.Duration
 }
 
 // ModuleTestingKnobs is part of the base.ModuleTestingKnobs interface.

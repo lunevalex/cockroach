@@ -1,12 +1,7 @@
 // Copyright 2018 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package optbuilder
 
@@ -307,7 +302,7 @@ func (b *Builder) buildInsert(ins *tree.Insert, inScope *scope) (outScope *scope
 		// Wrap the input in one ANTI JOIN per UNIQUE index, and filter out rows
 		// that have conflicts. See the buildInputForDoNothing comment for more
 		// details.
-		mb.buildInputForDoNothing(inScope, ins.OnConflict)
+		mb.buildInputForDoNothing(inScope, ins.Table, ins.OnConflict)
 
 		// Since buildInputForDoNothing filters out rows with conflicts, always
 		// insert rows that are not filtered.
@@ -324,7 +319,7 @@ func (b *Builder) buildInsert(ins *tree.Insert, inScope *scope) (outScope *scope
 		if mb.needExistingRows() {
 			// Left-join each input row to the target table, using conflict columns
 			// derived from the primary index as the join condition.
-			mb.buildInputForUpsert(inScope, nil /* onConflict */, nil /* whereClause */)
+			mb.buildInputForUpsert(inScope, ins.Table, nil /* onConflict */, nil /* whereClause */)
 
 			// Add additional columns for computed expressions that may depend on any
 			// updated columns, as well as mutation columns with default values.
@@ -338,7 +333,7 @@ func (b *Builder) buildInsert(ins *tree.Insert, inScope *scope) (outScope *scope
 	default:
 		// Left-join each input row to the target table, using the conflict columns
 		// as the join condition.
-		mb.buildInputForUpsert(inScope, ins.OnConflict, ins.OnConflict.Where)
+		mb.buildInputForUpsert(inScope, ins.Table, ins.OnConflict, ins.OnConflict.Where)
 
 		// Derive the columns that will be updated from the SET expressions.
 		mb.addTargetColsForUpdate(ins.OnConflict.Exprs)
@@ -704,7 +699,9 @@ func (mb *mutationBuilder) buildInsert(returning *tree.ReturningExprs) {
 // buildInputForDoNothing wraps the input expression in ANTI JOIN expressions,
 // one for each arbiter on the target table. See the comment header for
 // Builder.buildInsert for an example.
-func (mb *mutationBuilder) buildInputForDoNothing(inScope *scope, onConflict *tree.OnConflict) {
+func (mb *mutationBuilder) buildInputForDoNothing(
+	inScope *scope, texpr tree.TableExpr, onConflict *tree.OnConflict,
+) {
 	// Determine the set of arbiter indexes and constraints to use to check for
 	// conflicts.
 	mb.arbiters = mb.findArbiters(onConflict)
@@ -719,7 +716,7 @@ func (mb *mutationBuilder) buildInputForDoNothing(inScope *scope, onConflict *tr
 	mb.arbiters.ForEach(func(
 		name string, conflictOrds intsets.Fast, pred tree.Expr, canaryOrd int, uniqueWithoutIndex bool, uniqueOrd int,
 	) {
-		mb.buildAntiJoinForDoNothingArbiter(inScope, conflictOrds, pred, uniqueWithoutIndex, uniqueOrd)
+		mb.buildAntiJoinForDoNothingArbiter(inScope, texpr, conflictOrds, pred, uniqueWithoutIndex, uniqueOrd)
 	})
 
 	// Create an UpsertDistinctOn for each arbiter. This must happen after all
@@ -753,7 +750,7 @@ func (mb *mutationBuilder) buildInputForDoNothing(inScope *scope, onConflict *tr
 // given insert row conflicts with an existing row in the table. If it is null,
 // then there is no conflict.
 func (mb *mutationBuilder) buildInputForUpsert(
-	inScope *scope, onConflict *tree.OnConflict, whereClause *tree.Where,
+	inScope *scope, texpr tree.TableExpr, onConflict *tree.OnConflict, whereClause *tree.Where,
 ) {
 	// Determine the set of arbiter indexes and constraints to use to check for
 	// conflicts.
@@ -805,7 +802,7 @@ func (mb *mutationBuilder) buildInputForUpsert(
 
 		// Create a left-join for the arbiter.
 		mb.buildLeftJoinForUpsertArbiter(
-			inScope, conflictOrds, pred, uniqueWithoutIndex, uniqueOrd,
+			inScope, texpr, conflictOrds, pred, uniqueWithoutIndex, uniqueOrd,
 		)
 
 		// Record a not-null "canary" column. After the left-join, this will be

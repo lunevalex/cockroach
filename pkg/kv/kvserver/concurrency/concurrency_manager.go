@@ -1,12 +1,7 @@
 // Copyright 2020 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package concurrency
 
@@ -260,7 +255,7 @@ func (m *managerImpl) sequenceReqWithGuard(
 	// them.
 	if shouldWaitOnLatchesWithoutAcquiring(g.Req) {
 		log.Event(ctx, "waiting on latches without acquiring")
-		return nil, m.lm.WaitFor(ctx, g.Req.LatchSpans, g.Req.PoisonPolicy, g.Req.BaFmt)
+		return nil, m.lm.WaitFor(ctx, g.Req.LatchSpans, g.Req.PoisonPolicy)
 	}
 
 	// Provide the manager with an opportunity to intercept the request. It
@@ -804,9 +799,9 @@ func (g *Guard) CheckOptimisticNoLatchConflicts() (ok bool) {
 // from starving out regular locking requests. In such cases, true is
 // returned, but so is nil.
 func (g *Guard) IsKeyLockedByConflictingTxn(
-	ctx context.Context, key roachpb.Key, strength lock.Strength,
+	key roachpb.Key, strength lock.Strength,
 ) (bool, *enginepb.TxnMeta, error) {
-	return g.ltg.IsKeyLockedByConflictingTxn(ctx, key, strength)
+	return g.ltg.IsKeyLockedByConflictingTxn(key, strength)
 }
 
 func (g *Guard) moveLatchGuard() latchGuard {

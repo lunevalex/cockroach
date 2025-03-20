@@ -1,12 +1,7 @@
 // Copyright 2018 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 import React from "react";
 import classNames from "classnames";
@@ -18,6 +13,7 @@ import {
   warningIcon,
   notificationIcon,
   criticalIcon,
+  informationIcon,
 } from "src/views/shared/components/icons";
 import { trustIcon } from "src/util/trust";
 
@@ -27,6 +23,8 @@ function alertIcon(level: AlertLevel) {
       return trustIcon(criticalIcon);
     case AlertLevel.WARNING:
       return trustIcon(warningIcon);
+    case AlertLevel.INFORMATION:
+      return trustIcon(informationIcon);
     default:
       return trustIcon(notificationIcon);
   }
@@ -49,7 +47,7 @@ export class AlertBox extends React.Component<AlertBoxProps, {}> {
 
     const learnMore = this.props.link && (
       <a className="" href={this.props.link}>
-        Learn More.
+        Learn More
       </a>
     );
     content = (

@@ -1,12 +1,7 @@
 // Copyright 2021 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package storage
 
@@ -105,7 +100,7 @@ func TestSetMinVersion(t *testing.T) {
 	ValueBlocksEnabled.Override(context.Background(), &st.SV, true)
 	// Advancing the store cluster version to one that supports a new feature
 	// should also advance the store's format major version.
-	err = p.SetMinVersion(clusterversion.V23_2_PebbleFormatDeleteSizedAndObsolete.Version())
+	err = p.SetMinVersion(clusterversion.ByKey(clusterversion.V23_2_PebbleFormatDeleteSizedAndObsolete))
 	require.NoError(t, err)
 	require.Equal(t, pebble.FormatDeleteSizedAndObsolete, p.db.FormatMajorVersion())
 }
@@ -130,14 +125,14 @@ func TestMinVersion_IsNotEncrypted(t *testing.T) {
 		EncryptionAtRest(nil))
 	require.NoError(t, err)
 	defer p.Close()
-	require.NoError(t, p.SetMinVersion(st.Version.LatestVersion()))
+	require.NoError(t, p.SetMinVersion(st.Version.BinaryVersion()))
 
 	// Reading the file directly through the unencrypted MemFS should
 	// succeed and yield the correct version.
 	v, ok, err := getMinVersion(fs, "")
 	require.NoError(t, err)
 	require.True(t, ok)
-	require.Equal(t, st.Version.LatestVersion(), v)
+	require.Equal(t, st.Version.BinaryVersion(), v)
 }
 
 func fauxNewEncryptedEnvFunc(

@@ -1,12 +1,7 @@
 // Copyright 2015 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 // Package bootstrap contains the metadata required to bootstrap the sql
 // schema for a fresh cockroach cluster.
@@ -15,7 +10,6 @@ package bootstrap
 import (
 	"bytes"
 	"context"
-	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"sort"
@@ -171,6 +165,13 @@ func (ms MetadataSchema) GetInitialValues() ([]roachpb.KeyValue, []roachpb.RKey)
 		value := roachpb.Value{}
 		value.SetInt(int64(ms.FirstNonSystemDescriptorID()))
 		add(ms.codec.SequenceKey(keys.DescIDSequenceID), value)
+		if ms.codec.ForSystemTenant() {
+			// We need to also set the value of the legacy descriptor ID generator
+			// until clusterversion.V23_1DescIDSequenceForSystemTenant is removed.
+			legacyValue := roachpb.Value{}
+			legacyValue.SetInt(int64(ms.FirstNonSystemDescriptorID()))
+			add(keys.LegacyDescIDGenerator, legacyValue)
+		}
 	}
 	// Generate initial values for the system database's public schema, which
 	// doesn't have a descriptor.
@@ -649,19 +650,4 @@ func TestingUserDescID(offset uint32) uint32 {
 // user table data key in a simple unit test setting.
 func TestingUserTableDataMin(codec keys.SQLCodec) roachpb.Key {
 	return codec.TablePrefix(testingMinUserDescID(codec))
-}
-
-// GetAndHashInitialValuesToString generates the bootstrap keys and sha-256 that
-// can be used to generate data files (to be included in future releases).
-func GetAndHashInitialValuesToString(tenantID uint64) (initialValues string, hash string) {
-	codec := keys.SystemSQLCodec
-	if tenantID > 0 {
-		codec = keys.MakeSQLCodec(roachpb.MustMakeTenantID(tenantID))
-	}
-	ms := MakeMetadataSchema(codec, zonepb.DefaultZoneConfigRef(), zonepb.DefaultSystemZoneConfigRef())
-
-	initialValues = InitialValuesToString(ms)
-	h := sha256.Sum256([]byte(initialValues))
-	hash = hex.EncodeToString(h[:])
-	return initialValues, hash
 }

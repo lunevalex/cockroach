@@ -1,12 +1,7 @@
 // Copyright 2023 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package tests
 
@@ -50,7 +45,7 @@ func registerNetworkLogging(r registry.Registry) {
 
 		t.Status("installing FluentBit containers on CRDB nodes")
 		// Create FluentBit container on the node with a TCP input and dev/null output.
-		err := c.RunE(ctx, option.WithNodes(crdbNodes), fmt.Sprintf(
+		err := c.RunE(ctx, crdbNodes, fmt.Sprintf(
 			"sudo docker run -d -p %d:%d --name=fluentbit fluent/fluent-bit -i tcp -o null",
 			fluentBitTCPPort,
 			fluentBitTCPPort))
@@ -69,7 +64,7 @@ func registerNetworkLogging(r registry.Registry) {
 		startOpts.RoachprodOpts.ExtraArgs = []string{
 			"--log", logCfg,
 		}
-		c.Start(ctx, t.L(), startOpts, install.MakeClusterSettings(install.SecureOption(true)), crdbNodes)
+		c.Start(ctx, t.L(), startOpts, install.MakeClusterSettings(), crdbNodes)
 
 		// Construct pgurls for the workload runner. As a roundabout way of detecting deadlocks,
 		// we set a client timeout on the workload pgclient. If the server becomes unavailable
@@ -79,10 +74,11 @@ func registerNetworkLogging(r registry.Registry) {
 		secureUrls, err := roachprod.PgURL(ctx,
 			t.L(),
 			c.MakeNodes(crdbNodes),
-			"certs", /* certsDir */
+			install.CockroachNodeCertsDir, /* certsDir */
 			roachprod.PGURLOptions{
 				External: false,
-				Secure:   true})
+				Secure:   true,
+			})
 		require.NoError(t, err)
 		workloadPGURLs := make([]string, len(secureUrls))
 		for i, url := range secureUrls {
@@ -96,21 +92,21 @@ func registerNetworkLogging(r registry.Registry) {
 		// Init & run a workload on the workload node.
 		t.Status("initializing workload")
 		initWorkloadCmd := fmt.Sprintf("./cockroach workload init kv %s ", secureUrls[0])
-		c.Run(ctx, option.WithNodes(workloadNode), initWorkloadCmd)
+		c.Run(ctx, workloadNode, initWorkloadCmd)
 
 		t.Status("running workload")
 		m := c.NewMonitor(ctx, crdbNodes)
 		m.Go(func(ctx context.Context) error {
 			joinedURLs := strings.Join(workloadPGURLs, " ")
 			runWorkloadCmd := fmt.Sprintf("./cockroach workload run kv --concurrency=32 --duration=1h %s", joinedURLs)
-			return c.RunE(ctx, option.WithNodes(workloadNode), runWorkloadCmd)
+			return c.RunE(ctx, workloadNode, runWorkloadCmd)
 		})
 		m.Wait()
 	}
 
 	r.Add(registry.TestSpec{
 		Name:             "network_logging",
-		Owner:            registry.OwnerObsInf,
+		Owner:            registry.OwnerObservability,
 		Cluster:          r.MakeClusterSpec(numNodesNetworkLogging),
 		CompatibleClouds: registry.AllExceptAWS,
 		Suites:           registry.Suites(registry.Nightly),

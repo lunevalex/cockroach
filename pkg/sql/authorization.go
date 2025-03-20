@@ -1,12 +1,7 @@
 // Copyright 2017 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package sql
 
@@ -112,15 +107,13 @@ type AuthorizationAccessor interface {
 	// of and returns a map of role -> isAdmin.
 	MemberOfWithAdminOption(ctx context.Context, member username.SQLUsername) (map[username.SQLUsername]bool, error)
 
-	// UserHasRoleOption converts the roleoption to its SQL column name and checks
-	// if the user has that option. Requires a valid transaction to be open.
+	// HasRoleOption converts the roleoption to its SQL column name and checks if
+	// the user belongs to a role where the option has value true. Requires a
+	// valid transaction to be open.
 	//
 	// This check should be done on the version of the privilege that is stored in
 	// the role options table. Example: CREATEROLE instead of NOCREATEROLE.
 	// NOLOGIN instead of LOGIN.
-	UserHasRoleOption(ctx context.Context, user username.SQLUsername, roleOption roleoption.Option) (bool, error)
-
-	// HasRoleOption calls UserHasRoleOption with the current user.
 	HasRoleOption(ctx context.Context, roleOption roleoption.Option) (bool, error)
 
 	// HasGlobalPrivilegeOrRoleOption returns a bool representing whether the current user
@@ -141,13 +134,6 @@ func (p *planner) HasPrivilege(
 	privilegeKind privilege.Kind,
 	user username.SQLUsername,
 ) (bool, error) {
-	// Skip privilege checking if `privilegeKind == 0`. This exists to enable a
-	// more cohesive coding style in the caller where CheckPrivilege(priv=0)
-	// means "do not perform any privilege check".
-	if privilegeKind == 0 {
-		return true, nil
-	}
-
 	// Verify that the txn is valid in any case, so that
 	// we don't get the risk to say "OK" to root requests
 	// with an invalid API usage.
@@ -365,9 +351,26 @@ func (p *planner) CheckGrantOptionsForUser(
 	if isAdmin {
 		return true, nil
 	}
-	return p.checkRolePredicate(ctx, user, func(role username.SQLUsername) (bool, error) {
-		isOwner, err := isOwner(ctx, p, privilegeObject, role)
-		return privs.CheckGrantOptions(role, privList) || isOwner, err
+
+	// Normally, we check the user and its ancestors. But if
+	// enableGrantOptionInheritance is false, then we only check the user.
+	runPredicateFn := p.checkRolePredicate
+	if !enableGrantOptionInheritance.Get(&p.ExecCfg().Settings.SV) {
+		runPredicateFn = func(ctx context.Context, user username.SQLUsername, predicate func(role username.SQLUsername) (bool, error)) (bool, error) {
+			return predicate(user)
+		}
+	}
+
+	return runPredicateFn(ctx, user, func(role username.SQLUsername) (bool, error) {
+		if enableGrantOptionForOwner.Get(&p.ExecCfg().Settings.SV) {
+			if owned, err := isOwner(ctx, p, privilegeObject, role); err != nil {
+				return false, err
+			} else if owned {
+				// Short-circuit if the role is the owner of the object.
+				return true, nil
+			}
+		}
+		return privs.CheckGrantOptions(role, privList), nil
 	})
 }
 
@@ -691,6 +694,22 @@ var useSingleQueryForRoleMembershipCache = settings.RegisterBoolSetting(
 	defaultSingleQueryForRoleMembershipCache,
 	settings.WithPublic)
 
+var enableGrantOptionInheritance = settings.RegisterBoolSetting(
+	settings.ApplicationLevel,
+	"sql.auth.grant_option_inheritance.enabled",
+	"determines whether the GRANT OPTION for privileges is inherited through role membership",
+	true,
+	settings.WithPublic,
+)
+
+var enableGrantOptionForOwner = settings.RegisterBoolSetting(
+	settings.ApplicationLevel,
+	"sql.auth.grant_option_for_owner.enabled",
+	"determines whether the GRANT OPTION for privileges is implicitly given to the owner of an object",
+	true,
+	settings.WithPublic,
+)
+
 // resolveMemberOfWithAdminOption performs the actual recursive role membership lookup.
 func resolveMemberOfWithAdminOption(
 	ctx context.Context, member username.SQLUsername, txn isql.Txn, singleQuery bool,
@@ -777,10 +796,8 @@ func resolveMemberOfWithAdminOption(
 	return ret, nil
 }
 
-// UserHasRoleOption implements the AuthorizationAccessor interface.
-func (p *planner) UserHasRoleOption(
-	ctx context.Context, user username.SQLUsername, roleOption roleoption.Option,
-) (bool, error) {
+// HasRoleOption implements the AuthorizationAccessor interface.
+func (p *planner) HasRoleOption(ctx context.Context, roleOption roleoption.Option) (bool, error) {
 	// Verify that the txn is valid in any case, so that
 	// we don't get the risk to say "OK" to root requests
 	// with an invalid API usage.
@@ -788,11 +805,12 @@ func (p *planner) UserHasRoleOption(
 		return false, errors.AssertionFailedf("cannot use HasRoleOption without a txn")
 	}
 
+	user := p.SessionData().User()
 	if user.IsRootUser() || user.IsNodeUser() {
 		return true, nil
 	}
 
-	hasAdmin, err := p.UserHasAdminRole(ctx, user)
+	hasAdmin, err := p.HasAdminRole(ctx)
 	if err != nil {
 		return false, err
 	}
@@ -803,7 +821,7 @@ func (p *planner) UserHasRoleOption(
 
 	hasRolePrivilege, err := p.InternalSQLTxn().QueryRowEx(
 		ctx, "has-role-option", p.Txn(),
-		sessiondata.NodeUserSessionDataOverride,
+		sessiondata.RootUserSessionDataOverride,
 		fmt.Sprintf(
 			`SELECT 1 from %s WHERE option = '%s' AND username = $1 LIMIT 1`,
 			sessioninit.RoleOptionsTableName, roleOption.String()), user.Normalized())
@@ -816,11 +834,6 @@ func (p *planner) UserHasRoleOption(
 	}
 
 	return false, nil
-}
-
-// HasRoleOption implements the AuthorizationAccessor interface.
-func (p *planner) HasRoleOption(ctx context.Context, roleOption roleoption.Option) (bool, error) {
-	return p.UserHasRoleOption(ctx, p.User(), roleOption)
 }
 
 // CheckRoleOption checks if the current user has roleOption and returns an

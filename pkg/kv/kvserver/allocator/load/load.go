@@ -1,26 +1,16 @@
 // Copyright 2022 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package load
 
-import (
-	"math"
-
-	"github.com/cockroachdb/redact"
-)
+import "math"
 
 // Load represents a named collection of load dimensions. It is used for
 // performing arithmetic and comparison between comparable objects which have
 // load.
 type Load interface {
-	redact.SafeFormatter
 	// Dim returns the value of the Dimension given.
 	Dim(dim Dimension) float64
 	// String returns a string representation of Load.

@@ -258,6 +258,37 @@ true  true
 true  true
 true  true
 
+# Regression test for #124175. Allow full precision for encoding JSON instead of the old default limit of 9.
+query FFT nosort
+SELECT
+  st_x(g), st_y(g), to_json(g)
+FROM ( VALUES
+  ('SRID=4326;POINT (-123.45 12.3456)'::GEOMETRY),
+  ('SRID=4326;POINT (-123.45678901234 12.3456789012)'::GEOMETRY),
+  ('SRID=4326;POINT (-123.4567890123456789 12.34567890123456789)'::GEOMETRY)
+) tbl(g)
+----
+-123.45 12.3456 {"coordinates": [-123.45, 12.3456], "type": "Point"}
+-123.45678901234 12.3456789012 {"coordinates": [-123.45678901234, 12.3456789012], "type": "Point"}
+-123.45678901234568 12.345678901234567 {"coordinates": [-123.45678901234568, 12.345678901234567], "type": "Point"}
+
+# st_asgeojson uses a default of 9 decimal digit precision.
+query TTTT nosort
+SELECT
+  st_asgeojson(tbl.*)::JSONB->'geometry'->'coordinates',
+  st_asgeojson(g)::JSONB->'coordinates',
+  st_asgeojson(tbl.*, 'g')::JSONB->'geometry'->'coordinates',
+  st_asgeojson(tbl.*, 'g', 4)::JSONB->'geometry'->'coordinates'
+FROM ( VALUES
+  ('SRID=4326;POINT (-123.45 12.3456)'::GEOMETRY),
+  ('SRID=4326;POINT (-123.45678901234 12.3456789012)'::GEOMETRY),
+  ('SRID=4326;POINT (-123.4567890123456789 12.34567890123456789)'::GEOMETRY)
+) tbl(g)
+----
+[-123.45, 12.3456]              [-123.45, 12.3456]              [-123.45, 12.3456]              [-123.45, 12.3456]
+[-123.456789012, 12.345678901]  [-123.456789012, 12.345678901]  [-123.456789012, 12.345678901]  [-123.4568, 12.3457]
+[-123.456789012, 12.345678901]  [-123.456789012, 12.345678901]  [-123.456789012, 12.345678901]  [-123.4568, 12.3457]
+
 subtest cast_test
 
 query T nosort
@@ -6217,80 +6248,5 @@ SELECT count(DISTINCT g) FROM t111556_res
 
 statement ok
 SET testing_optimizer_disable_rule_probability = 0
-
-subtest end
-
-
-subtest regressions
-
-# Regression test for #111157
-query T
-SELECT ST_Extent(ST_GeomFromGeoHash('C'::TEXT, NULL::INT4)::GEOMETRY);
-----
-BOX(-135 45,-90 90)
-
-query T
-SELECT ST_Extent(ST_GeomFromGeoHash(NULL::TEXT, 1::INT4)::GEOMETRY);
-----
-NULL
-
-query T
-SELECT ST_Extent(ST_PointFromGeoHash('C'::TEXT, NULL::INT4)::GEOMETRY);
-----
-BOX(-112.5 67.5,-112.5 67.5)
-
-query T
-SELECT ST_Extent(ST_PointFromGeoHash(NULL::TEXT, 1::INT4)::GEOMETRY);
-----
-NULL
-
-# X min > X max
-query T
-SELECT ST_AsEWKT(ST_MakeEnvelope(8.0::FLOAT8, 2.0::FLOAT8, 5.0::FLOAT8, 4.0::FLOAT8)::GEOMETRY);
-----
-POLYGON ((8 2, 8 4, 5 4, 5 2, 8 2))
-
-# Y min > Y max
-query T
-SELECT ST_AsEWKT(ST_MakeEnvelope(5.0::FLOAT8, 4.0::FLOAT8, 8.0::FLOAT8, 2.0::FLOAT8)::GEOMETRY);
-----
-POLYGON ((5 4, 5 2, 8 2, 8 4, 5 4))
-
-subtest end
-
-subtest st_tileenvelope
-
-query T
-SELECT ST_TileEnvelope(NULL, NULL, NULL);
-----
-NULL
-
-query T
-SELECT ST_AsText(ST_TileEnvelope(8, 1, 2));
-----
-POLYGON ((-19880965.308861203491688 19567879.241005122661591, -19880965.308861203491688 19724422.274933163076639, -19724422.274933163076639 19724422.274933163076639, -19724422.274933163076639 19567879.241005122661591, -19880965.308861203491688 19567879.241005122661591))
-
-query T
-SELECT ST_TileEnvelope(8, 1, 2, NULL);
-----
-NULL
-
-query T
-SELECT ST_AsText(ST_TileEnvelope(3, 1, 1, ST_MakeEnvelope(-180, -90, 180, 90, 4326)) );
-----
-POLYGON ((-135 45, -135 67.5, -90 67.5, -90 45, -135 45))
-
-query T
-SELECT ST_TileEnvelope(3, 1, 1, ST_MakeEnvelope(-180, -90, 180, 90, 4326), NULL);
-----
-NULL
-
-query T
-SELECT ST_AsText(ST_TileEnvelope(3, 1, 1, ST_MakeEnvelope(-180, -90, 180, 90, 4326), 0.125));
-----
-POLYGON ((-140.625 42.1875, -140.625 70.3125, -84.375 70.3125, -84.375 42.1875, -140.625 42.1875))
-
-statement error pgcode 22023 pq: st_tileenvelope\(\): Unable to compute bbox
-SELECT st_tileenvelope(0, 0, 0, '010500000000000000');
 
 subtest end

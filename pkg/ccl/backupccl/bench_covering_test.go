@@ -1,10 +1,7 @@
 // Copyright 2022 The Cockroach Authors.
 //
-// Licensed as a CockroachDB Enterprise file under the Cockroach Community
-// License (the "License"); you may not use this file except in compliance with
-// the License. You may obtain a copy of the License at
-//
-//     https://github.com/cockroachdb/cockroach/blob/master/licenses/CCL.txt
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package backupccl
 
@@ -39,7 +36,7 @@ func BenchmarkCoverageChecks(b *testing.B) {
 						b.Run(fmt.Sprintf("numFiles=%d", baseFiles), func(b *testing.B) {
 							for _, hasExternalFilesList := range []bool{true, false} {
 								b.Run(fmt.Sprintf("slim=%t", hasExternalFilesList), func(b *testing.B) {
-									backups, err := MockBackupChain(ctx, numBackups, numSpans, baseFiles, r, hasExternalFilesList, execCfg)
+									backups, err := MockBackupChain(ctx, numBackups, numSpans, baseFiles, 1<<20, r, hasExternalFilesList, execCfg)
 									require.NoError(b, err)
 									b.ResetTimer()
 
@@ -75,7 +72,7 @@ func BenchmarkRestoreEntryCover(b *testing.B) {
 							for _, hasExternalFilesList := range []bool{true, false} {
 								b.Run(fmt.Sprintf("hasExternalFilesList=%t", hasExternalFilesList),
 									func(b *testing.B) {
-										backups, err := MockBackupChain(ctx, numBackups, numSpans, baseFiles, r, hasExternalFilesList, execCfg)
+										backups, err := MockBackupChain(ctx, numBackups, numSpans, baseFiles, 1<<20, r, hasExternalFilesList, execCfg)
 										require.NoError(b, err)
 										b.ResetTimer()
 										for i := 0; i < b.N; i++ {
@@ -97,9 +94,9 @@ func BenchmarkRestoreEntryCover(b *testing.B) {
 												nil,
 												introducedSpanFrontier,
 												0,
+												defaultMaxFileCount,
 												false)
 											require.NoError(b, err)
-											defer filter.close()
 
 											g := ctxgroup.WithContext(ctx)
 											g.GoCtx(func(ctx context.Context) error {

@@ -1,12 +1,7 @@
 // Copyright 2016 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package kvserver_test
 
@@ -182,6 +177,7 @@ func TestReplicateQueueRebalanceMultiStore(t *testing.T) {
 	defer log.Scope(t).Close(t)
 	skip.UnderRace(t)
 	skip.UnderShort(t)
+	skip.UnderDeadlock(t)
 
 	testCases := []struct {
 		name          string
@@ -250,6 +246,11 @@ func TestReplicateQueueRebalanceMultiStore(t *testing.T) {
 				st := server.ClusterSettings()
 				st.Manual.Store(true)
 				allocatorimpl.LeaseRebalanceThreshold.Override(ctx, &st.SV, leaseRebalanceThreshold)
+				// We speed up replicate queue processing (scan min/max idle) time,
+				// this causes actions to occur more frequently than in practice and
+				// ultimately this test will fail unless we correspondingly increase
+				// the max store gossip frequency.
+				kvserver.MaxStoreGossipFrequency.Override(ctx, &st.SV, 0)
 			}
 
 			// Add a few ranges per store.
@@ -2621,5 +2622,72 @@ func TestReplicateQueueLeasePreferencePurgatoryError(t *testing.T) {
 	blockTransferTarget.Store(false)
 	testutils.SucceedsSoon(t, func() error {
 		return checkLeaseCount(nextPreferredNode, numRanges)
+	})
+}
+
+// TestReplicateQueueDecommissionScannerDisabled asserts that decommissioning
+// replicas are replaced by the replicate queue despite the scanner being
+// disabled, when EnqueueProblemRangeInReplicateQueueInterval is set to a
+// non-zero value (enabled).
+func TestReplicateQueueDecommissionScannerDisabled(t *testing.T) {
+	defer leaktest.AfterTest(t)()
+	defer log.Scope(t).Close(t)
+
+	// Enable enqueueing of problem ranges in the replicate queue at most once
+	// per second. We disable the scanner to ensure that the replicate queue
+	// doesn't rely on the scanner to process decommissioning replicas.
+	settings := cluster.MakeTestingClusterSettings()
+	kvserver.EnqueueProblemRangeInReplicateQueueInterval.Override(
+		context.Background(), &settings.SV, 1*time.Second)
+
+	ctx := context.Background()
+	tc := testcluster.StartTestCluster(t, 5, base.TestClusterArgs{
+		ReplicationMode: base.ReplicationManual,
+		ServerArgs: base.TestServerArgs{
+			Settings:          settings,
+			DefaultTestTenant: base.TestIsSpecificToStorageLayerAndNeedsASystemTenant,
+			// Disable the scanner.
+			ScanInterval:    100 * time.Hour,
+			ScanMinIdleTime: 100 * time.Hour,
+			ScanMaxIdleTime: 100 * time.Hour,
+		},
+	})
+	defer tc.Stopper().Stop(ctx)
+
+	decommissioningSrvIdx := 4
+	decommissioningSrv := tc.Server(decommissioningSrvIdx)
+	require.NoError(t, decommissioningSrv.Decommission(ctx,
+		livenesspb.MembershipStatus_DECOMMISSIONING,
+		[]roachpb.NodeID{tc.Server(decommissioningSrvIdx).NodeID()}))
+
+	// Ensure that the node is marked as decommissioning on every other node.
+	// Once this is set, we also know that the onDecommissioning callback has
+	// fired, which enqueues every range which is on the decommissioning node.
+	testutils.SucceedsSoon(t, func() error {
+		for i := 0; i < tc.NumServers(); i++ {
+			srv := tc.Server(i)
+			if _, exists := srv.DecommissioningNodeMap()[decommissioningSrv.NodeID()]; !exists {
+				return errors.Newf("node %d not detected to be decommissioning", decommissioningSrv.NodeID())
+			}
+		}
+		return nil
+	})
+
+	// Now add a replica to the decommissioning node and then enable the
+	// replicate queue. We expect that the replica will be removed after the
+	// decommissioning replica is noticed via maybeEnqueueProblemRange.
+	scratchKey := tc.ScratchRange(t)
+	tc.AddVotersOrFatal(t, scratchKey, tc.Target(decommissioningSrvIdx))
+	tc.ToggleReplicateQueues(true /* active */)
+	testutils.SucceedsSoon(t, func() error {
+		var descs []*roachpb.RangeDescriptor
+		tc.GetFirstStoreFromServer(t, decommissioningSrvIdx).VisitReplicas(func(r *kvserver.Replica) bool {
+			descs = append(descs, r.Desc())
+			return true
+		})
+		if len(descs) != 0 {
+			return errors.Errorf("expected no replicas, found %d: %v", len(descs), descs)
+		}
+		return nil
 	})
 }

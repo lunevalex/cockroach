@@ -12,7 +12,6 @@ go_library(
         "optype.go",
         "query_util.go",
         "schemachange.go",
-        "tracing.go",
         "type_resolver.go",
         "watch_dog.go",
         ":gen-optype-stringer",  # keep
@@ -22,8 +21,10 @@ go_library(
     deps = [
         "//pkg/clusterversion",
         "//pkg/roachpb",
+        "//pkg/security/username",
         "//pkg/sql/catalog/catpb",
         "//pkg/sql/catalog/colinfo",
+        "//pkg/sql/lexbase",
         "//pkg/sql/parser",
         "//pkg/sql/pgwire/pgcode",
         "//pkg/sql/pgwire/pgerror",
@@ -45,13 +46,6 @@ go_library(
         "@com_github_jackc_pgx_v5//pgxpool",
         "@com_github_lib_pq//oid",
         "@com_github_spf13_pflag//:pflag",
-        "@io_opentelemetry_go_otel//attribute",
-        "@io_opentelemetry_go_otel//codes",
-        "@io_opentelemetry_go_otel_exporters_otlp_otlptrace//:otlptrace",
-        "@io_opentelemetry_go_otel_sdk//trace",
-        "@io_opentelemetry_go_otel_trace//:trace",
-        "@io_opentelemetry_go_proto_otlp//collector/trace/v1:trace",
-        "@io_opentelemetry_go_proto_otlp//trace/v1:trace",
         "@org_golang_x_exp//slices",
     ],
 )
@@ -67,10 +61,6 @@ go_test(
     srcs = ["generate_test.go"],
     args = ["-test.timeout=295s"],
     embed = [":schemachange"],
-    exec_properties = select({
-        "//build/toolchains:is_heavy": {"Pool": "heavy"},
-        "//conditions:default": {"Pool": "default"},
-    }),
     deps = [
         "//pkg/sql/pgwire/pgcode",
         "//pkg/sql/sem/tree",

@@ -1,12 +1,7 @@
 // Copyright 2020 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package gcjob
 
@@ -29,6 +24,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/descs"
 	"github.com/cockroachdb/cockroach/pkg/sql/isql"
 	"github.com/cockroachdb/cockroach/pkg/sql/sqlerrors"
+	"github.com/cockroachdb/cockroach/pkg/storage"
 	"github.com/cockroachdb/cockroach/pkg/util/grpcutil"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/cockroach/pkg/util/timeutil"
@@ -315,7 +311,7 @@ func unsplitRangesForIndexes(
 func maybeUnsplitRanges(
 	ctx context.Context,
 	execCfg *sql.ExecutorConfig,
-	job *jobs.Job,
+	jobID jobspb.JobID,
 	details *jobspb.SchemaChangeGCDetails,
 	progress *jobspb.SchemaChangeGCProgress,
 ) error {
@@ -336,7 +332,7 @@ func maybeUnsplitRanges(
 	}
 
 	progress.RangesUnsplitDone = true
-	persistProgress(ctx, execCfg, job, progress, runningStatusGC(progress))
+	persistProgress(ctx, execCfg, jobID, progress, runningStatusGC(progress))
 
 	return nil
 }
@@ -367,11 +363,11 @@ func (r schemaChangeGCResumer) Resume(ctx context.Context, execCtx interface{}) 
 			return err
 		}
 	}
-	details, progress, err := initDetailsAndProgress(ctx, &execCfg, r.job)
+	details, progress, err := initDetailsAndProgress(ctx, &execCfg, r.job.ID())
 	if err != nil {
 		return err
 	}
-	if err := maybeUnsplitRanges(ctx, &execCfg, r.job, details, progress); err != nil {
+	if err := maybeUnsplitRanges(ctx, &execCfg, r.job.ID(), details, progress); err != nil {
 		return err
 	}
 
@@ -387,7 +383,7 @@ func (r schemaChangeGCResumer) deleteDataAndWaitForGC(
 	details *jobspb.SchemaChangeGCDetails,
 	progress *jobspb.SchemaChangeGCProgress,
 ) error {
-	persistProgress(ctx, &execCfg, r.job, progress,
+	persistProgress(ctx, &execCfg, r.job.ID(), progress,
 		sql.RunningStatusDeletingData)
 	if fn := execCfg.GCJobTestingKnobs.RunBeforePerformGC; fn != nil {
 		if err := fn(r.job.ID()); err != nil {
@@ -397,7 +393,7 @@ func (r schemaChangeGCResumer) deleteDataAndWaitForGC(
 	if err := deleteData(ctx, &execCfg, details, progress); err != nil {
 		return err
 	}
-	persistProgress(ctx, &execCfg, r.job, progress, sql.RunningStatusWaitingForMVCCGC)
+	persistProgress(ctx, &execCfg, r.job.ID(), progress, sql.RunningStatusWaitingForMVCCGC)
 	r.job.MarkIdle(true)
 	return waitForGC(ctx, &execCfg, details, progress)
 }
@@ -528,7 +524,7 @@ func (r schemaChangeGCResumer) legacyWaitAndClearTableData(
 		if details.Tenant == nil {
 			remainingTables := getAllTablesWaitingForGC(details, progress)
 			expired, earliestDeadline = refreshTables(
-				ctx, &execCfg, remainingTables, tableDropTimes, indexDropTimes, r.job, progress,
+				ctx, &execCfg, remainingTables, tableDropTimes, indexDropTimes, r.job.ID(), progress,
 			)
 		} else {
 			var err error
@@ -541,7 +537,7 @@ func (r schemaChangeGCResumer) legacyWaitAndClearTableData(
 
 		if expired {
 			// Some elements have been marked as DELETING to save the progress.
-			persistProgress(ctx, &execCfg, r.job, progress, runningStatusGC(progress))
+			persistProgress(ctx, &execCfg, r.job.ID(), progress, runningStatusGC(progress))
 			if fn := execCfg.GCJobTestingKnobs.RunBeforePerformGC; fn != nil {
 				if err := fn(r.job.ID()); err != nil {
 					return err
@@ -550,7 +546,7 @@ func (r schemaChangeGCResumer) legacyWaitAndClearTableData(
 			if err := performGC(ctx, &execCfg, details, progress); err != nil {
 				return err
 			}
-			persistProgress(ctx, &execCfg, r.job, progress, sql.RunningStatusWaitingGC)
+			persistProgress(ctx, &execCfg, r.job.ID(), progress, sql.RunningStatusWaitingGC)
 
 			// Trigger immediate re-run in case of more expired elements.
 			timerDuration = 0
@@ -574,7 +570,10 @@ func shouldUseDelRange(
 	knobs *sql.GCJobTestingKnobs,
 ) bool {
 	// TODO(ajwerner): Adopt the DeleteRange protocol for tenant GC.
-	return details.Tenant == nil
+	return details.Tenant == nil &&
+		(storage.CanUseMVCCRangeTombstones(ctx, s) ||
+			// Allow this testing knob to override the storage setting, for convenience.
+			knobs.SkipWaitingForMVCCGC)
 }
 
 // waitForWork waits until there is work to do given the gossipUpDateC, the

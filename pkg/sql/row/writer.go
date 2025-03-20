@@ -1,12 +1,7 @@
 // Copyright 2015 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package row
 
@@ -139,15 +134,25 @@ func prepareInsertOrUpdateBatch(
 			if !ok {
 				continue
 			}
+
+			var marshaled roachpb.Value
+			var err error
+			typ := fetchedCols[idx].GetType()
+
 			// Skip any values with a default ID not stored in the primary index,
 			// which can happen if we are adding new columns.
-			if skip := helper.SkipColumnNotInPrimaryIndexValue(family.DefaultColumnID, values[idx]); skip {
-				continue
-			}
-			typ := fetchedCols[idx].GetType()
-			marshaled, err := valueside.MarshalLegacy(typ, values[idx])
-			if err != nil {
-				return nil, err
+			skip, couldBeComposite := helper.SkipColumnNotInPrimaryIndexValue(family.DefaultColumnID, values[idx])
+			if skip {
+				// If the column could be composite, there could be a previous KV, so we
+				// still need to issue a Delete.
+				if !couldBeComposite {
+					continue
+				}
+			} else {
+				marshaled, err = valueside.MarshalLegacy(typ, values[idx])
+				if err != nil {
+					return nil, err
+				}
 			}
 
 			if marshaled.RawBytes == nil {
@@ -183,7 +188,7 @@ func prepareInsertOrUpdateBatch(
 				continue
 			}
 
-			if skip := helper.SkipColumnNotInPrimaryIndexValue(colID, values[idx]); skip {
+			if skip, _ := helper.SkipColumnNotInPrimaryIndexValue(colID, values[idx]); skip {
 				continue
 			}
 

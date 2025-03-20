@@ -1,12 +1,7 @@
 // Copyright 2017 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package batcheval_test
 
@@ -35,9 +30,9 @@ import (
 func hashRange(t *testing.T, reader storage.Reader, start, end roachpb.Key) []byte {
 	t.Helper()
 	h := sha256.New()
-	require.NoError(t, reader.MVCCIterate(context.Background(), start, end,
-		storage.MVCCKeyAndIntentsIterKind, storage.IterKeyTypePointsOnly,
-		storage.UnknownReadCategory, func(kv storage.MVCCKeyValue, _ storage.MVCCRangeKeyStack) error {
+	require.NoError(t, reader.MVCCIterate(
+		start, end, storage.MVCCKeyAndIntentsIterKind, storage.IterKeyTypePointsOnly,
+		func(kv storage.MVCCKeyValue, _ storage.MVCCRangeKeyStack) error {
 			h.Write(kv.Key.Key)
 			h.Write(kv.Value)
 			return nil
@@ -117,7 +112,7 @@ func TestCmdRevertRange(t *testing.T) {
 	cArgs := batcheval.CommandArgs{Header: kvpb.Header{RangeID: desc.RangeID, Timestamp: tsReq, MaxSpanRequestKeys: 2}}
 	evalCtx := &batcheval.MockEvalCtx{Desc: &desc, Clock: hlc.NewClockForTesting(nil), Stats: stats}
 	cArgs.EvalCtx = evalCtx.EvalContext()
-	afterStats, err := storage.ComputeStats(ctx, eng, keys.LocalMax, keys.MaxKey, 0)
+	afterStats, err := storage.ComputeStats(eng, keys.LocalMax, keys.MaxKey, 0)
 	require.NoError(t, err)
 	for _, tc := range []struct {
 		name     string
@@ -172,7 +167,7 @@ func TestCmdRevertRange(t *testing.T) {
 			}
 			evalStats := afterStats
 			evalStats.Add(*cArgs.Stats)
-			realStats, err := storage.ComputeStats(ctx, batch, keys.LocalMax, keys.MaxKey, evalStats.LastUpdateNanos)
+			realStats, err := storage.ComputeStats(batch, keys.LocalMax, keys.MaxKey, evalStats.LastUpdateNanos)
 			require.NoError(t, err)
 			require.Equal(t, realStats, evalStats)
 		})

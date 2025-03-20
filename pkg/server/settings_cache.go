@@ -1,12 +1,7 @@
 // Copyright 2020 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package server
 
@@ -124,11 +119,13 @@ func storeCachedSettingsKVs(ctx context.Context, eng storage.Engine, kvs []roach
 }
 
 // loadCachedSettingsKVs loads locally stored cached settings.
-func loadCachedSettingsKVs(ctx context.Context, eng storage.Engine) ([]roachpb.KeyValue, error) {
+func loadCachedSettingsKVs(_ context.Context, eng storage.Engine) ([]roachpb.KeyValue, error) {
 	var settingsKVs []roachpb.KeyValue
-	if err := eng.MVCCIterate(ctx, keys.LocalStoreCachedSettingsKeyMin,
-		keys.LocalStoreCachedSettingsKeyMax, storage.MVCCKeyAndIntentsIterKind,
-		storage.IterKeyTypePointsOnly, storage.UnknownReadCategory,
+	if err := eng.MVCCIterate(
+		keys.LocalStoreCachedSettingsKeyMin,
+		keys.LocalStoreCachedSettingsKeyMax,
+		storage.MVCCKeyAndIntentsIterKind,
+		storage.IterKeyTypePointsOnly,
 		func(kv storage.MVCCKeyValue, _ storage.MVCCRangeKeyStack) error {
 			settingKey, err := keys.DecodeStoreCachedSettingsKey(kv.Key.Key)
 			if err != nil {
@@ -143,7 +140,8 @@ func loadCachedSettingsKVs(ctx context.Context, eng storage.Engine) ([]roachpb.K
 				Value: roachpb.Value{RawBytes: meta.RawBytes},
 			})
 			return nil
-		}); err != nil {
+		},
+	); err != nil {
 		return nil, err
 	}
 	return settingsKVs, nil

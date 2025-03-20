@@ -1,12 +1,7 @@
 // Copyright 2022 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package scdecomp
 
@@ -16,7 +11,7 @@ import (
 	"reflect"
 
 	"github.com/cockroachdb/cockroach/pkg/clusterversion"
-	"github.com/cockroachdb/cockroach/pkg/geo/geopb"
+	"github.com/cockroachdb/cockroach/pkg/geo/geoindex"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/catenumpb"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/catpb"
@@ -588,7 +583,7 @@ func (w *walkCtx) walkIndex(tbl catalog.TableDescriptor, idx catalog.Index) {
 			Invisibility:        idx.GetInvisibility(),
 		}
 		if geoConfig := idx.GetGeoConfig(); !geoConfig.IsEmpty() {
-			index.GeoConfig = protoutil.Clone(&geoConfig).(*geopb.Config)
+			index.GeoConfig = protoutil.Clone(&geoConfig).(*geoindex.Config)
 		}
 		for i, c := range cpy.KeyColumnIDs {
 			invertedKind := catpb.InvertedIndexColumnKind_DEFAULT
@@ -641,7 +636,15 @@ func (w *walkCtx) walkIndex(tbl catalog.TableDescriptor, idx catalog.Index) {
 			if idx.IsPartial() {
 				pp, err := w.newExpression(idx.GetPredicate())
 				onErrPanic(err)
-				sec.EmbeddedExpr = pp
+				if w.clusterVersion.IsActive(clusterversion.V23_1_SchemaChangerDeprecatedIndexPredicates) {
+					sec.EmbeddedExpr = pp
+				} else {
+					w.ev(scpb.Status_PUBLIC, &scpb.SecondaryIndexPartial{
+						TableID:    index.TableID,
+						IndexID:    index.IndexID,
+						Expression: *pp,
+					})
+				}
 			}
 			w.ev(idxStatus, sec)
 		}

@@ -1,38 +1,23 @@
 // Copyright 2021 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package cloud_test
 
 import (
-	"context"
-	"net/url"
 	"testing"
 
 	"github.com/cockroachdb/cockroach/pkg/cloud"
-	"github.com/cockroachdb/cockroach/pkg/cloud/cloudpb"
-	"github.com/cockroachdb/errors"
 	"github.com/stretchr/testify/require"
 )
 
 func TestSanitizeExternalStorageURI(t *testing.T) {
 	// Register a scheme to test scheme-specific redaction.
-	cloud.RegisterExternalStorageProvider(0, cloud.RegisteredProvider{
-		ParseFn: func(cloud.ExternalStorageURIContext, *url.URL) (cloudpb.ExternalStorage, error) {
-			return cloudpb.ExternalStorage{}, errors.Newf("unimplemented")
-		},
-		ConstructFn: func(context.Context, cloud.ExternalStorageContext, cloudpb.ExternalStorage) (cloud.ExternalStorage, error) {
-			return nil, errors.Newf("unimplemented")
-		},
-		RedactedParams: cloud.RedactedParams("TEST_PARAM"),
-		Schemes:        []string{"test-scheme"},
-	})
+	cloud.RegisterExternalStorageProvider(0, nil, nil,
+		cloud.RedactedParams("TEST_PARAM"),
+		"test-scheme",
+	)
 	testCases := []struct {
 		name             string
 		inputURI         string

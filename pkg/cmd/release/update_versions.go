@@ -1,12 +1,7 @@
 // Copyright 2019 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package main
 
@@ -107,7 +102,7 @@ func (r prRepo) name() string {
 }
 
 func (r prRepo) checkoutDir() string {
-	return fmt.Sprintf("%s_%s_%s", r.owner, r.repo, r.branch)
+	return fmt.Sprintf("%s_%s_%s", r.owner, r.repo, r.prBranch)
 }
 
 func (r prRepo) pushURL() string {
@@ -128,7 +123,7 @@ func (r prRepo) clone() error {
 }
 
 func (r prRepo) checkout() error {
-	cmd := exec.Command("git", "checkout", "-b", r.prBranch, remoteOrigin+"/"+r.branch)
+	cmd := exec.Command("git", "checkout", "-b", r.prBranch, "origin/"+r.branch)
 	cmd.Dir = r.checkoutDir()
 	out, err := cmd.CombinedOutput()
 	if err != nil {
@@ -205,8 +200,15 @@ func (r prRepo) push() error {
 }
 
 func (r prRepo) createPullRequest() (string, error) {
-	parts := []string{"gh", "pr", "create", "--base", r.branch, "--fill", "--head",
-		fmt.Sprintf("%s:%s", r.githubUsername, r.prBranch)}
+	parts := []string{
+		"gh", "pr", "create", "--base", r.branch, "--head", fmt.Sprintf("%s:%s", r.githubUsername, r.prBranch),
+	}
+	title, body, _ := strings.Cut(r.commitMessage, "\n")
+	if title == "" {
+		parts = append(parts, "--fill")
+	} else {
+		parts = append(parts, "--title", title, "--body", body)
+	}
 	cmd := exec.Command(parts[0], parts[1:]...)
 	log.Printf("creating PR by running `%s`", strings.Join(parts, " "))
 	cmd.Dir = r.checkoutDir()
@@ -401,6 +403,11 @@ func generateRepoList(
 	log.Printf("will bump version in the following branches: %s", strings.Join(maybeVersionBumpBranches, ", "))
 
 	for _, branch := range maybeVersionBumpBranches {
+		// skip extraordinary and baking branches
+		if strings.HasPrefix(branch, "staging-") || strings.HasSuffix(branch, "-rc") {
+			log.Printf("not bumping version on staging/backing branch %s", branch)
+			continue
+		}
 		ok, err := fileExistsInGit(branch, versionFile)
 		if err != nil {
 			return []prRepo{}, fmt.Errorf("checking version file: %w", err)
@@ -409,7 +416,7 @@ func generateRepoList(
 			log.Printf("skipping version bump on the %s branch, because %s does not exist on that branch", branch, versionFile)
 			continue
 		}
-		curVersion, err := fileContent(remoteOrigin+"/"+branch, versionFile)
+		curVersion, err := fileContent(branch, versionFile)
 		if err != nil {
 			return []prRepo{}, fmt.Errorf("reading git file content: %w", err)
 		}
@@ -481,6 +488,44 @@ func generateRepoList(
 				return updateOrchestration(gitDir, releasedVersion.Original())
 			},
 		})
+	}
+	// 5. Merge baking branch back to the release branch.
+	maybeBakingbranches := []string{
+		fmt.Sprintf("release-%s-rc", releasedVersion.String()), // e.g. release-23.1.17-rc
+		fmt.Sprintf("staging-%s", releasedVersion.Original()),  // e.g. staging-v23.1.17
+	}
+	var bakingBranches []string
+	for _, branch := range maybeBakingbranches {
+		maybeMergeBranches, err := listRemoteBranches(branch)
+		if err != nil {
+			return []prRepo{}, fmt.Errorf("listing merge branch %s: %w", branch, err)
+		}
+		bakingBranches = append(bakingBranches, maybeMergeBranches...)
+	}
+	if len(bakingBranches) > 1 {
+		return []prRepo{}, fmt.Errorf("too many baking branches: %s", strings.Join(maybeBakingbranches, ", "))
+	}
+	for _, mergeBranch := range bakingBranches {
+		baseBranch := fmt.Sprintf("release-%d.%d", releasedVersion.Major(), releasedVersion.Minor())
+		repo := prRepo{
+			owner:          owner,
+			repo:           prefix + "cockroach",
+			branch:         baseBranch,
+			prBranch:       fmt.Sprintf("merge-%s-to-%s-%s", mergeBranch, baseBranch, randomString(4)),
+			githubUsername: "cockroach-teamcity",
+			commitMessage:  generateCommitMessage(fmt.Sprintf("merge %s to %s", mergeBranch, baseBranch), releasedVersion, nextVersion),
+			fn: func(gitDir string) error {
+				cmd := exec.Command("git", "merge", "-s", "ours", "--no-commit", "origin/"+mergeBranch)
+				cmd.Dir = gitDir
+				out, err := cmd.CombinedOutput()
+				if err != nil {
+					return fmt.Errorf("failed running '%s' with message '%s': %w", cmd.String(), string(out), err)
+				}
+				log.Printf("ran '%s': %s\n", cmd.String(), string(out))
+				return nil
+			},
+		}
+		reposToWorkOn = append(reposToWorkOn, repo)
 	}
 	return reposToWorkOn, nil
 }

@@ -1,12 +1,7 @@
 // Copyright 2017 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package batcheval
 
@@ -145,9 +140,6 @@ type EvalContext interface {
 	// calling RevokeLease or WatchForMerge) to freeze further progression of the
 	// closed timestamp before calling this method.
 	GetCurrentClosedTimestamp(ctx context.Context) hlc.Timestamp
-
-	// AdmissionHeader returns the AdmissionHeader specified for the batch.
-	AdmissionHeader() kvpb.AdmissionHeader
 
 	// Release returns the memory allocated by the EvalContext implementation to a
 	// sync.Pool.
@@ -320,9 +312,4 @@ func (m *mockEvalCtxImpl) GetEngineCapacity() (roachpb.StoreCapacity, error) {
 func (m *mockEvalCtxImpl) GetApproximateDiskBytes(from, to roachpb.Key) (uint64, error) {
 	return m.ApproxDiskBytes, nil
 }
-
-func (m *mockEvalCtxImpl) AdmissionHeader() kvpb.AdmissionHeader {
-	return kvpb.AdmissionHeader{}
-}
-
 func (m *mockEvalCtxImpl) Release() {}

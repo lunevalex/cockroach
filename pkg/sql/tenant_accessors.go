@@ -1,18 +1,14 @@
 // Copyright 2023 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package sql
 
 import (
 	"context"
 
+	"github.com/cockroachdb/cockroach/pkg/clusterversion"
 	"github.com/cockroachdb/cockroach/pkg/keys"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvpb"
 	"github.com/cockroachdb/cockroach/pkg/multitenant/mtinfo"
@@ -64,6 +60,11 @@ func GetAllNonDropTenantIDs(
 ) ([]roachpb.TenantID, error) {
 	q := `SELECT id FROM system.tenants WHERE data_state != $1 ORDER BY id`
 	var arg interface{} = mtinfopb.DataStateDrop
+	if !settings.Version.IsActive(ctx, clusterversion.V23_1TenantNamesStateAndServiceMode) {
+		q = `SELECT id FROM system.tenants
+WHERE crdb_internal.pb_to_json('cockroach.multitenant.ProtoInfo', info, true)->>'deprecatedDataState' != $1 ORDER BY id`
+		arg = "DROP"
+	}
 	rows, err := txn.QueryBufferedEx(ctx, "get-tenant-ids", txn.KV(), sessiondata.NodeUserSessionDataOverride, q, arg)
 	if err != nil {
 		return nil, err
@@ -88,6 +89,10 @@ func GetAllNonDropTenantIDs(
 func GetTenantRecordByName(
 	ctx context.Context, settings *cluster.Settings, txn isql.Txn, tenantName roachpb.TenantName,
 ) (*mtinfopb.TenantInfo, error) {
+	if !settings.Version.IsActive(ctx, clusterversion.V23_1TenantNamesStateAndServiceMode) {
+		return nil, errors.Newf("tenant names not supported until upgrade to %s or higher is completed",
+			clusterversion.V23_1TenantNamesStateAndServiceMode.String())
+	}
 	row, err := txn.QueryRowEx(
 		ctx, "get-tenant", txn.KV(), sessiondata.NodeUserSessionDataOverride,
 		`SELECT id, info, name, data_state, service_mode FROM system.tenants WHERE name = $1`, tenantName,
@@ -106,6 +111,9 @@ func GetTenantRecordByID(
 	ctx context.Context, txn isql.Txn, tenID roachpb.TenantID, settings *cluster.Settings,
 ) (*mtinfopb.TenantInfo, error) {
 	q := `SELECT id, info, name, data_state, service_mode FROM system.tenants WHERE id = $1`
+	if !settings.Version.IsActive(ctx, clusterversion.V23_1TenantNamesStateAndServiceMode) {
+		q = `SELECT id, info, NULL, NULL, NULL FROM system.tenants WHERE id = $1`
+	}
 	row, err := txn.QueryRowEx(
 		ctx, "get-tenant", txn.KV(), sessiondata.NodeUserSessionDataOverride,
 		q, tenID.ToUint64(),

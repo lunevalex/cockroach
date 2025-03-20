@@ -1,12 +1,7 @@
 // Copyright 2019 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package httpsink
 
@@ -30,9 +25,12 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/retry"
 	"github.com/cockroachdb/cockroach/pkg/util/timeutil"
 	"github.com/cockroachdb/errors"
+	"github.com/cockroachdb/redact"
 )
 
-func parseHTTPURL(uri *url.URL) (cloudpb.ExternalStorage, error) {
+func parseHTTPURL(
+	_ cloud.ExternalStorageURIContext, uri *url.URL,
+) (cloudpb.ExternalStorage, error) {
 	conf := cloudpb.ExternalStorage{}
 	conf.Provider = cloudpb.ExternalStorageProvider_http
 	conf.HttpPath.BaseUri = uri.String()
@@ -59,7 +57,7 @@ func (e *retryableHTTPError) Error() string {
 
 // MakeHTTPStorage returns an instance of HTTPStorage ExternalStorage.
 func MakeHTTPStorage(
-	ctx context.Context, args cloud.EarlyBootExternalStorageContext, dest cloudpb.ExternalStorage,
+	ctx context.Context, args cloud.ExternalStorageContext, dest cloudpb.ExternalStorage,
 ) (cloud.ExternalStorage, error) {
 	telemetry.Count("external-io.http")
 	if args.IOConf.DisableHTTP {
@@ -70,7 +68,8 @@ func MakeHTTPStorage(
 		return nil, errors.Errorf("HTTP storage requested but prefix path not provided")
 	}
 
-	client, err := cloud.MakeHTTPClient(args.Settings)
+	clientName := args.ExternalStorageOptions().ClientName
+	client, err := cloud.MakeHTTPClient(args.Settings, args.MetricsRecorder, "http", base, clientName)
 	if err != nil {
 		return nil, err
 	}
@@ -178,7 +177,7 @@ func (h *httpStorage) List(_ context.Context, _, _ string, _ cloud.ListingFn) er
 }
 
 func (h *httpStorage) Delete(ctx context.Context, basename string) error {
-	return timeutil.RunWithTimeout(ctx, fmt.Sprintf("DELETE %s", basename),
+	return timeutil.RunWithTimeout(ctx, redact.Sprintf("DELETE %s", basename),
 		cloud.Timeout.Get(&h.settings.SV), func(ctx context.Context) error {
 			_, err := h.reqNoBody(ctx, "DELETE", basename, nil)
 			return err
@@ -187,7 +186,7 @@ func (h *httpStorage) Delete(ctx context.Context, basename string) error {
 
 func (h *httpStorage) Size(ctx context.Context, basename string) (int64, error) {
 	var resp *http.Response
-	if err := timeutil.RunWithTimeout(ctx, fmt.Sprintf("HEAD %s", basename),
+	if err := timeutil.RunWithTimeout(ctx, redact.Sprintf("HEAD %s", basename),
 		cloud.Timeout.Get(&h.settings.SV), func(ctx context.Context) error {
 			var err error
 			resp, err = h.reqNoBody(ctx, "HEAD", basename, nil)
@@ -274,10 +273,5 @@ func (h *httpStorage) req(
 
 func init() {
 	cloud.RegisterExternalStorageProvider(cloudpb.ExternalStorageProvider_http,
-		cloud.RegisteredProvider{
-			EarlyBootParseFn:     parseHTTPURL,
-			EarlyBootConstructFn: MakeHTTPStorage,
-			RedactedParams:       cloud.RedactedParams(),
-			Schemes:              []string{"http", "https"},
-		})
+		parseHTTPURL, MakeHTTPStorage, cloud.RedactedParams(), "http", "https")
 }

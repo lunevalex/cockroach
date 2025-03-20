@@ -1,10 +1,7 @@
 // Copyright 2022 The Cockroach Authors.
 //
-// Licensed as a CockroachDB Enterprise file under the Cockroach Community
-// License (the "License"); you may not use this file except in compliance with
-// the License. You may obtain a copy of the License at
-//
-//     https://github.com/cockroachdb/cockroach/blob/master/licenses/CCL.txt
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package replicationutils
 
@@ -53,8 +50,8 @@ func TestScanSST(t *testing.T) {
 	require.True(t, roachpb.Key("ca").Compare(roachpb.Key("c")) > 0)
 
 	cs := cluster.MakeTestingClusterSettingsWithVersions(
-		clusterversion.Latest.Version(),
-		clusterversion.MinSupported.Version(),
+		clusterversion.TestingBinaryVersion,
+		clusterversion.TestingBinaryMinSupportedVersion,
 		true, /* initializeVersion */
 	)
 	data, start, end := storageutils.MakeSST(t, cs, []interface{}{

@@ -1,10 +1,7 @@
 // Copyright 2020 The Cockroach Authors.
 //
-// Licensed as a CockroachDB Enterprise file under the Cockroach Community
-// License (the "License"); you may not use this file except in compliance with
-// the License. You may obtain a copy of the License at
-//
-//     https://github.com/cockroachdb/cockroach/blob/master/licenses/CCL.txt
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package streamingest
 
@@ -56,7 +53,7 @@ type streamIngestionFrontier struct {
 
 	// frontier contains the current resolved timestamp high-water for the tracked
 	// span set.
-	frontier span.Frontier
+	frontier *span.Frontier
 
 	// metrics are monitoring all running ingestion jobs.
 	metrics *Metrics
@@ -288,23 +285,23 @@ func (sf *streamIngestionFrontier) Next() (
 		row, meta := sf.input.Next()
 		if meta != nil {
 			if meta.Err != nil {
-				sf.MoveToDraining(nil /* err */)
+				sf.MoveToDrainingAndLogError(nil /* err */)
 			}
 			return nil, meta
 		}
 		if row == nil {
-			sf.MoveToDraining(nil /* err */)
+			sf.MoveToDrainingAndLogError(nil /* err */)
 			break
 		}
 
 		if err := sf.noteResolvedTimestamps(row[0]); err != nil {
-			sf.MoveToDraining(err)
+			sf.MoveToDrainingAndLogError(err)
 			break
 		}
 
 		if err := sf.maybeUpdateProgress(); err != nil {
 			log.Errorf(sf.Ctx(), "failed to update progress: %+v", err)
-			sf.MoveToDraining(err)
+			sf.MoveToDrainingAndLogError(err)
 			break
 		}
 
@@ -313,14 +310,14 @@ func (sf *streamIngestionFrontier) Next() (
 		}
 
 		if err := sf.maybeCheckForLaggingNodes(); err != nil {
-			sf.MoveToDraining(err)
+			sf.MoveToDrainingAndLogError(err)
 			break
 		}
 
 		// Send back a row to the job so that it can update the progress.
 		select {
 		case <-sf.Ctx().Done():
-			sf.MoveToDraining(sf.Ctx().Err())
+			sf.MoveToDrainingAndLogError(sf.Ctx().Err())
 			return nil, sf.DrainHelper()
 			// Send the latest persisted replicated time in the heartbeat to the source cluster
 			// as even with retries we will never request an earlier row than it, and
@@ -333,16 +330,19 @@ func (sf *streamIngestionFrontier) Next() (
 			if err != nil {
 				log.Errorf(sf.Ctx(), "heartbeat sender exited with error: %s", err)
 			}
-			sf.MoveToDraining(err)
+			sf.MoveToDrainingAndLogError(err)
 			return nil, sf.DrainHelper()
 		}
 	}
 	return nil, sf.DrainHelper()
 }
 
-func (sf *streamIngestionFrontier) close() {
-	defer sf.frontier.Release()
+func (sf *streamIngestionFrontier) MoveToDrainingAndLogError(err error) {
+	log.Infof(sf.Ctx(), "gracefully draining with error %s", err)
+	sf.MoveToDraining(err)
+}
 
+func (sf *streamIngestionFrontier) close() {
 	if err := sf.heartbeatSender.stop(); err != nil {
 		log.Errorf(sf.Ctx(), "heartbeat sender exited with error: %s", err)
 	}
@@ -426,7 +426,7 @@ func (sf *streamIngestionFrontier) maybeUpdateProgress() error {
 
 	sf.lastPartitionUpdate = timeutil.Now()
 	log.VInfof(ctx, 2, "persisting replicated time of %s", replicatedTime)
-	if err := registry.UpdateJobWithTxn(ctx, jobID, nil /* txn */, func(
+	if err := registry.UpdateJobWithTxn(ctx, jobID, nil, false, func(
 		txn isql.Txn, md jobs.JobMetadata, ju *jobs.JobUpdater,
 	) error {
 		if err := md.CheckRunningOrReverting(); err != nil {

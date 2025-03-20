@@ -15,11 +15,8 @@ go_library(
 go_test(
     name = "release_test",
     srcs = ["releases_test.go"],
+    args = ["-test.timeout=295s"],
     embed = [":release"],
-    exec_properties = select({
-        "//build/toolchains:is_heavy": {"Pool": "heavy"},
-        "//conditions:default": {"Pool": "default"},
-    }),
     deps = [
         "//pkg/util/version",
         "@com_github_stretchr_testify//require",

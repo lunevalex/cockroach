@@ -1,12 +1,7 @@
 // Copyright 2018 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package tests
 
@@ -63,7 +58,7 @@ func registerNIndexes(r registry.Registry, secondaryIndexes int) {
 			m.Go(func(ctx context.Context) error {
 				secondary := " --secondary-indexes=" + strconv.Itoa(secondaryIndexes)
 				initCmd := "./workload init indexes" + secondary + " {pgurl:1}"
-				c.Run(ctx, option.WithNodes(loadNode), initCmd)
+				c.Run(ctx, loadNode, initCmd)
 
 				// Set lease preferences so that all leases for the table are
 				// located in the availability zone with the load generator.
@@ -136,7 +131,7 @@ func registerNIndexes(r registry.Registry, secondaryIndexes int) {
 				duration := " --duration=" + ifLocal(c, "10s", "10m")
 				runCmd := fmt.Sprintf("./workload run indexes --histograms="+t.PerfArtifactsDir()+"/stats.json"+
 					payload+concurrency+duration+" {pgurl%s}", gatewayNodes)
-				c.Run(ctx, option.WithNodes(loadNode), runCmd)
+				c.Run(ctx, loadNode, runCmd)
 				return nil
 			})
 			m.Wait()

@@ -1,12 +1,7 @@
 // Copyright 2020 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package xform
 
@@ -295,8 +290,9 @@ func (it *scanIndexIter) ForEachStartingAfter(ord int, f enumerateIndexFunc) {
 				isCovering = true
 
 				// Build a projection only for constant columns not in the
-				// index.
-				constCols = constCols.Difference(indexCols)
+				// index and produced by the original scan.
+				constCols.DifferenceWith(indexCols)
+				constCols.IntersectionWith(it.scanPrivate.Cols)
 				constProj = it.buildConstProjectionsFromPredicate(predFilters, constCols)
 			}
 		}
@@ -321,7 +317,12 @@ func (it *scanIndexIter) filtersImplyPredicate(
 	pred memo.FiltersExpr,
 ) (remainingFilters memo.FiltersExpr, ok bool) {
 	// Return the remaining filters if the filters imply the predicate.
-	if remainingFilters, ok = it.im.FiltersImplyPredicate(it.filters, pred); ok {
+	var computedCols map[opt.ColumnID]opt.ScalarExpr
+	if it.e.evalCtx.SessionData().OptimizerProveImplicationWithVirtualComputedColumns {
+		computedCols = it.tabMeta.ComputedCols
+	}
+	if remainingFilters, ok =
+		it.im.FiltersImplyPredicate(it.filters, pred, computedCols); ok {
 		return remainingFilters, true
 	}
 
@@ -333,7 +334,8 @@ func (it *scanIndexIter) filtersImplyPredicate(
 	// filters-implication are a subset of the remaining filters from
 	// originalFilters-implication.
 	if it.originalFilters != nil {
-		if remainingFilters, ok = it.im.FiltersImplyPredicate(it.originalFilters, pred); ok {
+		if remainingFilters, ok =
+			it.im.FiltersImplyPredicate(it.originalFilters, pred, computedCols); ok {
 			return remainingFilters, true
 		}
 	}

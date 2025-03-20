@@ -6,6 +6,7 @@ import (
   "github.com/cockroachdb/cockroach/pkg/sql/scanner"
   "github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
   "github.com/cockroachdb/cockroach/pkg/sql/sem/plpgsqltree"
+  "github.com/cockroachdb/cockroach/pkg/sql/types"
   "github.com/cockroachdb/errors"
   "github.com/cockroachdb/redact"
 )
@@ -331,7 +332,7 @@ func (u *plpgsqlSymUnion) sqlStatement() tree.Statement {
 
 %type <[]plpgsqltree.Statement> proc_sect
 %type <[]plpgsqltree.ElseIf> stmt_elsifs
-%type <[]plpgsqltree.Statement> stmt_else loop_body
+%type <[]plpgsqltree.Statement> stmt_else loop_body // TODO is this a list of statement?
 %type <plpgsqltree.Statement>  pl_block
 %type <plpgsqltree.Statement>	proc_stmt
 %type <plpgsqltree.Statement>	stmt_assign stmt_if stmt_loop stmt_while stmt_exit stmt_continue
@@ -354,8 +355,8 @@ func (u *plpgsqlSymUnion) sqlStatement() tree.Statement {
 %type <[]plpgsqltree.Statement> opt_case_else
 
 %type <bool>	getdiag_area_opt
-%type <plpgsqltree.GetDiagnosticsItemList>	getdiag_list
-%type <*plpgsqltree.GetDiagnosticsItem> getdiag_list_item
+%type <plpgsqltree.GetDiagnosticsItemList>	getdiag_list // TODO don't know what this is
+%type <*plpgsqltree.GetDiagnosticsItem> getdiag_list_item // TODO don't know what this is
 %type <int32> getdiag_item
 
 %type <*plpgsqltree.RaiseOption> option_expr
@@ -382,10 +383,6 @@ opt_semi:
 
 pl_block: opt_block_label decl_sect BEGIN proc_sect exception_sect END opt_label
   {
-    blockLabel, blockEndLabel := $1, $7
-    if err := checkLoopLabels(blockLabel, blockEndLabel); err != nil {
-      return setErr(plpgsqllex, err)
-    }
     $$.val = &plpgsqltree.Block{
       Label: $1,
       Decls: $2.statements(),
@@ -438,7 +435,7 @@ decl_stmt	: decl_statement
     // This is to allow useless extra "DECLARE" keywords in the declare section.
     $$.val = (plpgsqltree.Statement)(nil)
   }
-// TODO(drewk): turn this block on and throw useful error if user
+// TODO(chengxiong): turn this block on and throw useful error if user
 // tries to put the block label just before BEGIN instead of before
 // DECLARE.
 //| LESS_LESS any_identifier GREATER_GREATER
@@ -556,11 +553,20 @@ decl_datatype:
     if err != nil {
       return setErr(plpgsqllex, err)
     }
-    typ, err := plpgsqllex.(*lexer).GetTypeFromValidSQLSyntax(sqlStr)
+    // This is an inlined version of GetTypeFromValidSQLSyntax which doesn't
+    // return an assertion failure.
+    castExpr, err := plpgsqllex.(*lexer).ParseExpr("1::" + sqlStr)
     if err != nil {
-      return setErr(plpgsqllex, err)
+      return setErr(plpgsqllex, errors.New("unable to parse type of variable declaration"))
     }
-    $$.val = typ
+    switch t := castExpr.(type) {
+    case *tree.CollateExpr:
+      $$.val = types.MakeCollatedString(types.String, t.Locale)
+    case *tree.CastExpr:
+      $$.val = t.Type
+    default:
+      return setErr(plpgsqllex, errors.New("unable to parse type of variable declaration"))
+    }
   }
 ;
 
@@ -771,7 +777,7 @@ stmt_getdiag: GET getdiag_area_opt DIAGNOSTICS getdiag_list ';'
     IsStacked: $2.bool(),
     DiagItems: $4.getDiagnosticsItemList(),
   }
-  // TODO(drewk): Check information items are valid for area option.
+  // TODO(jane): Check information items are valid for area option.
   }
 ;
 
@@ -804,7 +810,7 @@ getdiag_list_item: IDENT assign_operator getdiag_item
     $$.val = &plpgsqltree.GetDiagnosticsItem{
       Kind : $3.getDiagnosticsKind(),
       TargetName: $1,
-      // TODO(drewk): set the target from $1.
+      // TODO(jane): set the target from $1.
     }
   }
 ;
@@ -836,14 +842,14 @@ getdiag_item: unreserved_keyword {
     case "returned_sqlstate":
       $$.val = plpgsqltree.GetDiagnosticsReturnedSQLState;
     default:
-      // TODO(drewk): Should this use an unimplemented error instead?
+      // TODO(jane): Should this use an unimplemented error instead?
       return setErr(plpgsqllex, errors.Newf("unrecognized GET DIAGNOSTICS item: %s", redact.Safe($1)))
   }
 }
 ;
 
 getdiag_target:
-// TODO(drewk): remove ident.
+// TODO(jane): remove ident.
 IDENT
   {
   }
@@ -992,7 +998,7 @@ stmt_for: opt_loop_label FOR for_control loop_body
 ;
 
 for_control: for_variable IN
-  // TODO(drewk) need to parse the sql expression here.
+  // TODO need to parse the sql expression here.
   {
     return unimplemented(plpgsqllex, "for loop")
   }
@@ -1053,6 +1059,12 @@ stmt_continue: CONTINUE opt_label opt_exitcond
     }
   }
 ;
+
+  // TODO handle variable names
+  // 1. verify if the first token is a variable (this means that we need to track variable scope during parsing)
+  // 2. if yes, check next token is ';'
+  // 3. if no, expecting a sql expression "read_sql_expression"
+  //    we can just read until a ';', then do the sql expression validation during compile time.
 
 stmt_return: RETURN return_variable ';'
   {

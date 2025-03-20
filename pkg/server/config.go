@@ -1,12 +1,7 @@
 // Copyright 2015 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package server
 
@@ -34,6 +29,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/rpc"
 	"github.com/cockroachdb/cockroach/pkg/server/autoconfig/acprovider"
+	"github.com/cockroachdb/cockroach/pkg/server/license"
 	"github.com/cockroachdb/cockroach/pkg/server/status"
 	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/catconstants"
@@ -41,6 +37,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/storage/enginepb"
 	"github.com/cockroachdb/cockroach/pkg/ts"
 	"github.com/cockroachdb/cockroach/pkg/util"
+	"github.com/cockroachdb/cockroach/pkg/util/cidr"
 	"github.com/cockroachdb/cockroach/pkg/util/envutil"
 	"github.com/cockroachdb/cockroach/pkg/util/humanizeutil"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
@@ -228,11 +225,8 @@ type BaseConfig struct {
 	Stores base.StoreSpecList
 
 	// SharedStorage is specified to enable disaggregated shared storage.
-	SharedStorage                    string
-	EarlyBootExternalStorageAccessor *cloud.EarlyBootExternalStorageAccessor
-	// ExternalIODirConfig is used to configure external storage
-	// access (http://, nodelocal://, etc)
-	ExternalIODirConfig base.ExternalIODirConfig
+	SharedStorage string
+	*cloud.ExternalStorageAccessor
 
 	// SecondaryCache is the size of the secondary cache used for each store, to
 	// store blocks from disaggregated shared storage. For use with SharedStorage.
@@ -262,11 +256,6 @@ type BaseConfig struct {
 	// route SQL connections instead.
 	DisableSQLListener bool
 
-	// ObsServiceAddr is the address of the OTLP sink to send events to, if any.
-	// These events are meant for the Observability Service, but they might pass
-	// through an OpenTelemetry Collector.
-	ObsServiceAddr string
-
 	// AutoConfigProvider provides auto-configuration tasks to apply on
 	// the cluster during server initialization.
 	AutoConfigProvider acprovider.Provider
@@ -276,6 +265,9 @@ type BaseConfig struct {
 	// listeners. This is set by in-memory tenants if the user has
 	// specified port range preferences.
 	RPCListenerFactory RPCListenerFactory
+
+	// CidrLookup is used to look up the tag name for a given IP address.
+	CidrLookup *cidr.Lookup
 }
 
 // MakeBaseConfig returns a BaseConfig with default values.
@@ -324,7 +316,8 @@ func (cfg *BaseConfig) SetDefaults(
 	cfg.AmbientCtx.AddLogTag("n", cfg.IDContainer)
 	cfg.Config.InitDefaults()
 	cfg.InitTestingKnobs()
-	cfg.EarlyBootExternalStorageAccessor = cloud.NewEarlyBootExternalStorageAccessor(st, cfg.ExternalIODirConfig)
+	cfg.CidrLookup = cidr.NewLookup(&st.SV)
+	cfg.ExternalStorageAccessor = cloud.NewExternalStorageAccessor()
 }
 
 // InitTestingKnobs sets up any testing knobs based on e.g. envvars.
@@ -506,6 +499,10 @@ type SQLConfig struct {
 	// ephemeral data when processing large queries.
 	TempStorageConfig base.TempStorageConfig
 
+	// ExternalIODirConfig is used to configure external storage
+	// access (http://, nodelocal://, etc)
+	ExternalIODirConfig base.ExternalIODirConfig
+
 	// MemoryPoolSize is the amount of memory in bytes that can be
 	// used by SQL clients to store row data in server RAM.
 	MemoryPoolSize int64
@@ -542,6 +539,9 @@ type SQLConfig struct {
 	// NodeMetricsRecorder is the node's MetricRecorder; the tenant's metrics will
 	// be recorded with it. Nil if this is not a shared-process tenant.
 	NodeMetricsRecorder *status.MetricsRecorder
+
+	// LicenseEnforcer is used to enforce license policies.
+	LicenseEnforcer *license.Enforcer
 }
 
 // LocalKVServerInfo is used to group information about the local KV server
@@ -575,6 +575,7 @@ func (sqlCfg *SQLConfig) SetDefaults(tempStorageCfg base.TempStorageConfig) {
 	sqlCfg.TableStatCacheSize = defaultSQLTableStatCacheSize
 	sqlCfg.QueryCacheSize = defaultSQLQueryCacheSize
 	sqlCfg.TempStorageConfig = tempStorageCfg
+	sqlCfg.LicenseEnforcer = license.NewEnforcer(nil)
 }
 
 // setOpenFileLimit sets the soft limit for open file descriptors to the hard
@@ -760,6 +761,7 @@ func (cfg *Config) CreateEngines(ctx context.Context) (Engines, error) {
 			storage.Attributes(spec.Attributes),
 			storage.EncryptionAtRest(spec.EncryptionOptions),
 			storage.If(storeKnobs.SmallEngineBlocks, storage.BlockSize(1)),
+			storage.BlockConcurrencyLimitDivisor(len(cfg.Stores.Specs)),
 		}
 		if len(storeKnobs.EngineKnobs) > 0 {
 			storageConfigOpts = append(storageConfigOpts, storeKnobs.EngineKnobs...)
@@ -799,9 +801,8 @@ func (cfg *Config) CreateEngines(ctx context.Context) (Engines, error) {
 				return Engines{}, errors.Errorf("%f%% of memory is only %s bytes, which is below the minimum requirement of %s",
 					spec.Size.Percent, humanizeutil.IBytes(sizeInBytes), humanizeutil.IBytes(base.MinimumStoreSize))
 			}
-			addCfgOpt(storage.MaxSize(sizeInBytes))
+			addCfgOpt(storage.MaxSizeBytes(sizeInBytes))
 			addCfgOpt(storage.CacheSize(cfg.CacheSize))
-			addCfgOpt(storage.RemoteStorageFactory(cfg.EarlyBootExternalStorageAccessor))
 
 			detail(redact.Sprintf("store %d: in-memory, size %s", i, humanizeutil.IBytes(sizeInBytes)))
 		} else {
@@ -822,15 +823,19 @@ func (cfg *Config) CreateEngines(ctx context.Context) (Engines, error) {
 					spec.Size.Percent, spec.Path, humanizeutil.IBytes(sizeInBytes), humanizeutil.IBytes(base.MinimumStoreSize))
 			}
 
-			detail(redact.Sprintf("store %d: max size %s, max open file limit %d", i, humanizeutil.IBytes(sizeInBytes), openFileLimitPerStore))
-
-			addCfgOpt(storage.MaxSize(sizeInBytes))
+			if spec.Size.Percent > 0 {
+				detail(redact.Sprintf("store %d: max size %s (calculated from %.2f percent of total), max open file limit %d", i, humanizeutil.IBytes(sizeInBytes), spec.Size.Percent, openFileLimitPerStore))
+				addCfgOpt(storage.MaxSizePercent(spec.Size.Percent / 100))
+			} else {
+				detail(redact.Sprintf("store %d: max size %s, max open file limit %d", i, humanizeutil.IBytes(sizeInBytes), openFileLimitPerStore))
+				addCfgOpt(storage.MaxSizeBytes(sizeInBytes))
+			}
 			addCfgOpt(storage.BallastSize(storage.BallastSizeBytes(spec, du)))
 			addCfgOpt(storage.Caches(pebbleCache, tableCache))
 			// TODO(radu): move up all remaining settings below so they apply to in-memory stores as well.
 			addCfgOpt(storage.MaxOpenFiles(int(openFileLimitPerStore)))
 			addCfgOpt(storage.MaxWriterConcurrency(2))
-			addCfgOpt(storage.RemoteStorageFactory(cfg.EarlyBootExternalStorageAccessor))
+			addCfgOpt(storage.RemoteStorageFactory(cfg.ExternalStorageAccessor))
 			if sharedStorage != nil {
 				addCfgOpt(storage.SharedStorage(sharedStorage))
 			}

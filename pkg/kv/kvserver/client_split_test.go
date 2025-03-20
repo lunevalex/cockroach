@@ -1,12 +1,7 @@
 // Copyright 2014 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package kvserver_test
 
@@ -386,7 +381,7 @@ func TestStoreRangeSplitIntents(t *testing.T) {
 	// Verify the transaction record is gone.
 	start := storage.MakeMVCCMetadataKey(keys.MakeRangeKeyPrefix(roachpb.RKeyMin))
 	end := storage.MakeMVCCMetadataKey(keys.MakeRangeKeyPrefix(roachpb.RKeyMax))
-	iter, err := store.TODOEngine().NewMVCCIterator(context.Background(), storage.MVCCKeyAndIntentsIterKind, storage.IterOptions{UpperBound: end.Key})
+	iter, err := store.TODOEngine().NewMVCCIterator(storage.MVCCKeyAndIntentsIterKind, storage.IterOptions{UpperBound: end.Key})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1239,7 +1234,7 @@ func TestStoreRangeSplitBackpressureWrites(t *testing.T) {
 			// size without adding 2x64MB of data.
 			defer zonepb.TestingSetMinRangeMaxBytes(1 << 16)()
 			const minBytes = 1 << 12
-			const maxBytes = 1 << 17
+			const maxBytes = 1 << 18
 			zoneConfig := zonepb.DefaultZoneConfig()
 			zoneConfig.RangeMinBytes = proto.Int64(minBytes)
 			zoneConfig.RangeMaxBytes = proto.Int64(maxBytes)
@@ -2347,7 +2342,13 @@ func TestStoreRangeGossipOnSplits(t *testing.T) {
 	overrideCapacityFraction := 0.5
 
 	ctx := context.Background()
+
+	// Override the store gossip frequency to zero, so that gossip always
+	// triggers on capacity changes.
+	st := cluster.MakeTestingClusterSettings()
+	kvserver.MaxStoreGossipFrequency.Override(ctx, &st.SV, 0*time.Millisecond)
 	s := serverutils.StartServerOnly(t, base.TestServerArgs{
+		Settings: st,
 		Knobs: base.TestingKnobs{
 			Store: &kvserver.StoreTestingKnobs{
 				DisableMergeQueue: true,
@@ -2585,7 +2586,7 @@ func TestUnsplittableRange(t *testing.T) {
 	ttl := 1 * time.Hour
 	defer zonepb.TestingSetMinRangeMaxBytes(1 << 16)()
 	const minBytes = 1 << 12
-	const maxBytes = 1 << 17
+	const maxBytes = 1 << 18
 	manualClock := hlc.NewHybridManualClock()
 	zoneConfig := zonepb.DefaultZoneConfig()
 	zoneConfig.RangeMinBytes = proto.Int64(minBytes)
@@ -2822,6 +2823,12 @@ func TestStoreCapacityAfterSplit(t *testing.T) {
 			ReplicationMode: base.ReplicationManual,
 			ServerArgs: base.TestServerArgs{
 				Settings: st,
+				RaftConfig: base.RaftConfig{
+					// We plan to increment the manual clock by MinStatsDuration a few
+					// times below and would like for leases to not expire. Configure a
+					// longer lease duration to achieve this.
+					RangeLeaseDuration: 10 * replicastats.MinStatsDuration,
+				},
 				Knobs: base.TestingKnobs{
 					Server: &server.TestingKnobs{
 						WallClock: manualClock,
@@ -2840,8 +2847,22 @@ func TestStoreCapacityAfterSplit(t *testing.T) {
 	desc := tc.AddVotersOrFatal(t, key, tc.Target(1))
 	tc.TransferRangeLeaseOrFatal(t, desc, tc.Target(1))
 
-	tc.IncrClockForLeaseUpgrade(t, manualClock)
-	tc.WaitForLeaseUpgrade(ctx, t, desc)
+	// Wait for the lease transfer to be applied on the new leaseholder and then
+	// to be upgraded from an expiration-based lease.
+	testutils.SucceedsSoon(t, func() error {
+		repl, err := s.GetReplica(desc.RangeID)
+		if err != nil {
+			return err
+		}
+		l, _ := repl.GetLease()
+		if !l.OwnedBy(s.StoreID()) {
+			return errors.Errorf("lease transfer not applied on leaseholder")
+		}
+		if l.Type() == roachpb.LeaseExpiration {
+			return errors.Errorf("lease still an expiration based lease")
+		}
+		return nil
+	})
 
 	cap, err := s.Capacity(ctx, false /* useCached */)
 	if err != nil {
@@ -3602,32 +3623,28 @@ func TestStoreRangeSplitAndMergeWithGlobalReads(t *testing.T) {
 	defer log.Scope(t).Close(t)
 
 	// Detect splits and merges over the global read ranges. Assert that the split
-	// and merge transactions commit with pushed write timestamps, and that the
+	// and merge transactions commit with synthetic timestamps, and that the
 	// commit-wait sleep for these transactions is performed before running their
 	// commit triggers instead of run on the kv client. For details on why this is
 	// necessary, see maybeCommitWaitBeforeCommitTrigger.
-	var clockPtr atomic.Pointer[hlc.Clock]
-	var splits, merges int64
+	var clock atomic.Value
+	var splitsWithSyntheticTS, mergesWithSyntheticTS int64
 	respFilter := func(ctx context.Context, ba *kvpb.BatchRequest, br *kvpb.BatchResponse) *kvpb.Error {
-		clock := clockPtr.Load()
-		if clock == nil {
-			return nil
-		}
 		if req, ok := ba.GetArg(kvpb.EndTxn); ok {
 			endTxn := req.(*kvpb.EndTxnRequest)
-			if br.Txn.Status == roachpb.COMMITTED && br.Txn.MinTimestamp.Less(br.Txn.WriteTimestamp) {
+			if br.Txn.Status == roachpb.COMMITTED && br.Txn.WriteTimestamp.Synthetic {
 				if ct := endTxn.InternalCommitTrigger; ct != nil {
 					// The server-side commit-wait sleep should ensure that the commit
 					// triggers are only run after the commit timestamp is below present
 					// time.
-					now := clock.Now()
+					now := clock.Load().(*hlc.Clock).Now()
 					require.True(t, br.Txn.WriteTimestamp.Less(now))
 
 					switch {
 					case ct.SplitTrigger != nil:
-						atomic.AddInt64(&splits, 1)
+						atomic.AddInt64(&splitsWithSyntheticTS, 1)
 					case ct.MergeTrigger != nil:
-						atomic.AddInt64(&merges, 1)
+						atomic.AddInt64(&mergesWithSyntheticTS, 1)
 					}
 				}
 			}
@@ -3659,6 +3676,7 @@ func TestStoreRangeSplitAndMergeWithGlobalReads(t *testing.T) {
 	tdb.Exec(t, `SET CLUSTER SETTING kv.closed_timestamp.target_duration = '20ms'`)
 	tdb.Exec(t, `SET CLUSTER SETTING kv.closed_timestamp.side_transport_interval = '20ms'`)
 	tdb.Exec(t, `SET CLUSTER SETTING kv.rangefeed.closed_timestamp_refresh_interval = '20ms'`)
+	clock.Store(s.Clock())
 	store, err := s.GetStores().(*kvserver.Stores).GetStore(s.GetFirstStoreID())
 	require.NoError(t, err)
 	config.TestingSetupZoneConfigHook(s.Stopper())
@@ -3669,10 +3687,6 @@ func TestStoreRangeSplitAndMergeWithGlobalReads(t *testing.T) {
 	splitArgs := adminSplitArgs(descKey)
 	_, pErr := kv.SendWrapped(ctx, store.TestSender(), splitArgs)
 	require.Nil(t, pErr)
-
-	// Set the clock to the store's clock, which also serves to engage the
-	// response filter.
-	clockPtr.Store(s.Clock())
 
 	// Perform a write to the system config span being watched by
 	// the SystemConfigProvider.
@@ -3692,8 +3706,8 @@ func TestStoreRangeSplitAndMergeWithGlobalReads(t *testing.T) {
 		if splitCount != store.Metrics().CommitWaitsBeforeCommitTrigger.Count() {
 			return errors.Errorf("commit wait count is %d", store.Metrics().CommitWaitsBeforeCommitTrigger.Count())
 		}
-		if splitCount != atomic.LoadInt64(&splits) {
-			return errors.Errorf("num splits is %d", atomic.LoadInt64(&splits))
+		if splitCount != atomic.LoadInt64(&splitsWithSyntheticTS) {
+			return errors.Errorf("num splits is %d", atomic.LoadInt64(&splitsWithSyntheticTS))
 		}
 		return nil
 	})
@@ -3710,7 +3724,7 @@ func TestStoreRangeSplitAndMergeWithGlobalReads(t *testing.T) {
 	require.Nil(t, pErr)
 	splitCount++
 	require.Equal(t, splitCount, store.Metrics().CommitWaitsBeforeCommitTrigger.Count())
-	require.Equal(t, splitCount, atomic.LoadInt64(&splits))
+	require.Equal(t, splitCount, atomic.LoadInt64(&splitsWithSyntheticTS))
 
 	repl := store.LookupReplica(roachpb.RKey(splitKey))
 	require.Equal(t, splitKey, repl.Desc().StartKey.AsRawKey())
@@ -3720,7 +3734,7 @@ func TestStoreRangeSplitAndMergeWithGlobalReads(t *testing.T) {
 	_, pErr = kv.SendWrapped(ctx, store.TestSender(), mergeArgs)
 	require.Nil(t, pErr)
 	require.Equal(t, splitCount+1, store.Metrics().CommitWaitsBeforeCommitTrigger.Count())
-	require.Equal(t, int64(1), atomic.LoadInt64(&merges))
+	require.Equal(t, int64(1), atomic.LoadInt64(&mergesWithSyntheticTS))
 
 	repl = store.LookupReplica(roachpb.RKey(splitKey))
 	require.Equal(t, descKey, repl.Desc().StartKey.AsRawKey())

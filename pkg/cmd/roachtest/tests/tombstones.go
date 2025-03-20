@@ -1,12 +1,7 @@
 // Copyright 2023 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package tests
 
@@ -60,7 +55,7 @@ func registerPointTombstone(r registry.Registry) {
 				}
 			}
 
-			c.Run(ctx, option.WithNodes(c.Node(4)), `./cockroach workload init kv --splits 1000 {pgurl:1}`)
+			c.Run(ctx, c.Node(4), `./cockroach workload init kv --splits 1000 {pgurl:1}`)
 
 			// Set a low 2m GC ttl.
 			execSQLOrFail("alter database kv configure zone using gc.ttlseconds = $1", 120)
@@ -71,7 +66,7 @@ func registerPointTombstone(r registry.Registry) {
 			t.Status("starting 1MB-value workload")
 			m := c.NewMonitor(ctx, c.Range(1, 3))
 			m.Go(func(ctx context.Context) error {
-				c.Run(ctx, option.WithNodes(c.Node(4)), fmt.Sprintf(`./cockroach workload run kv --read-percent 0 `+
+				c.Run(ctx, c.Node(4), fmt.Sprintf(`./cockroach workload run kv --read-percent 0 `+
 					`--concurrency 128 --max-rate 512 --tolerate-errors `+
 					` --min-block-bytes=1048576 --max-block-bytes=1048576 `+
 					` --max-ops %d `+
@@ -87,7 +82,7 @@ func registerPointTombstone(r registry.Registry) {
 			t.Status("starting 4KB-value workload")
 			m = c.NewMonitor(ctx, c.Range(1, 3))
 			m.Go(func(ctx context.Context) error {
-				c.Run(ctx, option.WithNodes(c.Node(4)), fmt.Sprintf(`./cockroach workload run kv --read-percent 0 `+
+				c.Run(ctx, c.Node(4), fmt.Sprintf(`./cockroach workload run kv --read-percent 0 `+
 					`--concurrency 256 --max-rate 1024 --tolerate-errors `+
 					` --min-block-bytes=4096 --max-block-bytes=4096 `+
 					` --max-ops 122880 --write-seq R%d `+

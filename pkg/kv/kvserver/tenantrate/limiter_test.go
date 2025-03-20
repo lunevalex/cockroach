@@ -1,12 +1,7 @@
 // Copyright 2020 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package tenantrate_test
 
@@ -33,6 +28,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/testutils/metrictestutils"
 	"github.com/cockroachdb/cockroach/pkg/util/leaktest"
 	"github.com/cockroachdb/cockroach/pkg/util/metric"
+	"github.com/cockroachdb/cockroach/pkg/util/quotapool"
 	"github.com/cockroachdb/cockroach/pkg/util/stop"
 	"github.com/cockroachdb/cockroach/pkg/util/timeutil"
 	"github.com/cockroachdb/datadriven"
@@ -52,7 +48,7 @@ func TestCloser(t *testing.T) {
 	start := timeutil.Now()
 	timeSource := timeutil.NewManualTime(start)
 	factory := tenantrate.NewLimiterFactory(&st.SV, &tenantrate.TestingKnobs{
-		TimeSource: timeSource,
+		QuotaPoolOptions: []quotapool.Option{quotapool.WithTimeSource(timeSource)},
 	}, fakeAuthorizer{})
 	tenant := roachpb.MustMakeTenantID(2)
 	closer := make(chan struct{})
@@ -222,7 +218,7 @@ func (ts *testState) init(t *testing.T, d *datadriven.TestData) string {
 
 	parseSettings(t, d, &ts.config, ts.capabilities)
 	ts.rl = tenantrate.NewLimiterFactory(&ts.settings.SV, &tenantrate.TestingKnobs{
-		TimeSource: ts.clock,
+		QuotaPoolOptions: []quotapool.Option{quotapool.WithTimeSource(ts.clock)},
 	}, ts)
 	ts.rl.UpdateConfig(ts.config)
 	ts.m = metric.NewRegistry()

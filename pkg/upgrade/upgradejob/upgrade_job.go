@@ -1,12 +1,7 @@
 // Copyright 2018 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 // Package upgradejob contains the jobs.Resumer implementation
 // used for long-running upgrades.
@@ -66,7 +61,7 @@ func (r resumer) Resume(ctx context.Context, execCtxI interface{}) error {
 	db := execCtx.ExecCfg().InternalDB
 	ex := db.Executor()
 	enterpriseEnabled := base.CCLDistributionAndEnterpriseEnabled(
-		execCtx.ExecCfg().Settings)
+		execCtx.ExecCfg().Settings, execCtx.ExecCfg().NodeInfo.LogicalClusterID())
 	alreadyCompleted, err := migrationstable.CheckIfMigrationCompleted(
 		ctx, v, nil /* txn */, ex,
 		enterpriseEnabled, migrationstable.ConsistentRead,

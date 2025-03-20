@@ -20,11 +20,8 @@ go_test(
     name = "keysutils_test",
     size = "small",
     srcs = ["pretty_scanner_test.go"],
+    args = ["-test.timeout=55s"],
     embed = [":keysutils"],
-    exec_properties = select({
-        "//build/toolchains:is_heavy": {"Pool": "heavy"},
-        "//conditions:default": {"Pool": "default"},
-    }),
     deps = [
         "//pkg/keys",
         "//pkg/roachpb",

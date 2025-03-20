@@ -1,12 +1,7 @@
 // Copyright 2021 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package upgrades_test
 
@@ -32,7 +27,7 @@ func TestIsAtLeastVersionBuiltin(t *testing.T) {
 			Knobs: base.TestingKnobs{
 				Server: &server.TestingKnobs{
 					DisableAutomaticVersionUpgrade: make(chan struct{}),
-					BinaryVersionOverride:          clusterversion.MinSupported.Version(),
+					BinaryVersionOverride:          clusterversion.ByKey(clusterversion.BinaryMinSupportedVersionKey),
 				},
 			},
 		},
@@ -46,18 +41,14 @@ func TestIsAtLeastVersionBuiltin(t *testing.T) {
 	)
 	defer tc.Stopper().Stop(ctx)
 
-	v := clusterversion.Latest.String()
+	v := clusterversion.ByKey(clusterversion.VCurrent_Start).String()
 	// Check that the builtin returns false when comparing against the new
 	// version because we are still on the bootstrap version.
 	sqlDB.CheckQueryResults(t, "SELECT crdb_internal.is_at_least_version('"+v+"')", [][]string{{"false"}})
-	sqlDB.CheckQueryResults(t, "SELECT crdb_internal.release_series(version) FROM [SHOW CLUSTER SETTING version]",
-		[][]string{{clusterversion.MinSupported.ReleaseSeries().String()}})
 
 	// Run the upgrade.
 	sqlDB.Exec(t, "SET CLUSTER SETTING version = $1", v)
 
 	// It should now return true.
 	sqlDB.CheckQueryResultsRetry(t, "SELECT crdb_internal.is_at_least_version('"+v+"')", [][]string{{"true"}})
-	sqlDB.CheckQueryResults(t, "SELECT crdb_internal.release_series(version) FROM [SHOW CLUSTER SETTING version]",
-		[][]string{{clusterversion.Latest.ReleaseSeries().String()}})
 }

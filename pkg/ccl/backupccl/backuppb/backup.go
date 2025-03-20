@@ -1,10 +1,7 @@
 // Copyright 2022 The Cockroach Authors.
 //
-// Licensed as a CockroachDB Enterprise file under the Cockroach Community
-// License (the "License"); you may not use this file except in compliance with
-// the License. You may obtain a copy of the License at
-//
-//     https://github.com/cockroachdb/cockroach/blob/master/licenses/CCL.txt
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package backuppb
 
@@ -16,7 +13,6 @@ import (
 
 	"github.com/cockroachdb/cockroach/pkg/cloud"
 	"github.com/cockroachdb/cockroach/pkg/jobs"
-	_ "github.com/cockroachdb/cockroach/pkg/jobs/jobspb" // required for backup.proto
 	"github.com/cockroachdb/cockroach/pkg/multitenant/mtinfopb"
 	"github.com/cockroachdb/cockroach/pkg/sql/parser"
 	"github.com/cockroachdb/cockroach/pkg/sql/protoreflect"
@@ -162,7 +158,7 @@ func (m ScheduledBackupExecutionArgs) MarshalJSONPB(marshaller *jsonpb.Marshaler
 		backup.Options.EncryptionPassphrase = tree.NewDString("redacted")
 	}
 
-	m.BackupStatement = backup.String()
+	m.BackupStatement = tree.AsStringWithFlags(backup, tree.FmtShowFullURIs)
 	return json.Marshal(m)
 }
 

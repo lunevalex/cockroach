@@ -74,12 +74,10 @@ go_test(
         "proxy_handler_test.go",
         "server_test.go",
     ],
+    args = ["-test.timeout=895s"],
     data = glob(["testdata/**"]),
     embed = [":sqlproxyccl"],
-    exec_properties = select({
-        "//build/toolchains:is_heavy": {"Pool": "heavy"},
-        "//conditions:default": {"Pool": "large"},
-    }),
+    exec_properties = {"Pool": "medium"},
     shard_count = 8,
     tags = ["ccl_test"],
     deps = [
@@ -91,6 +89,7 @@ go_test(
         "//pkg/ccl/sqlproxyccl/tenant",
         "//pkg/ccl/sqlproxyccl/tenantdirsvr",
         "//pkg/ccl/sqlproxyccl/throttler",
+        "//pkg/ccl/testutilsccl",
         "//pkg/roachpb",
         "//pkg/security/certnames",
         "//pkg/security/securityassets",

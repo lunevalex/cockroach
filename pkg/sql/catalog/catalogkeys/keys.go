@@ -1,12 +1,7 @@
 // Copyright 2015 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 // Package catalogkeys describes keys used by the SQL catalog.
 package catalogkeys
@@ -296,6 +291,14 @@ func MakeObjectCommentsMetadataPrefix(
 	k := CommentsMetadataPrefix(codec)
 	k = encoding.EncodeUvarintAscending(k, uint64(cmtKey))
 	return encoding.EncodeUvarintAscending(k, uint64(descID))
+}
+
+// MakeSubObjectCommentsMetadataPrefix returns the key
+func MakeSubObjectCommentsMetadataPrefix(
+	codec keys.SQLCodec, cmtKey CommentType, descID descpb.ID, subID uint32,
+) roachpb.Key {
+	k := MakeObjectCommentsMetadataPrefix(codec, cmtKey, descID)
+	return encoding.EncodeUvarintAscending(k, uint64(subID))
 }
 
 // DecodeCommentMetadataID decodes a CommentKey from comments metadata key.

@@ -1,16 +1,14 @@
 // Copyright 2022 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package bootstrap
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
+	"reflect"
 	"testing"
 
 	"github.com/cockroachdb/cockroach/pkg/clusterversion"
@@ -37,16 +35,23 @@ func TestSupportedReleases(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
 
-	// Verify that the current version has an entry.
-	require.Contains(t, initialValuesFactoryByKey, clusterversion.Latest)
-
-	// Verify that all previously supported versions have an entry.
-	for _, key := range clusterversion.SupportedPreviousReleases() {
-		require.Contains(t, initialValuesFactoryByKey, key)
+	expected := make(map[roachpb.Version]struct{})
+	earliest := clusterversion.ByKey(clusterversion.BinaryMinSupportedVersionKey)
+	latest := clusterversion.ByKey(clusterversion.BinaryVersionKey)
+	var incumbent roachpb.Version
+	for _, v := range clusterversion.ListBetween(earliest, latest) {
+		if v.Major != incumbent.Major || v.Minor != incumbent.Minor {
+			incumbent = roachpb.Version{
+				Major: v.Major,
+				Minor: v.Minor,
+			}
+			expected[incumbent] = struct{}{}
+		}
 	}
-
-	// Verify that all entries work.
+	expected[latest] = struct{}{}
+	actual := make(map[roachpb.Version]struct{})
 	for k := range initialValuesFactoryByKey {
+		actual[clusterversion.ByKey(k)] = struct{}{}
 		opts := InitialValuesOpts{
 			DefaultZoneConfig:       zonepb.DefaultZoneConfigRef(),
 			DefaultSystemZoneConfig: zonepb.DefaultZoneConfigRef(),
@@ -59,6 +64,10 @@ func TestSupportedReleases(t *testing.T) {
 		_, _, err = opts.GenerateInitialValues()
 		require.NoErrorf(t, err, "error generating initial values for non-system codec in version %s", k)
 	}
+	require.Truef(t, reflect.DeepEqual(actual, expected),
+		"expected supported releases %v, actual %v\n"+
+			"see comments in test definition if this message appears",
+		expected, actual)
 }
 
 func TestInitialValuesToString(t *testing.T) {
@@ -77,7 +86,7 @@ func TestInitialValuesToString(t *testing.T) {
 			}
 			var expectedHash string
 			d.ScanArgs(t, "hash", &expectedHash)
-			initialValues, actualHash := GetAndHashInitialValuesToString(tenantID)
+			initialValues, actualHash := getAndHashInitialValuesToString(tenantID)
 			if expectedHash != actualHash {
 				t.Errorf(`Unexpected hash value %s for %s.
 If you're seeing this error message, this means that the bootstrapped system
@@ -94,6 +103,14 @@ schema has changed. Assuming that this is expected:
 			return initialValues
 		})
 	})
+}
+
+func getAndHashInitialValuesToString(tenantID uint64) (initialValues string, hash string) {
+	ms := makeMetadataSchema(tenantID)
+	initialValues = InitialValuesToString(ms)
+	h := sha256.Sum256([]byte(initialValues))
+	hash = hex.EncodeToString(h[:])
+	return initialValues, hash
 }
 
 func TestRoundTripInitialValuesStringRepresentation(t *testing.T) {
@@ -154,8 +171,8 @@ func TestSystemDatabaseSchemaBootstrapVersionBumped(t *testing.T) {
 
 	// If you need to update this value (i.e. failed this test), check whether
 	// you need to bump systemschema.SystemDatabaseSchemaBootstrapVersion too.
-	const prevSystemHash = "a91452d35e2d34a35a5822ac5d35589f19d80a7926d617a4fca1347b438c5999"
-	_, curSystemHash := GetAndHashInitialValuesToString(0 /* tenantID */)
+	const prevSystemHash = "14095ff89cf466b8603b3c5e5b4fca5bb04cab37eddcd1702023b8151781c0a8"
+	_, curSystemHash := getAndHashInitialValuesToString(0 /* tenantID */)
 
 	if prevSystemHash != curSystemHash {
 		t.Fatalf(

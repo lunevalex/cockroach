@@ -1,12 +1,7 @@
 // Copyright 2017 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package jobs
 
@@ -20,6 +15,7 @@ import (
 	"time"
 
 	"github.com/cockroachdb/cockroach/pkg/base"
+	"github.com/cockroachdb/cockroach/pkg/clusterversion"
 	"github.com/cockroachdb/cockroach/pkg/jobs/jobspb"
 	"github.com/cockroachdb/cockroach/pkg/multitenant"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
@@ -35,6 +31,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/sessiondata"
 	"github.com/cockroachdb/cockroach/pkg/sql/sqlliveness"
 	"github.com/cockroachdb/cockroach/pkg/sql/types"
+	"github.com/cockroachdb/cockroach/pkg/util/cidr"
 	"github.com/cockroachdb/cockroach/pkg/util/envutil"
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
@@ -47,6 +44,7 @@ import (
 	"github.com/cockroachdb/errors"
 	"github.com/cockroachdb/errors/oserror"
 	"github.com/cockroachdb/logtags"
+	"github.com/cockroachdb/redact"
 )
 
 // adoptedJobs represents the epoch and cancellation of a job id being run by
@@ -180,11 +178,8 @@ type Registry struct {
 	creationKnobs sync.Map
 }
 
-// UpdateJobWithTxn calls the Update method on an existing job with
-// jobID, using a transaction passed in the txn argument. Passing a
-// nil transaction means that a txn will be automatically created.
 func (r *Registry) UpdateJobWithTxn(
-	ctx context.Context, jobID jobspb.JobID, txn isql.Txn, updateFunc UpdateFn,
+	ctx context.Context, jobID jobspb.JobID, txn isql.Txn, useReadLock bool, updateFunc UpdateFn,
 ) error {
 	job, err := r.LoadJobWithTxn(ctx, jobID, txn)
 	if err != nil {
@@ -227,6 +222,7 @@ func MakeRegistry(
 	execCtxFn jobExecCtxMaker,
 	preventAdoptionFile string,
 	knobs *TestingKnobs,
+	lookup *cidr.Lookup,
 ) *Registry {
 	r := &Registry{
 		serverCtx:               ctx,
@@ -257,7 +253,7 @@ func MakeRegistry(
 	}
 	r.mu.adoptedJobs = make(map[jobspb.JobID]*adoptedJob)
 	r.mu.waiting = make(map[jobspb.JobID]map[*waitingSet]struct{})
-	r.metrics.init(histogramWindowInterval)
+	r.metrics.init(histogramWindowInterval, lookup)
 	return r
 }
 
@@ -321,6 +317,8 @@ const (
 	// SqlActivityUpdaterJobID A static job ID is used for the SQL activity tables.
 	SqlActivityUpdaterJobID = jobspb.JobID(103)
 
+	// MVCCStatisticsJobID A static job ID used for the MVCC statistics update
+	// job.
 	MVCCStatisticsJobID = jobspb.JobID(104)
 )
 
@@ -431,8 +429,15 @@ func createJobsInBatchWithTxn(
 		return nil, err
 	}
 
-	if err := batchJobWriteToJobInfo(ctx, txn, jobs, modifiedMicros); err != nil {
-		return nil, err
+	// Insert the job payload and details into the system.job_info table if the
+	// associated cluster version is active.
+	//
+	// TODO(adityamaru): Stop writing the payload and details to the system.jobs
+	// table once we are outside the compatability window for 22.2.
+	if r.settings.Version.IsActive(ctx, clusterversion.V23_1CreateSystemJobInfoTable) {
+		if err := batchJobWriteToJobInfo(ctx, txn, jobs, modifiedMicros); err != nil {
+			return nil, err
+		}
 	}
 
 	return jobIDs, nil
@@ -474,23 +479,66 @@ func batchJobInsertStmt(
 	jobs []*Job,
 	modifiedMicros int64,
 ) (string, []interface{}, []jobspb.JobID, error) {
+	marshalPanic := func(m protoutil.Message) []byte {
+		data, err := protoutil.Marshal(m)
+		if err != nil {
+			panic(err)
+		}
+		return data
+	}
+
 	created, err := tree.MakeDTimestamp(timeutil.FromUnixMicros(modifiedMicros), time.Microsecond)
 	if err != nil {
 		return "", nil, nil, errors.NewAssertionErrorWithWrappedErrf(err, "failed to make timestamp for creation of job")
 	}
 	instanceID := r.ID()
-	columns := []string{`id`, `created`, `status`, `claim_session_id`, `claim_instance_id`, `job_type`}
+	columns := []string{`id`, `created`, `status`, `payload`, `progress`, `claim_session_id`, `claim_instance_id`, `job_type`}
 	valueFns := map[string]func(*Job) (interface{}, error){
 		`id`:                func(job *Job) (interface{}, error) { return job.ID(), nil },
 		`created`:           func(job *Job) (interface{}, error) { return created, nil },
 		`status`:            func(job *Job) (interface{}, error) { return StatusRunning, nil },
 		`claim_session_id`:  func(job *Job) (interface{}, error) { return sessionID.UnsafeBytes(), nil },
 		`claim_instance_id`: func(job *Job) (interface{}, error) { return instanceID, nil },
+		`payload`: func(job *Job) (interface{}, error) {
+			payload := job.Payload()
+			return marshalPanic(&payload), nil
+		},
+		`progress`: func(job *Job) (interface{}, error) {
+			progress := job.Progress()
+			progress.ModifiedMicros = modifiedMicros
+			return marshalPanic(&progress), nil
+		},
 		`job_type`: func(job *Job) (interface{}, error) {
 			payload := job.Payload()
 			return payload.Type().String(), nil
 		},
 	}
+
+	// TODO(adityamaru: Remove this once we are outside the compatability
+	// window for 22.2.
+	if r.settings.Version.IsActive(ctx, clusterversion.V23_1StopWritingPayloadAndProgressToSystemJobs) {
+		columns = []string{`id`, `created`, `status`, `claim_session_id`, `claim_instance_id`, `job_type`}
+		valueFns = map[string]func(*Job) (interface{}, error){
+			`id`:                func(job *Job) (interface{}, error) { return job.ID(), nil },
+			`created`:           func(job *Job) (interface{}, error) { return created, nil },
+			`status`:            func(job *Job) (interface{}, error) { return StatusRunning, nil },
+			`claim_session_id`:  func(job *Job) (interface{}, error) { return sessionID.UnsafeBytes(), nil },
+			`claim_instance_id`: func(job *Job) (interface{}, error) { return instanceID, nil },
+			`job_type`: func(job *Job) (interface{}, error) {
+				payload := job.Payload()
+				return payload.Type().String(), nil
+			},
+		}
+	}
+	numColumns := len(columns)
+
+	// TODO(jayant): remove this version gate in 24.1
+	// To run the upgrade below, migration and schema change jobs will need to be
+	// created using the old schema, which does not have the job_type column.
+	if !r.settings.Version.IsActive(ctx, clusterversion.V23_1AddTypeColumnToJobsTable) {
+		numColumns -= 1
+	}
+
 	appendValues := func(job *Job, vals *[]interface{}) (err error) {
 		defer func() {
 			switch r := recover(); r.(type) {
@@ -501,7 +549,7 @@ func batchJobInsertStmt(
 				panic(r)
 			}
 		}()
-		for j := range columns {
+		for j := 0; j < numColumns; j++ {
 			c := columns[j]
 			val, err := valueFns[c](job)
 			if err != nil {
@@ -511,11 +559,11 @@ func batchJobInsertStmt(
 		}
 		return nil
 	}
-	args := make([]interface{}, 0, len(jobs)*len(columns))
+	args := make([]interface{}, 0, len(jobs)*numColumns)
 	jobIDs := make([]jobspb.JobID, 0, len(jobs))
 	var buf strings.Builder
 	buf.WriteString(`INSERT INTO system.jobs (`)
-	buf.WriteString(strings.Join(columns, ", "))
+	buf.WriteString(strings.Join(columns[:numColumns], ", "))
 	buf.WriteString(`) VALUES `)
 	argIdx := 1
 	for i, job := range jobs {
@@ -523,7 +571,7 @@ func batchJobInsertStmt(
 			buf.WriteString(", ")
 		}
 		buf.WriteString("(")
-		for j := range columns {
+		for j := 0; j < numColumns; j++ {
 			if j > 0 {
 				buf.WriteString(", ")
 			}
@@ -579,8 +627,12 @@ func (r *Registry) CreateJobWithTxn(
 			return errors.NewAssertionErrorWithWrappedErrf(err, "failed to construct job created timestamp")
 		}
 
-		cols := []string{"id", "created", "status", "claim_session_id", "claim_instance_id", "job_type"}
-		vals := []interface{}{jobID, created, StatusRunning, s.ID().UnsafeBytes(), r.ID(), jobType.String()}
+		cols := []string{"id", "created", "status", "payload", "progress", "claim_session_id", "claim_instance_id", "job_type"}
+		vals := []interface{}{jobID, created, StatusRunning, payloadBytes, progressBytes, s.ID().UnsafeBytes(), r.ID(), jobType.String()}
+		if r.settings.Version.IsActive(ctx, clusterversion.V23_1StopWritingPayloadAndProgressToSystemJobs) {
+			cols = []string{"id", "created", "status", "claim_session_id", "claim_instance_id", "job_type"}
+			vals = []interface{}{jobID, created, StatusRunning, s.ID().UnsafeBytes(), r.ID(), jobType.String()}
+		}
 		totalNumCols := len(cols)
 		numCols := totalNumCols
 		placeholders := func() string {
@@ -598,6 +650,10 @@ func (r *Registry) CreateJobWithTxn(
 		// database in question is being dropped.
 		override := sessiondata.RootUserSessionDataOverride
 		override.Database = catconstants.SystemDatabaseName
+		hasJobTypeColumn := r.settings.Version.IsActive(ctx, clusterversion.V23_1AddTypeColumnToJobsTable)
+		if !hasJobTypeColumn {
+			numCols -= 1
+		}
 		insertStmt := fmt.Sprintf(`INSERT INTO system.jobs (%s) VALUES (%s)`,
 			strings.Join(cols[:numCols], ","), placeholders())
 		_, err = txn.ExecEx(
@@ -609,12 +665,19 @@ func (r *Registry) CreateJobWithTxn(
 			return err
 		}
 
-		infoStorage := j.InfoStorage(txn)
-		if err := infoStorage.WriteLegacyPayload(ctx, payloadBytes); err != nil {
-			return err
-		}
-		if err := infoStorage.WriteLegacyProgress(ctx, progressBytes); err != nil {
-			return err
+		// Insert the job payload and details into the system.job_info table if the
+		// associated cluster version is active.
+		//
+		// TODO(adityamaru): Stop writing the payload and details to the system.jobs
+		// table once we are outside the compatability window for 22.2.
+		if r.settings.Version.IsActive(ctx, clusterversion.V23_1CreateSystemJobInfoTable) {
+			infoStorage := j.InfoStorage(txn)
+			if err := infoStorage.WriteLegacyPayload(ctx, payloadBytes); err != nil {
+				return err
+			}
+			if err := infoStorage.WriteLegacyProgress(ctx, progressBytes); err != nil {
+				return err
+			}
 		}
 
 		return nil
@@ -709,10 +772,19 @@ func (r *Registry) CreateAdoptableJobWithTxn(
 		}
 		typ := j.mu.payload.Type().String()
 
-		cols := []string{"id", "status", "created_by_type", "created_by_id", "job_type"}
-		placeholders := []string{"$1", "$2", "$3", "$4", "$5"}
-		values := []interface{}{jobID, StatusRunning, createdByType, createdByID, typ}
-		nCols := len(cols)
+		nCols := 7
+		cols := []string{"id", "status", "payload", "progress", "created_by_type", "created_by_id", "job_type"}
+		placeholders := []string{"$1", "$2", "$3", "$4", "$5", "$6", "$7"}
+		values := []interface{}{jobID, StatusRunning, payloadBytes, progressBytes, createdByType, createdByID, typ}
+		if !r.settings.Version.IsActive(ctx, clusterversion.V23_1AddTypeColumnToJobsTable) {
+			nCols -= 1
+		}
+		if r.settings.Version.IsActive(ctx, clusterversion.V23_1StopWritingPayloadAndProgressToSystemJobs) {
+			cols = []string{"id", "status", "created_by_type", "created_by_id", "job_type"}
+			placeholders = []string{"$1", "$2", "$3", "$4", "$5"}
+			values = []interface{}{jobID, StatusRunning, createdByType, createdByID, typ}
+			nCols = 5
+		}
 		// Insert the job row, but do not set a `claim_session_id`. By not
 		// setting the claim, the job can be adopted by any node and will
 		// be adopted by the node which next runs the adoption loop.
@@ -728,12 +800,19 @@ func (r *Registry) CreateAdoptableJobWithTxn(
 			return err
 		}
 
-		infoStorage := j.InfoStorage(txn)
-		if err := infoStorage.WriteLegacyPayload(ctx, payloadBytes); err != nil {
-			return err
-		}
-		if err := infoStorage.WriteLegacyProgress(ctx, progressBytes); err != nil {
-			return err
+		// Insert the job payload and details into the system.job_info table if the
+		// associated cluster version is active.
+		//
+		// TODO(adityamaru): Stop writing the payload and details to the system.jobs
+		// table once we are outside the compatability window for 22.2.
+		if r.settings.Version.IsActive(ctx, clusterversion.V23_1CreateSystemJobInfoTable) {
+			infoStorage := j.InfoStorage(txn)
+			if err := infoStorage.WriteLegacyPayload(ctx, payloadBytes); err != nil {
+				return err
+			}
+			if err := infoStorage.WriteLegacyProgress(ctx, progressBytes); err != nil {
+				return err
+			}
 		}
 
 		return nil
@@ -871,6 +950,15 @@ func (r *Registry) LoadJobWithTxn(
 	}
 	return j, nil
 }
+
+// UpdateJobWithTxn calls the Update method on an existing job with jobID, using
+// a transaction passed in the txn argument. Passing a nil transaction means
+// that a txn will be automatically created. The useReadLock parameter will
+// have the update acquire an exclusive lock on the job row when reading. This
+// can help eliminate restarts in the face of concurrent updates at the cost of
+// locking the row from readers. Most updates of a job do not expect contention
+// and may do extra work and thus should not do locking. Cases where the job
+// is used to coordinate resources from multiple nodes may benefit from locking.
 
 // TODO (sajjad): make maxAdoptionsPerLoop a cluster setting.
 var maxAdoptionsPerLoop = envutil.EnvOrDefaultInt(`COCKROACH_JOB_ADOPTIONS_PER_PERIOD`, 10)
@@ -1155,6 +1243,12 @@ func (r *Registry) cleanupOldJobs(ctx context.Context, olderThan time.Time) erro
 }
 
 // The ordering is important as we keep track of the maximum ID we've seen.
+const expiredJobsQuery = `
+SELECT id, payload, status FROM "".crdb_internal.system_jobs
+WHERE (created < $1) AND (id > $2)
+ORDER BY id
+LIMIT $3`
+
 const expiredJobsQueryWithJobInfoTable = `
 WITH
 latestpayload AS (
@@ -1180,7 +1274,12 @@ INNER JOIN latestpayload ON j.id = latestpayload.job_id`
 func (r *Registry) cleanupOldJobsPage(
 	ctx context.Context, olderThan time.Time, minID jobspb.JobID, pageSize int,
 ) (done bool, maxID jobspb.JobID, retErr error) {
-	query := expiredJobsQueryWithJobInfoTable
+	var query string
+	if r.settings.Version.IsActive(ctx, clusterversion.V23_1JobInfoTableIsBackfilled) {
+		query = expiredJobsQueryWithJobInfoTable
+	} else {
+		query = expiredJobsQuery
+	}
 
 	it, err := r.db.Executor().QueryIterator(ctx, "gc-jobs", nil, /* txn */
 		query, olderThan, minID, pageSize)
@@ -1249,6 +1348,38 @@ func (r *Registry) cleanupOldJobsPage(
 	return !morePages, maxID, nil
 }
 
+// DeleteTerminalJobByID deletes the given job ID if it is in a
+// terminal state. If it is is in a non-terminal state, an error is
+// returned.
+func (r *Registry) DeleteTerminalJobByID(ctx context.Context, id jobspb.JobID) error {
+	return r.db.Txn(ctx, func(ctx context.Context, txn isql.Txn) error {
+		row, err := txn.QueryRow(ctx, "get-job-status", txn.KV(),
+			"SELECT status FROM system.jobs WHERE id = $1", id)
+		if err != nil {
+			return err
+		}
+		if row == nil {
+			return nil
+		}
+		status := Status(*row[0].(*tree.DString))
+		switch status {
+		case StatusSucceeded, StatusCanceled, StatusFailed:
+			_, err := txn.Exec(
+				ctx, "delete-job", txn.KV(), "DELETE FROM system.jobs WHERE id = $1", id,
+			)
+			if err != nil {
+				return err
+			}
+			_, err = txn.Exec(
+				ctx, "delete-job-info", txn.KV(), "DELETE FROM system.job_info WHERE job_id = $1", id,
+			)
+			return err
+		default:
+			return errors.Newf("job %d has non-terminal status: %q", id, status)
+		}
+	})
+}
+
 // getJobFn attempts to get a resumer from the given job id. If the job id
 // does not have a resumer then it returns an error message suitable for users.
 func (r *Registry) getJobFn(
@@ -1271,7 +1402,7 @@ func (r *Registry) cancelRequested(ctx context.Context, txn isql.Txn, id jobspb.
 	if err != nil {
 		return err
 	}
-	return job.WithTxn(txn).CancelRequested(ctx)
+	return job.maybeWithTxn(txn).CancelRequested(ctx)
 }
 
 // PauseRequested marks the job with id as paused-requested using the specified txn (may be nil).
@@ -1567,8 +1698,7 @@ func (r *Registry) stepThroughStateMachine(
 			return errors.NewAssertionErrorWithWrappedErrf(jobErr,
 				"job %d: resuming with non-nil error", job.ID())
 		}
-		resumeCtx := logtags.AddTag(ctx, "job",
-			fmt.Sprintf("%s id=%d", jobType, job.ID()))
+		resumeCtx := logtags.AddTag(ctx, "job", redact.Sprintf("%s id=%d", jobType, job.ID()))
 		// Adding all tags as pprof labels (including the one we just added for job
 		// type and id).
 		resumeCtx, undo := pprofutil.SetProfilerLabelsFromCtxTags(resumeCtx)

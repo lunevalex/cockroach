@@ -1,3 +1,8 @@
+# Copyright 2017 The Cockroach Authors.
+#
+# Use of this software is governed by the CockroachDB Software License
+# included in the /LICENSE file.
+
 # Common helpers for teamcity-*.sh scripts.
 
 # root is the absolute path to the root directory of the repository.
@@ -257,7 +262,7 @@ tc_build_branch() {
 # function.
 tc_release_branch() {
   branch=$(tc_build_branch)
-  [[ "$branch" == master || "$branch" == release-* || "$branch" == provisional_* ]]
+  [[ "$branch" == master || "$branch" == release-* || "$branch" == provisional_*  || "$branch" == "staging-"* ]]
 }
 
 tc_bors_branch() {

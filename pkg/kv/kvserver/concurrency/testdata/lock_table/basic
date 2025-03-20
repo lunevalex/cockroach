@@ -270,7 +270,7 @@ num=5
 
 query
 ----
-num locks: 1, bytes returned: 85, resume reason: RESUME_UNKNOWN, resume span: <nil>
+num locks: 1, bytes returned: 83, resume reason: RESUME_UNKNOWN, resume span: <nil>
  locks:
   range_id=3 key="a" holder=00000000-0000-0000-0000-000000000003 durability=Replicated duration=2s
    waiters:
@@ -281,6 +281,7 @@ metrics
 locks: 5
 locksheld: 3
 totallockholddurationnanos: 11400000000
+lockswithreservation: 2
 lockswithwaitqueues: 3
 waiters: 3
 waitingreaders: 0
@@ -460,6 +461,7 @@ metrics
 locks: 5
 locksheld: 3
 totallockholddurationnanos: 12600000000
+lockswithreservation: 2
 lockswithwaitqueues: 3
 waiters: 4
 waitingreaders: 0
@@ -616,6 +618,7 @@ metrics
 locks: 5
 locksheld: 3
 totallockholddurationnanos: 13350000000
+lockswithreservation: 2
 lockswithwaitqueues: 3
 waiters: 5
 waitingreaders: 0
@@ -709,7 +712,7 @@ topklocksbywaitduration:
 
 query
 ----
-num locks: 3, bytes returned: 288, resume reason: RESUME_UNKNOWN, resume span: <nil>
+num locks: 3, bytes returned: 286, resume reason: RESUME_UNKNOWN, resume span: <nil>
  locks:
   range_id=3 key="a" holder=00000000-0000-0000-0000-000000000003 durability=Replicated duration=2.65s
    waiters:
@@ -787,6 +790,7 @@ metrics
 locks: 5
 locksheld: 2
 totallockholddurationnanos: 10900000000
+lockswithreservation: 3
 lockswithwaitqueues: 4
 waiters: 6
 waitingreaders: 1
@@ -879,7 +883,7 @@ topklocksbywaitduration:
 
 query
 ----
-num locks: 3, bytes returned: 268, resume reason: RESUME_UNKNOWN, resume span: <nil>
+num locks: 3, bytes returned: 266, resume reason: RESUME_UNKNOWN, resume span: <nil>
  locks:
   range_id=3 key="b" holder=<nil> durability=Unreplicated duration=0s
    waiters:
@@ -1013,6 +1017,7 @@ metrics
 locks: 4
 locksheld: 3
 totallockholddurationnanos: 8650000000
+lockswithreservation: 1
 lockswithwaitqueues: 3
 waiters: 3
 waitingreaders: 0
@@ -1180,6 +1185,7 @@ metrics
 locks: 3
 locksheld: 2
 totallockholddurationnanos: 12650000000
+lockswithreservation: 1
 lockswithwaitqueues: 2
 waiters: 2
 waitingreaders: 0
@@ -1329,6 +1335,7 @@ metrics
 locks: 3
 locksheld: 1
 totallockholddurationnanos: 10690000000
+lockswithreservation: 2
 lockswithwaitqueues: 2
 waiters: 3
 waitingreaders: 0
@@ -1493,6 +1500,7 @@ metrics
 locks: 0
 locksheld: 0
 totallockholddurationnanos: 0
+lockswithreservation: 0
 lockswithwaitqueues: 0
 waiters: 0
 waitingreaders: 0
@@ -1607,6 +1615,7 @@ metrics
 locks: 1
 locksheld: 1
 totallockholddurationnanos: 0
+lockswithreservation: 0
 lockswithwaitqueues: 0
 waiters: 0
 waitingreaders: 0
@@ -1738,6 +1747,7 @@ metrics
 locks: 1
 locksheld: 1
 totallockholddurationnanos: 0
+lockswithreservation: 0
 lockswithwaitqueues: 1
 waiters: 3
 waitingreaders: 0
@@ -1863,6 +1873,7 @@ metrics
 locks: 1
 locksheld: 0
 totallockholddurationnanos: 0
+lockswithreservation: 1
 lockswithwaitqueues: 1
 waiters: 3
 waitingreaders: 0
@@ -1978,6 +1989,7 @@ metrics
 locks: 1
 locksheld: 1
 totallockholddurationnanos: 0
+lockswithreservation: 0
 lockswithwaitqueues: 1
 waiters: 1
 waitingreaders: 0
@@ -2116,6 +2128,7 @@ metrics
 locks: 1
 locksheld: 0
 totallockholddurationnanos: 0
+lockswithreservation: 1
 lockswithwaitqueues: 1
 waiters: 1
 waitingreaders: 0
@@ -2271,6 +2284,7 @@ metrics
 locks: 0
 locksheld: 0
 totallockholddurationnanos: 0
+lockswithreservation: 0
 lockswithwaitqueues: 0
 waiters: 0
 waitingreaders: 0
@@ -2418,6 +2432,7 @@ metrics
 locks: 2
 locksheld: 2
 totallockholddurationnanos: 0
+lockswithreservation: 0
 lockswithwaitqueues: 2
 waiters: 2
 waitingreaders: 0
@@ -2539,6 +2554,7 @@ metrics
 locks: 2
 locksheld: 1
 totallockholddurationnanos: 0
+lockswithreservation: 1
 lockswithwaitqueues: 2
 waiters: 3
 waitingreaders: 0
@@ -2741,6 +2757,7 @@ metrics
 locks: 2
 locksheld: 2
 totallockholddurationnanos: 0
+lockswithreservation: 0
 lockswithwaitqueues: 1
 waiters: 1
 waitingreaders: 0
@@ -2888,6 +2905,7 @@ metrics
 locks: 2
 locksheld: 0
 totallockholddurationnanos: 0
+lockswithreservation: 2
 lockswithwaitqueues: 2
 waiters: 3
 waitingreaders: 0
@@ -3009,6 +3027,7 @@ metrics
 locks: 0
 locksheld: 0
 totallockholddurationnanos: 0
+lockswithreservation: 0
 lockswithwaitqueues: 0
 waiters: 0
 waitingreaders: 0
@@ -3125,6 +3144,7 @@ metrics
 locks: 1
 locksheld: 1
 totallockholddurationnanos: 5000000000
+lockswithreservation: 0
 lockswithwaitqueues: 1
 waiters: 1
 waitingreaders: 0

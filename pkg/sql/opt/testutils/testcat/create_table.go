@@ -1,12 +1,7 @@
 // Copyright 2018 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package testcat
 
@@ -20,7 +15,7 @@ import (
 	"strings"
 
 	"github.com/cockroachdb/cockroach/pkg/config/zonepb"
-	"github.com/cockroachdb/cockroach/pkg/geo/geopb"
+	"github.com/cockroachdb/cockroach/pkg/geo/geoindex"
 	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/catpb"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/colinfo"
@@ -783,6 +778,9 @@ func (tt *Table) addColumn(def *tree.ColumnTableDef) {
 		kind = cat.DeleteOnly
 		visibility = cat.Inaccessible
 	}
+	if def.Hidden && visibility == cat.Visible {
+		visibility = cat.Hidden
+	}
 
 	var defaultExpr, computedExpr, onUpdateExpr, generatedAsIdentitySequenceOption *string
 	if def.DefaultExpr.Expr != nil {
@@ -925,13 +923,13 @@ func (tt *Table) addIndexWithVersion(
 			switch tt.Columns[col.InvertedSourceColumnOrdinal()].DatumType().Family() {
 			case types.GeometryFamily:
 				// Don't use the default config because it creates a huge number of spans.
-				idx.geoConfig = geopb.Config{
-					S2Geometry: &geopb.S2GeometryConfig{
+				idx.geoConfig = geoindex.Config{
+					S2Geometry: &geoindex.S2GeometryConfig{
 						MinX: -5,
 						MaxX: 5,
 						MinY: -5,
 						MaxY: 5,
-						S2Config: &geopb.S2Config{
+						S2Config: &geoindex.S2Config{
 							MinLevel: 0,
 							MaxLevel: 2,
 							LevelMod: 1,
@@ -942,8 +940,8 @@ func (tt *Table) addIndexWithVersion(
 
 			case types.GeographyFamily:
 				// Don't use the default config because it creates a huge number of spans.
-				idx.geoConfig = geopb.Config{
-					S2Geography: &geopb.S2GeographyConfig{S2Config: &geopb.S2Config{
+				idx.geoConfig = geoindex.Config{
+					S2Geography: &geoindex.S2GeographyConfig{S2Config: &geoindex.S2Config{
 						MinLevel: 0,
 						MaxLevel: 2,
 						LevelMod: 1,

@@ -1,12 +1,7 @@
 // Copyright 2020 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package jobs
 
@@ -58,7 +53,7 @@ func TestScheduleControl(t *testing.T) {
 	var recurringNever string
 
 	schedules := ScheduledJobDB(th.cfg.DB)
-	makeSchedule := func(name string, cron string) jobspb.ScheduleID {
+	makeSchedule := func(name string, cron string) int64 {
 		schedule := th.newScheduledJob(t, name, "sql")
 		if cron != "" {
 			require.NoError(t, schedule.SetSchedule(cron))
@@ -116,7 +111,7 @@ func TestScheduleControl(t *testing.T) {
 	})
 
 	t.Run("pause-resume-and-drop-many-schedules", func(t *testing.T) {
-		var scheduleIDs []jobspb.ScheduleID
+		var scheduleIDs []int64
 		for i := 0; i < 10; i++ {
 			scheduleIDs = append(
 				scheduleIDs,

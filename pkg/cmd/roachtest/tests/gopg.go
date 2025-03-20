@@ -1,12 +1,7 @@
 // Copyright 2019 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package tests
 
@@ -30,9 +25,6 @@ import (
 
 // Currently, we're running a version like 'v9.0.1'.
 var gopgReleaseTagRegex = regexp.MustCompile(`^v(?P<major>\d+)(?:\.(?P<minor>\d+)(?:\.(?P<point>\d+))?)?$`)
-
-// WARNING: DO NOT MODIFY the name of the below constant/variable without approval from the docs team.
-// This is used by docs automation to produce a list of supported versions for ORM's.
 var gopgSupportedTag = "v10.9.0"
 
 // This test runs gopg full test suite against a single cockroach node.
@@ -53,7 +45,15 @@ func registerGopg(r registry.Registry) {
 		}
 		node := c.Node(1)
 		t.Status("setting up cockroach")
-		c.Start(ctx, t.L(), option.DefaultStartOptsInMemory(), install.MakeClusterSettings(), c.All())
+		// go-pg does not support reading in the password from the environment
+		// in v10.9.0.
+		// See: https://github.com/go-pg/pg/pull/1996
+		// TODO(darrylwong): once the above change is part of a release,
+		// upgrade support to that version and enable secure mode.
+		c.Start(
+			ctx, t.L(), option.NewStartOpts(sqlClientsInMemoryDB),
+			install.MakeClusterSettings(install.SecureOption(false)),
+		)
 		version, err := fetchCockroachVersion(ctx, t.L(), c, node[0])
 		if err != nil {
 			t.Fatal(err)
@@ -94,7 +94,7 @@ func registerGopg(r registry.Registry) {
 		t.L().Printf("Running cockroach version %s, using blocklist %s, using ignorelist %s",
 			version, "gopgBlockList", "gopgIgnoreList")
 
-		if err := c.RunE(ctx, option.WithNodes(node), fmt.Sprintf("mkdir -p %s", resultsDirPath)); err != nil {
+		if err := c.RunE(ctx, node, fmt.Sprintf("mkdir -p %s", resultsDirPath)); err != nil {
 			t.Fatal(err)
 		}
 		t.Status("running gopg test suite")
@@ -104,15 +104,15 @@ func registerGopg(r registry.Registry) {
 		// code escape sequences.
 		const removeColorCodes = `sed -r "s/\x1B\[([0-9]{1,2}(;[0-9]{1,2})?)?[mGK]//g"`
 
-		result, err := c.RunWithDetailsSingleNode(ctx, t.L(), option.WithNodes(node),
+		result, err := c.RunWithDetailsSingleNode(ctx, t.L(), node,
 			fmt.Sprintf(
-				`cd %s && PGPORT={pgport:1} PGUSER=test_admin PGSSLMODE=disable PGDATABASE=postgres go test -v ./... 2>&1 | %s | tee %s`,
+				`cd %s && PGPORT={pgport:1} PGUSER=root PGSSLMODE=disable PGDATABASE=postgres go test -v ./... 2>&1 | %s | tee %s`,
 				destPath, removeColorCodes, resultsFilePath),
 		)
 
-		// Fatal for a roachprod or SSH error. A roachprod error is when result.Err==nil.
+		// Fatal for a roachprod or transient error. A roachprod error is when result.Err==nil.
 		// Proceed for any other (command) errors
-		if err != nil && (result.Err == nil || errors.Is(err, rperrors.ErrSSH255)) {
+		if err != nil && (result.Err == nil || rperrors.IsTransient(err)) {
 			t.Fatal(err)
 		}
 
@@ -132,7 +132,7 @@ func registerGopg(r registry.Registry) {
 
 		// Now we parse the output of top-level tests.
 
-		result, err = c.RunWithDetailsSingleNode(ctx, t.L(), option.WithNodes(node),
+		result, err = c.RunWithDetailsSingleNode(ctx, t.L(), node,
 			// We pipe the test output into go-junit-report tool which will output
 			// it in XML format.
 			fmt.Sprintf(`cd %s &&
@@ -143,12 +143,12 @@ func registerGopg(r registry.Registry) {
 		// It's safer to clean up dependencies this way than it is to give the cluster
 		// wipe root access.
 		defer func() {
-			c.Run(ctx, option.WithNodes(c.All()), "go clean -modcache")
+			c.Run(ctx, c.All(), "go clean -modcache")
 		}()
 
-		// Fatal for a roachprod or SSH error. A roachprod error is when result.Err==nil.
+		// Fatal for a roachprod or transient error. A roachprod error is when result.Err==nil.
 		// Proceed for any other (command) errors
-		if err != nil && (result.Err == nil || errors.Is(err, rperrors.ErrSSH255)) {
+		if err != nil && (result.Err == nil || rperrors.IsTransient(err)) {
 			t.Fatal(err)
 		}
 

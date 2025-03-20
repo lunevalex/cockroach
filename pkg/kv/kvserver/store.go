@@ -1,12 +1,7 @@
 // Copyright 2014 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package kvserver
 
@@ -127,6 +122,14 @@ const (
 // within shards or on multi-store nodes.
 var defaultRaftSchedulerConcurrency = envutil.EnvOrDefaultInt(
 	"COCKROACH_SCHEDULER_CONCURRENCY", min(8*runtime.GOMAXPROCS(0), 128))
+
+// defaultRaftSchedulerMinConcurrencyPerStore specifies the minimum number of
+// Raft scheduler worker goroutines for each store. The configuration prevents
+// defaultRaftSchedulerConcurrency from being spread so thin across stores in a
+// many-store system that any single store's worker pool cannot keep up with
+// imbalanced load.
+var defaultRaftSchedulerMinConcurrencyPerStore = envutil.EnvOrDefaultInt(
+	"COCKROACH_SCHEDULER_MIN_CONCURRENCY_PER_STORE", min(runtime.GOMAXPROCS(0), defaultRaftSchedulerConcurrency))
 
 // defaultRaftSchedulerShardSize specifies the default maximum number of
 // scheduler worker goroutines per mutex shard. By default, we spin up 8 workers
@@ -298,7 +301,7 @@ var raftStepDownOnRemoval = util.ConstantWithMetamorphicTestBool("raft-step-down
 
 // TestStoreConfig has some fields initialized with values relevant in tests.
 func TestStoreConfig(clock *hlc.Clock) StoreConfig {
-	return testStoreConfig(clock, clusterversion.Latest.Version())
+	return testStoreConfig(clock, clusterversion.TestingBinaryVersion)
 }
 
 // TestStoreConfigWithVersion is the same as TestStoreConfig but allows to pass a cluster version.
@@ -1311,9 +1314,12 @@ func (sc *StoreConfig) SetDefaults(numStores int) {
 		sc.RaftSchedulerConcurrency = defaultRaftSchedulerConcurrency
 		// If we have more than one store, evenly divide the default workers across
 		// stores, since the default value is a function of CPU count and should not
-		// scale with the number of stores.
+		// scale with the number of stores. However, we place a floor on the number
+		// of workers for each store to ensure that small imbalances in load do not
+		// starve a single store's Raft scheduler.
 		if numStores > 1 && sc.RaftSchedulerConcurrency > 1 {
 			sc.RaftSchedulerConcurrency = (sc.RaftSchedulerConcurrency-1)/numStores + 1 // ceil division
+			sc.RaftSchedulerConcurrency = max(sc.RaftSchedulerConcurrency, defaultRaftSchedulerMinConcurrencyPerStore)
 		}
 	}
 	if sc.RaftSchedulerConcurrencyPriority == 0 {
@@ -1614,7 +1620,7 @@ func NewStore(
 		updateSystemConfigUpdateQueueLimits)
 
 	if s.cfg.Gossip != nil {
-		s.storeGossip = NewStoreGossip(cfg.Gossip, s, cfg.TestingKnobs.GossipTestingKnobs)
+		s.storeGossip = NewStoreGossip(cfg.Gossip, s, cfg.TestingKnobs.GossipTestingKnobs, &cfg.Settings.SV, timeutil.DefaultTimeSource{})
 
 		// Add range scanner and configure with queues.
 		s.scanner = newReplicaScanner(
@@ -1941,7 +1947,7 @@ func (s *Store) SetDraining(drain bool, reporter func(int, redact.SafeString), v
 	// until they're all gone, up to the configured timeout.
 	transferTimeout := LeaseTransferPerIterationTimeout.Get(&s.cfg.Settings.SV)
 
-	drainLeasesOp := "transfer range leases"
+	const drainLeasesOp = "transfer range leases"
 	if err := timeutil.RunWithTimeout(ctx, drainLeasesOp, transferTimeout,
 		func(ctx context.Context) error {
 			opts := retry.Options{
@@ -2123,14 +2129,7 @@ func (s *Store) Start(ctx context.Context, stopper *stop.Stopper) error {
 	if err != nil {
 		return err
 	}
-	logEvery := log.Every(10 * time.Second)
-	for i, repl := range repls {
-		// Log progress regularly, but not for the first replica (we only want to
-		// log when this is slow). The last replica is logged after iteration.
-		if logEvery.ShouldLog() && i > 0 {
-			log.Infof(ctx, "initialized %d/%d replicas", i, len(repls))
-		}
-
+	for _, repl := range repls {
 		if repl.Desc == nil {
 			// Uninitialized Replicas are not currently instantiated at store start.
 			continue
@@ -2177,10 +2176,9 @@ func (s *Store) Start(ctx context.Context, stopper *stop.Stopper) error {
 		// known lease instead of relying on shouldUseExpirationLeaseRLocked(). We
 		// also check Sequence > 0 to omit ranges that haven't seen a lease yet.
 		if l, _ := rep.GetLease(); l.Type() == roachpb.LeaseExpiration && l.Sequence > 0 {
-			rep.maybeUnquiesce(ctx, true /* wakeLeader */, true /* mayCampaign */)
+			rep.maybeUnquiesce(true /* wakeLeader */, true /* mayCampaign */)
 		}
 	}
-	log.Infof(ctx, "initialized %d/%d replicas", len(repls), len(repls))
 
 	// Register a callback to unquiesce any ranges with replicas on a
 	// node transitioning from non-live to live.
@@ -2427,12 +2425,8 @@ func (s *Store) startRangefeedUpdater(ctx context.Context) {
 // startRangefeedTxnPushNotifier starts a worker that would periodically
 // enqueue txn push event for rangefeed processors to let them push lagging
 // transactions.
+// Note that this is only affecting scheduler based rangefeeds.
 func (s *Store) startRangefeedTxnPushNotifier(ctx context.Context) {
-	interval := rangefeed.DefaultPushTxnsInterval
-	if i := s.TestingKnobs().RangeFeedPushTxnsInterval; i > 0 {
-		interval = i
-	}
-
 	_ /* err */ = s.stopper.RunAsyncTaskEx(ctx, stop.TaskOpts{
 		TaskName: "transaction-rangefeed-push-notifier",
 		SpanOpt:  stop.SterileRootSpan,
@@ -2453,7 +2447,7 @@ func (s *Store) startRangefeedTxnPushNotifier(ctx context.Context) {
 			return batch
 		}
 
-		ticker := time.NewTicker(interval)
+		ticker := time.NewTicker(rangefeed.DefaultPushTxnsInterval)
 		for {
 			select {
 			case <-ticker.C:
@@ -2876,7 +2870,7 @@ func (s *Store) Capacity(ctx context.Context, useCached bool) (roachpb.StoreCapa
 	rankingsByTenantAccumulator := NewTenantReplicaAccumulator(load.Queries)
 
 	// Query the current L0 sublevels and record the updated maximum to metrics.
-	l0SublevelsMax = int64(syncutil.LoadFloat64(&s.metrics.l0SublevelsWindowedMax))
+	l0SublevelsMax = int64(s.metrics.l0SublevelsWindowedMax.Load())
 	newStoreReplicaVisitor(s).Visit(func(r *Replica) bool {
 		rangeCount++
 		if r.OwnsValidLease(ctx, now) {
@@ -3047,9 +3041,11 @@ func (s *Store) updateReplicationGauges(ctx context.Context) error {
 		unavailableRangeCount     int64
 		underreplicatedRangeCount int64
 		overreplicatedRangeCount  int64
+		decommissioningRangeCount int64
 		behindCount               int64
 		pausedFollowerCount       int64
 		ioOverload                float64
+		pendingRaftProposalCount  int64
 		slowRaftProposalCount     int64
 
 		locks                          int64
@@ -3065,6 +3061,7 @@ func (s *Store) updateReplicationGauges(ctx context.Context) error {
 	)
 
 	now := s.cfg.Clock.NowAsClockTimestamp()
+	goNow := now.ToTimestamp().GoTime()
 	clusterNodes := s.ClusterNodeCount()
 
 	s.mu.RLock()
@@ -3126,8 +3123,15 @@ func (s *Store) updateReplicationGauges(ctx context.Context) error {
 			if metrics.Overreplicated {
 				overreplicatedRangeCount++
 			}
+			if metrics.Decommissioning {
+				// NB: Enqueue is disabled by default from here and throttled async if
+				// enabled.
+				rep.maybeEnqueueProblemRange(ctx, goNow, metrics.LeaseValid, metrics.Leaseholder)
+				decommissioningRangeCount++
+			}
 		}
 		pausedFollowerCount += metrics.PausedFollowerCount
+		pendingRaftProposalCount += metrics.PendingRaftProposalCount
 		slowRaftProposalCount += metrics.SlowRaftProposalCount
 		behindCount += metrics.BehindCount
 		loadStats := rep.loadStats.Stats()
@@ -3187,9 +3191,11 @@ func (s *Store) updateReplicationGauges(ctx context.Context) error {
 	s.metrics.UnavailableRangeCount.Update(unavailableRangeCount)
 	s.metrics.UnderReplicatedRangeCount.Update(underreplicatedRangeCount)
 	s.metrics.OverReplicatedRangeCount.Update(overreplicatedRangeCount)
+	s.metrics.DecommissioningRangeCount.Update(decommissioningRangeCount)
 	s.metrics.RaftLogFollowerBehindCount.Update(behindCount)
 	s.metrics.RaftPausedFollowerCount.Update(pausedFollowerCount)
 	s.metrics.IOOverload.Update(ioOverload)
+	s.metrics.RaftCommandsPending.Update(pendingRaftProposalCount)
 	s.metrics.SlowRaftRequests.Update(slowRaftProposalCount)
 
 	var averageLockHoldDurationNanos int64
@@ -3350,6 +3356,7 @@ func (s *Store) computeMetrics(ctx context.Context) (m storage.Metrics, err erro
 func (s *Store) ComputeMetricsPeriodically(
 	ctx context.Context, prevMetrics *storage.MetricsForInterval, tick int,
 ) (m storage.Metrics, err error) {
+	ctx = s.AnnotateCtx(ctx)
 	m, err = s.computeMetrics(ctx)
 	if err != nil {
 		return m, err
@@ -3398,9 +3405,7 @@ func (s *Store) ComputeMetricsPeriodically(
 	// non-periodic callers of this method don't trigger expensive
 	// stats.
 	if tick%logSSTInfoTicks == 1 /* every 10m */ {
-		// NB: The initial blank line ensures that compaction stats display
-		// will not contain the log prefix.
-		log.Infof(ctx, "\n%s", m.Metrics)
+		log.Infof(ctx, "Pebble metrics:\n%s", m.Metrics)
 	}
 	// Periodically emit a store stats structured event to the TELEMETRY channel,
 	// if reporting is enabled. These events are intended to be emitted at low
@@ -3838,4 +3843,11 @@ func (s *storeForTruncatorImpl) getEngine() storage.Engine {
 
 func init() {
 	tracing.RegisterTagRemapping("s", "store")
+}
+
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }

@@ -18,6 +18,7 @@ go_library(
         "//pkg/testutils/sqlutils",
         "//pkg/util/ctxgroup",
         "//pkg/util/hlc",
+        "//pkg/util/protoutil",
         "//pkg/util/timeutil",
         "@com_github_cockroachdb_errors//:errors",
         "@com_github_stretchr_testify//require",
@@ -27,11 +28,8 @@ go_library(
 go_test(
     name = "replicationutils_test",
     srcs = ["utils_test.go"],
+    args = ["-test.timeout=295s"],
     embed = [":replicationutils"],
-    exec_properties = select({
-        "//build/toolchains:is_heavy": {"Pool": "heavy"},
-        "//conditions:default": {"Pool": "default"},
-    }),
     tags = ["ccl_test"],
     deps = [
         "//pkg/clusterversion",

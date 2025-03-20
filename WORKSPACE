@@ -8,12 +8,12 @@ load("@bazel_tools//tools/build_defs/repo:http.bzl", "http_archive")
 # Load go bazel tools. This gives us access to the go bazel SDK/toolchains.
 http_archive(
     name = "io_bazel_rules_go",
-    sha256 = "3bedac2f1816095d9f6aa5b3ea6caa8e7f1651de7d67af1fc0e9127148ab9a36",
-    strip_prefix = "cockroachdb-rules_go-d41d6ec",
+    sha256 = "7ba72fafdb71abcb48c17520435d968e7bd3fa4a6f99f3e96544a9fa3e411e1c",
+    strip_prefix = "cockroachdb-rules_go-48e8a97",
     urls = [
-        # cockroachdb/rules_go as of d41d6ecad15f14423f47d94b5fb2bd05d7de9937
-        # (upstream release-0.43 plus a few patches).
-        "https://storage.googleapis.com/public-bazel-artifacts/bazel/cockroachdb-rules_go-v0.27.0-405-gd41d6ec.tar.gz",
+        # cockroachdb/rules_go as of 48e8a9727cbf64165ed4c9f895744f3c82d39bc8
+        # (upstream release-0.42 plus a few patches).
+        "https://storage.googleapis.com/public-bazel-artifacts/bazel/cockroachdb-rules_go-v0.27.0-385-g48e8a97.zip",
     ],
 )
 
@@ -165,14 +165,14 @@ load(
 go_download_sdk(
     name = "go_sdk",
     sdks = {
-        "darwin_amd64": ("go1.21.5.darwin-amd64.tar.gz", "6878b009493b8b2e5518b090209f63af478a6bdf889c6db4d3c6b68e43839e8e"),
-        "darwin_arm64": ("go1.21.5.darwin-arm64.tar.gz", "1f3673055f681982bda589bfb23938cb83bef4030efd3516bed0dc3ebd125f41"),
-        "linux_amd64": ("go1.21.5.linux-amd64.tar.gz", "78e55b80d0a5ef27e8e0913321cae31ba9509c05ed79c429e489ae3a25c74885"),
-        "linux_arm64": ("go1.21.5.linux-arm64.tar.gz", "89fe32d10a4a3831154bc740bfbc89405a5a8de0655e0cbe91e5ad952dfd6a52"),
-        "windows_amd64": ("go1.21.5.windows-amd64.tar.gz", "350b40fb129d0eac7eafd5ea2044c6dd1ce8b5a43572f22ef02b53e3d999f28a"),
+        "darwin_amd64": ("go1.21.12.darwin-amd64.tar.gz", "0a3086317b9265c6307a57f92e0b998c35da96a688a0945fceeaee8263e8da30"),
+        "darwin_arm64": ("go1.21.12.darwin-arm64.tar.gz", "f32208785454b26d85302a743ec040ce6ac94e01ba21a5f793dcc488bb69d162"),
+        "linux_amd64": ("go1.21.12.linux-amd64.tar.gz", "44a2d71a289f66eeee1d248a9a1876d3e7a68048ba01a2046cb47ff2070d59e0"),
+        "linux_arm64": ("go1.21.12.linux-arm64.tar.gz", "a16fff228dd285c048acacf0eac9b8a89f728376be15749e4607c506cf1c29e8"),
+        "windows_amd64": ("go1.21.12.windows-amd64.tar.gz", "1e98bfebfe2ecacc36ac519cab8a2493315ecc5ac57d77ea1f324989ebf2c9cd"),
     },
-    urls = ["https://storage.googleapis.com/public-bazel-artifacts/go/20231206-175156/{}"],
-    version = "1.21.5",
+    urls = ["https://storage.googleapis.com/public-bazel-artifacts/go/20240708-162029/{}"],
+    version = "1.21.12",
 )
 
 # To point to a local SDK path, use the following instead. We'll call the
@@ -246,7 +246,7 @@ ts_http_archive(
 
 # NOTE: The version is expected to match up to what version we use in db-console.
 # TODO(ricky): We should add a lint check to ensure it does match.
-load("@aspect_rules_js//npm:repositories.bzl", "npm_import")
+load("@aspect_rules_js//npm:repositories.bzl", "npm_import", "npm_translate_lock")
 
 npm_import(
     name = "pnpm",
@@ -265,8 +265,6 @@ npm_import(
 load("@aspect_rules_js//js:repositories.bzl", "rules_js_dependencies")
 
 rules_js_dependencies()
-
-load("@aspect_rules_js//npm:repositories.bzl", "npm_translate_lock")
 
 npm_translate_lock(
     name = "npm",
@@ -506,8 +504,6 @@ rules_foreign_cc_dependencies(
 # begin rules_pkg dependencies #
 ################################
 
-load("@bazel_tools//tools/build_defs/repo:http.bzl", "http_archive")
-
 http_archive(
     name = "rules_pkg",
     sha256 = "8a298e832762eda1830597d64fe7db58178aa84cd5926d76d5b744d6558941c2",
@@ -538,39 +534,6 @@ rules_pkg_dependencies()
 
 ##############################
 # end rules_pkg dependencies #
-##############################
-
-################################
-# begin rules_oci dependencies #
-################################
-
-http_archive(
-    name = "rules_oci",
-    sha256 = "21a7d14f6ddfcb8ca7c5fc9ffa667c937ce4622c7d2b3e17aea1ffbc90c96bed",
-    strip_prefix = "rules_oci-1.4.0",
-    url = "https://storage.googleapis.com/public-bazel-artifacts/bazel/rules_oci-v1.4.0.tar.gz",
-)
-
-# bazel_skylib handled above.
-# aspect_bazel_lib handled above.
-
-load("@rules_oci//oci:dependencies.bzl", "rules_oci_dependencies")
-
-rules_oci_dependencies()
-
-# TODO: This will pull from an upstream location: specifically it will download
-# `crane` from https://github.com/google/go-containerregistry/... Before this is
-# used in CI or anything production-ready, this should be mirrored. rules_oci
-# doesn't support this mirroring yet so we'd have to submit a patch.
-load("@rules_oci//oci:repositories.bzl", "LATEST_CRANE_VERSION", "oci_register_toolchains")
-
-oci_register_toolchains(
-    name = "oci",
-    crane_version = LATEST_CRANE_VERSION,
-)
-
-##############################
-# end rules_oci dependencies #
 ##############################
 
 register_toolchains(
@@ -659,8 +622,8 @@ go_download_sdk(
     # able to provide additional diagnostic information such as the expected version of OpenSSL.
     experiments = ["boringcrypto"],
     sdks = {
-        "linux_amd64": ("go1.21.5fips.linux-amd64.tar.gz", "4368ab9cf7c8d75d6d33927917426d587f5be39fb18a87fbe2d59281a8569819"),
+        "linux_amd64": ("go1.21.12fips.linux-amd64.tar.gz", "ab03e19de501dac24c90f323af4ad7f54b4436d951fe825810aa9f34a81c41e9"),
     },
-    urls = ["https://storage.googleapis.com/public-bazel-artifacts/go/20231206-175156/{}"],
-    version = "1.21.5fips",
+    urls = ["https://storage.googleapis.com/public-bazel-artifacts/go/20240708-162029/{}"],
+    version = "1.21.12fips",
 )

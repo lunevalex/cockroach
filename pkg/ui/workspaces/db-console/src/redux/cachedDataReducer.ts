@@ -1,12 +1,7 @@
 // Copyright 2018 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 /**
  * This module maintains the state of read-only data fetched from the cluster.
@@ -28,7 +23,7 @@ import { util as clusterUiUtil } from "@cockroachlabs/cluster-ui";
 const { isForbiddenRequestError } = clusterUiUtil;
 
 import { PayloadAction, WithRequest } from "src/interfaces/action";
-import { maybeClearTenantCookie } from "./cookies";
+import { clearTenantCookie } from "./cookies";
 
 export interface WithPaginationRequest {
   page_size: number;
@@ -323,7 +318,10 @@ export class CachedDataReducer<
             // codes.  However, at the moment that's all that the underlying
             // timeoutFetch offers.  Major changes to this plumbing are warranted.
             if (error.message === "Unauthorized") {
-              maybeClearTenantCookie();
+              // Clearing the tenant cookie is necessary when we force a login
+              // because otherwise the DB routing will continue routing to that
+              // specific tenant.
+              clearTenantCookie();
               // TODO(couchand): This is an unpleasant dependency snuck in here...
               const { location } = createHashHistory();
               if (

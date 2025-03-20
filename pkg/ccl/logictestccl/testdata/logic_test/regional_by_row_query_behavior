@@ -650,7 +650,7 @@ query TTTI colnames,rowsort
 SELECT start_key, end_key, replicas, lease_holder FROM [SHOW RANGES FROM INDEX child@primary WITH DETAILS]
 ----
 start_key              end_key       replicas  lease_holder
-<before:/Table/110/5>  …/"\x80"/0    {1}       1
+<before:/Table/110/6>  …/"\x80"/0    {1}       1
 …/"\x80"/0             …/"\xc0"/0    {4}       4
 …/"\xc0"/0             <after:/Max>  {7}       7
 
@@ -1983,7 +1983,7 @@ SELECT * FROM [EXPLAIN INSERT INTO regional_by_row_table_virt (pk, a, b) VALUES 
 │                   └── • scan
 │                         missing stats
 │                         table: regional_by_row_table_virt@regional_by_row_table_virt_pkey
-│                         spans: [/'ap-southeast-2' - /'ap-southeast-2'] [/'ca-central-1' - /'us-east-1']
+│                         spans: FULL SCAN (SOFT LIMIT)
 │
 └── • constraint-check
     │
@@ -2162,7 +2162,7 @@ SELECT * FROM [EXPLAIN INSERT INTO regional_by_row_table_virt_partial (pk, a, b)
 │                   └── • scan
 │                         missing stats
 │                         table: regional_by_row_table_virt_partial@regional_by_row_table_virt_partial_pkey
-│                         spans: [/'ap-southeast-2' - /'ap-southeast-2'] [/'ca-central-1' - /'us-east-1']
+│                         spans: FULL SCAN (SOFT LIMIT)
 │
 └── • constraint-check
     │
@@ -2182,7 +2182,7 @@ SELECT * FROM [EXPLAIN INSERT INTO regional_by_row_table_virt_partial (pk, a, b)
                     └── • scan
                           missing stats
                           table: regional_by_row_table_virt_partial@regional_by_row_table_virt_partial_pkey
-                          spans: [/'ap-southeast-2' - /'ap-southeast-2'] [/'ca-central-1' - /'us-east-1']
+                          spans: FULL SCAN (SOFT LIMIT)
 
 query T retry
 SELECT * FROM [EXPLAIN UPSERT INTO regional_by_row_table_virt_partial (pk, a, b) VALUES (1, 1, 1)] OFFSET 2
@@ -3559,8 +3559,7 @@ ALTER TABLE xyz INJECT STATISTICS '[
   }
 ]';
 
-# Regression test for #105942
-# The following should produce 2 lookup joins with a local distribution.
+# Regression test for #105942.
 query T retry
 EXPLAIN SELECT
   xyz.str,
@@ -3603,7 +3602,7 @@ vectorized: true
               table: xyz@xyz_id2_str_abc_id_idx
               spans: [/'ap-southeast-2'/'68088706-02c6-47d1-b993-a421cd761f2b' - /'ap-southeast-2'/'68088706-02c6-47d1-b993-a421cd761f2b']
 
-# The following should use a string of 4 lookup joins with a cost under 200.
+# The following should use a string of 4 lookup/index joins with a cost under 200.
 query T retry
 EXPLAIN(opt,verbose) SELECT
   x.str,
@@ -3639,7 +3638,7 @@ project
  ├── immutable
  ├── stats: [rows=1.031997]
  ├── cost: 112.377461
- ├── fd: ()-->(2,5,17,20), (2)==(17), (17)==(2), (3)==(18), (18)==(3), (4)==(19), (19)==(4)
+ ├── fd: ()-->(2,5,17,20), (5)==(20), (20)==(5), (2)==(17), (17)==(2), (3)==(18), (18)==(3), (4)==(19), (19)==(4)
  ├── distribution: ap-southeast-2
  ├── prune: (2-5,10,17-20)
  └── inner-join (lookup abc [as=a])
@@ -3657,7 +3656,7 @@ project
       │    ├── key columns: [13 17 12 11] = [6 2 5 1]
       │    ├── lookup columns are key
       │    ├── immutable
-      │    ├── stats: [rows=0.01031997, distinct(1)=0.01032, null(1)=0, distinct(2)=0.01032, null(2)=0, distinct(5)=0.01032, null(5)=0, distinct(6)=0.01032, null(6)=0, distinct(11)=0.01032, null(11)=0, distinct(12)=0.01032, null(12)=0, distinct(13)=0.01032, null(13)=0, distinct(17)=0.01032, null(17)=0, distinct(2,5,6)=0.01032, null(2,5,6)=0]
+      │    ├── stats: [rows=0.01031997, distinct(1)=0.01032, null(1)=0, distinct(2)=0.01032, null(2)=0, distinct(5)=0.01032, null(5)=0, distinct(6)=0.01032, null(6)=0, distinct(10)=0.0102714, null(10)=0, distinct(11)=0.01032, null(11)=0, distinct(12)=0.01032, null(12)=0, distinct(13)=0.01032, null(13)=0, distinct(16)=0.0102638, null(16)=0, distinct(17)=0.01032, null(17)=0, distinct(18)=0.010244, null(18)=0, distinct(19)=0.010244, null(19)=0, distinct(20)=0.0102638, null(20)=0, distinct(21)=0.0102638, null(21)=0, distinct(2,5,6)=0.01032, null(2,5,6)=0]
       │    ├── cost: 112.088874
       │    ├── fd: ()-->(2,5,6,12,13,17,20,21), (16)-->(18,19), (11)==(1,16), (16)==(1,11), (12)==(5,20), (20)==(5,12), (13)==(6,21), (21)==(6,13), (6)==(13,21), (2)==(17), (17)==(2), (5)==(12,20), (1)==(11,16)
       │    ├── distribution: ap-southeast-2
@@ -3667,7 +3666,7 @@ project
       │    │    ├── key columns: [21 16] = [21 16]
       │    │    ├── lookup columns are key
       │    │    ├── immutable
-      │    │    ├── stats: [rows=1.101776, distinct(11)=0.936667, null(11)=0, distinct(12)=0.936667, null(12)=0, distinct(13)=0.936667, null(13)=0, distinct(16)=0.936667, null(16)=0, distinct(17)=0.709904, null(17)=0, distinct(20)=0.936667, null(20)=0, distinct(21)=0.936667, null(21)=0]
+      │    │    ├── stats: [rows=1.101776, distinct(10)=1.08174, null(10)=0, distinct(11)=0.936667, null(11)=0, distinct(12)=0.936667, null(12)=0, distinct(13)=0.936667, null(13)=0, distinct(16)=0.936667, null(16)=0, distinct(17)=0.709904, null(17)=0, distinct(18)=0.693547, null(18)=0, distinct(19)=0.693547, null(19)=0, distinct(20)=0.936667, null(20)=0, distinct(21)=0.936667, null(21)=0]
       │    │    ├── cost: 107.514948
       │    │    ├── fd: ()-->(12,13,17,20,21), (16)-->(18,19), (11)==(16), (16)==(11), (12)==(20), (20)==(12), (13)==(21), (21)==(13)
       │    │    ├── distribution: ap-southeast-2
@@ -3687,7 +3686,7 @@ project
       │    │    │    ├── project
       │    │    │    │    ├── columns: "lookup_join_const_col_@17":28 str:10 abc_id:11 x.id2:12 x.crdb_region:13
       │    │    │    │    ├── immutable
-      │    │    │    │    ├── stats: [rows=3.666667, distinct(11)=3.11719, null(11)=0, distinct(12)=1, null(12)=0, distinct(13)=1, null(13)=0, distinct(28)=1, null(28)=0]
+      │    │    │    │    ├── stats: [rows=3.666667, distinct(10)=3.11719, null(10)=0, distinct(11)=3.11719, null(11)=0, distinct(12)=1, null(12)=0, distinct(13)=1, null(13)=0, distinct(28)=1, null(28)=0]
       │    │    │    │    ├── cost: 73.3666668
       │    │    │    │    ├── fd: ()-->(12,13,28)
       │    │    │    │    ├── distribution: ap-southeast-2
@@ -3696,7 +3695,7 @@ project
       │    │    │    │    │    ├── columns: str:10 abc_id:11 x.id2:12 x.crdb_region:13
       │    │    │    │    │    ├── constraint: /13/12/10/11/9: [/'ap-southeast-2'/'68088706-02c6-47d1-b993-a421cd761f2b' - /'ap-southeast-2'/'68088706-02c6-47d1-b993-a421cd761f2b']
       │    │    │    │    │    ├── immutable
-      │    │    │    │    │    ├── stats: [rows=3.666667, distinct(11)=3.11719, null(11)=0, distinct(12)=1, null(12)=0, distinct(13)=1, null(13)=0, distinct(12,13)=1, null(12,13)=0]
+      │    │    │    │    │    ├── stats: [rows=3.666667, distinct(10)=3.11719, null(10)=0, distinct(11)=3.11719, null(11)=0, distinct(12)=1, null(12)=0, distinct(13)=1, null(13)=0, distinct(12,13)=1, null(12,13)=0]
       │    │    │    │    │    │   histogram(13)=  0       3.6667
       │    │    │    │    │    │                 <--- 'ap-southeast-2'
       │    │    │    │    │    ├── cost: 73.2733335

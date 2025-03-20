@@ -1,12 +1,7 @@
 // Copyright 2020 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package log
 
@@ -14,7 +9,6 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
-	"io"
 	"sort"
 	"strconv"
 	"strings"
@@ -524,10 +518,10 @@ type jsonCommon struct {
 type JSONEntry struct {
 	jsonCommon
 
-	// Channel         Channel  `json:"channel,omitempty"`
+	//Channel         Channel  `json:"channel,omitempty"`
 	ChannelNumeric int64  `json:"channel_numeric,omitempty"`
 	Timestamp      string `json:"timestamp,omitempty"`
-	// Severity        Severity `json:"severity,omitempty"`
+	//Severity        Severity `json:"severity,omitempty"`
 	SeverityNumeric int64  `json:"severity_numeric,omitempty"`
 	Goroutine       int64  `json:"goroutine,omitempty"`
 	File            string `json:"file,omitempty"`
@@ -546,10 +540,10 @@ type JSONEntry struct {
 type JSONCompactEntry struct {
 	jsonCommon
 
-	// Channel         Channel  `json:"C,omitempty"`
+	//Channel         Channel  `json:"C,omitempty"`
 	ChannelNumeric int64  `json:"c,omitempty"`
 	Timestamp      string `json:"t,omitempty"`
-	// Severity        Severity `json:"sev,omitempty"`
+	//Severity        Severity `json:"sev,omitempty"`
 	SeverityNumeric int64  `json:"s,omitempty"`
 	Goroutine       int64  `json:"g,omitempty"`
 	File            string `json:"f,omitempty"`
@@ -653,19 +647,12 @@ func (e *JSONCompactEntry) toEntry(entry *JSONEntry) {
 }
 
 // Decode decodes the next log entry into the provided protobuf message.
-func (d *entryDecoderJSON) Decode(entry *logpb.Entry) (err error) {
-	defer func() {
-		// Wrap all errors except EOF as a malformed entries to make it easier to
-		// handle this type of error later on.
-		if err != nil && err != io.EOF {
-			err = errors.CombineErrors(ErrMalformedLogEntry, err)
-		}
-	}()
+func (d *entryDecoderJSON) Decode(entry *logpb.Entry) error {
 	var rp *redactablePackage
 	var e JSONEntry
 	if d.compact {
 		var compact JSONCompactEntry
-		err = d.decoder.Decode(&compact)
+		err := d.decoder.Decode(&compact)
 		if err != nil {
 			return err
 		}
@@ -676,7 +663,7 @@ func (d *entryDecoderJSON) Decode(entry *logpb.Entry) (err error) {
 			return err
 		}
 	}
-	rp, err = e.populate(entry, d)
+	rp, err := e.populate(entry, d)
 	if err != nil {
 		return err
 	}

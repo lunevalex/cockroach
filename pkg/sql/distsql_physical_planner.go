@@ -1,12 +1,7 @@
 // Copyright 2016 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package sql
 
@@ -325,6 +320,7 @@ func (v *distSQLExprCheckVisitor) VisitPre(expr tree.Expr) (recurse bool, newExp
 			return false, expr
 		}
 	case *tree.RoutineExpr:
+		// TODO(#86310): enable UDFs in DistSQL.
 		v.err = newQueryNotSupportedErrorf("user-defined routine %s cannot be executed with distsql", t)
 		return false, expr
 	case *tree.DOid:
@@ -386,9 +382,9 @@ func hasOidType(t *types.T) bool {
 	return false
 }
 
-// checkExpr verifies that an expression doesn't contain things that are not yet
-// supported by distSQL, like distSQL-blocklisted functions.
-func checkExpr(expr tree.Expr) error {
+// checkExprForDistSQL verifies that an expression doesn't contain things that
+// are not yet supported by distSQL, like distSQL-blocklisted functions.
+func checkExprForDistSQL(expr tree.Expr) error {
 	if expr == nil {
 		return nil
 	}
@@ -535,7 +531,7 @@ func checkSupportForPlanNode(node planNode) (distRecommendation, error) {
 		return checkSupportForPlanNode(n.source)
 
 	case *filterNode:
-		if err := checkExpr(n.filter); err != nil {
+		if err := checkExprForDistSQL(n.filter); err != nil {
 			return cannotDistribute, err
 		}
 		return checkSupportForPlanNode(n.source.plan)
@@ -544,11 +540,6 @@ func checkSupportForPlanNode(node planNode) (distRecommendation, error) {
 		rec, err := checkSupportForPlanNode(n.plan)
 		if err != nil {
 			return cannotDistribute, err
-		}
-		for _, agg := range n.funcs {
-			if agg.distsqlBlocklist {
-				return cannotDistribute, newQueryNotSupportedErrorf("aggregate %q cannot be executed with distsql", agg.funcName)
-			}
 		}
 		// Distribute aggregations if possible.
 		return rec.compose(shouldDistribute), nil
@@ -579,7 +570,7 @@ func checkSupportForPlanNode(node planNode) (distRecommendation, error) {
 			// TODO(nvanbenschoten): lift this restriction.
 			return cannotDistribute, cannotDistributeRowLevelLockingErr
 		}
-		if err := checkExpr(n.onExpr); err != nil {
+		if err := checkExprForDistSQL(n.onExpr); err != nil {
 			return cannotDistribute, err
 		}
 		rec, err := checkSupportForPlanNode(n.input)
@@ -589,7 +580,7 @@ func checkSupportForPlanNode(node planNode) (distRecommendation, error) {
 		return rec.compose(shouldDistribute), nil
 
 	case *joinNode:
-		if err := checkExpr(n.pred.onCond); err != nil {
+		if err := checkExprForDistSQL(n.pred.onCond); err != nil {
 			return cannotDistribute, err
 		}
 		recLeft, err := checkSupportForPlanNode(n.left.plan)
@@ -628,13 +619,13 @@ func checkSupportForPlanNode(node planNode) (distRecommendation, error) {
 			return cannotDistribute, cannotDistributeRowLevelLockingErr
 		}
 
-		if err := checkExpr(n.lookupExpr); err != nil {
+		if err := checkExprForDistSQL(n.lookupExpr); err != nil {
 			return cannotDistribute, err
 		}
-		if err := checkExpr(n.remoteLookupExpr); err != nil {
+		if err := checkExprForDistSQL(n.remoteLookupExpr); err != nil {
 			return cannotDistribute, err
 		}
-		if err := checkExpr(n.onCond); err != nil {
+		if err := checkExprForDistSQL(n.onCond); err != nil {
 			return cannotDistribute, err
 		}
 		rec, err := checkSupportForPlanNode(n.input)
@@ -650,7 +641,7 @@ func checkSupportForPlanNode(node planNode) (distRecommendation, error) {
 
 	case *projectSetNode:
 		for i := range n.exprs {
-			if err := checkExpr(n.exprs[i]); err != nil {
+			if err := checkExprForDistSQL(n.exprs[i]); err != nil {
 				return cannotDistribute, err
 			}
 		}
@@ -658,7 +649,7 @@ func checkSupportForPlanNode(node planNode) (distRecommendation, error) {
 
 	case *renderNode:
 		for _, e := range n.render {
-			if err := checkExpr(e); err != nil {
+			if err := checkExprForDistSQL(e); err != nil {
 				return cannotDistribute, err
 			}
 		}
@@ -729,7 +720,7 @@ func checkSupportForPlanNode(node planNode) (distRecommendation, error) {
 
 		for _, tuple := range n.tuples {
 			for _, expr := range tuple {
-				if err := checkExpr(expr); err != nil {
+				if err := checkExprForDistSQL(expr); err != nil {
 					return cannotDistribute, err
 				}
 			}
@@ -763,7 +754,7 @@ func checkSupportForPlanNode(node planNode) (distRecommendation, error) {
 				return cannotDistribute, cannotDistributeRowLevelLockingErr
 			}
 		}
-		if err := checkExpr(n.onCond); err != nil {
+		if err := checkExprForDistSQL(n.onCond); err != nil {
 			return cannotDistribute, err
 		}
 		return shouldDistribute, nil
@@ -870,7 +861,10 @@ type PlanningCtx struct {
 
 	// isLocal is set to true if we're planning this query on a single node.
 	isLocal bool
-	planner *planner
+	// distSQLProhibitedErr, if set, indicates why the plan couldn't be
+	// distributed.
+	distSQLProhibitedErr error
+	planner              *planner
 
 	stmtType tree.StatementReturnType
 	// planDepth is set to the current depth of the planNode tree. It's used to
@@ -1073,6 +1067,8 @@ func (p *PlanningCtx) getCleanupFunc() func() {
 // plan to a planNode subtree.
 //
 // These plans are built recursively on a planNode tree.
+//
+// PhysicalPlan is immutable after its finalization.
 type PhysicalPlan struct {
 	physicalplan.PhysicalPlan
 
@@ -1577,7 +1573,7 @@ func (dsp *DistSQLPlanner) healthySQLInstanceIDForKVNodeHostedInstanceResolver(
 		if _, ok := healthyNodes[sqlInstance]; ok {
 			return sqlInstance, SpanPartitionReason_TARGET_HEALTHY
 		}
-		log.VWarningf(ctx, 1, "not planning on node %d", sqlInstance)
+		log.Warningf(ctx, "not planning on node %d", sqlInstance)
 		return dsp.gatewaySQLInstanceID, SpanPartitionReason_GATEWAY_TARGET_UNHEALTHY
 	}
 }
@@ -4879,21 +4875,15 @@ func (dsp *DistSQLPlanner) NewPlanningCtxWithOracle(
 		onFlowCleanup: []func(){infra.Release},
 	}
 	if !distribute {
-		if planner == nil ||
-			evalCtx.SessionData().Internal ||
-			planner.curPlan.flags.IsSet(planFlagContainsMutation) ||
-			planner.curPlan.flags.IsSet(planFlagContainsNonDefaultLocking) {
+		if planner == nil || dsp.spanResolver == nil || planner.curPlan.flags.IsSet(planFlagContainsMutation) ||
+			planner.curPlan.flags.IsSet(planFlagContainsLocking) {
 			// Don't parallelize the scans if we have a local plan if
 			// - we don't have a planner which is the case when we are not on
 			// the main query path;
-			// - we're in the internal executor context - it's unlikely that any
-			// of the internal queries will benefit from this parallelization,
-			// and returning early in this function allows us to avoid the race
-			// on dsp.spanResolver in fakedist logic test configs without adding
-			// any synchronization (see #116039);
+			// - we don't have a span resolver (this can happen only in tests);
 			// - the plan contains a mutation operation - we currently don't
 			// support any parallelism when mutations are present;
-			// - the plan uses non-default key locking strength (see #94290).
+			// - the plan uses locking (see #94290).
 			return planCtx
 		}
 		prohibitParallelization, hasScanNodeToParallelize := checkScanParallelizationIfLocal(ctx, &planner.curPlan.planComponents)
@@ -5016,8 +5006,8 @@ func finalizePlanWithRowCount(
 		Type: execinfrapb.StreamEndpointSpec_SYNC_RESPONSE,
 	})
 
-	// Assign processor IDs.
 	for i, p := range plan.Processors {
+		// Assign processor IDs.
 		plan.Processors[i].Spec.ProcessorID = int32(i)
 		// Double check that our reliance on ProcessorID == index is good.
 		if _, ok := plan.LocalVectorSources[int32(i)]; ok {
@@ -5025,6 +5015,24 @@ func finalizePlanWithRowCount(
 			if p.Spec.Core.Values == nil {
 				panic(errors.AssertionFailedf("expected processor to be Values"))
 			}
+		}
+		// Prevent the type schema corruption as found in #130402.
+		//
+		// Namely, during the vectorized operator planning we often use the type
+		// slice from the input spec to create the type schema of an operator.
+		// However, it is possible that the same type slice is shared by
+		// multiple stages of processors. If it just so happens that there is
+		// free capacity in the slice, and we append to it when planning
+		// operators for both stages, we might corrupt the type schema captured
+		// by the operators for the earlier stage. In order to prevent such type
+		// schema corruption we cap the slice to force creation of a fresh copy
+		// on the first append.
+		//
+		// We can't do this capping later (during the vectorized planning)
+		// because the physical plan is immutable once finalized.
+		for j := range p.Spec.Input {
+			inputSpec := &p.Spec.Input[j]
+			inputSpec.ColumnTypes = inputSpec.ColumnTypes[:len(inputSpec.ColumnTypes):len(inputSpec.ColumnTypes)]
 		}
 	}
 }

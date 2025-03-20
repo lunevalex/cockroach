@@ -43,11 +43,8 @@ go_library(
 go_test(
     name = "colexecprojconst_test",
     srcs = ["projection_ops_test.go"],
+    args = ["-test.timeout=295s"],
     embed = [":colexecprojconst"],
-    exec_properties = select({
-        "//build/toolchains:is_heavy": {"Pool": "heavy"},
-        "//conditions:default": {"Pool": "default"},
-    }),
     deps = [
         "//pkg/sql/colexecop",
         "//pkg/sql/sem/tree",

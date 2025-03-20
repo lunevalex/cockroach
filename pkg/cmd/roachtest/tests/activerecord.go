@@ -1,12 +1,7 @@
 // Copyright 2020 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package tests
 
@@ -25,14 +20,10 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/roachprod/config"
 	rperrors "github.com/cockroachdb/cockroach/pkg/roachprod/errors"
 	"github.com/cockroachdb/cockroach/pkg/roachprod/install"
-	"github.com/cockroachdb/errors"
 )
 
 var activerecordResultRegex = regexp.MustCompile(`^(?P<test>[^\s]+#[^\s]+) = (?P<timing>\d+\.\d+ s) = (?P<result>.)$`)
 var railsReleaseTagRegex = regexp.MustCompile(`^v(?P<major>\d+)\.(?P<minor>\d+)\.(?P<point>\d+)\.?(?P<subpoint>\d*)$`)
-
-// WARNING: DO NOT MODIFY the name of the below constant/variable without approval from the docs team.
-// This is used by docs automation to produce a list of supported versions for ORM's.
 var supportedRailsVersion = "7.0.3"
 var activerecordAdapterVersion = "v7.0.2"
 
@@ -49,9 +40,10 @@ func registerActiveRecord(r registry.Registry) {
 		}
 		node := c.Node(1)
 		t.Status("setting up cockroach")
-		startOpts := option.DefaultStartOptsInMemory()
+		startOpts := option.NewStartOpts(sqlClientsInMemoryDB)
 		startOpts.RoachprodOpts.SQLPort = config.DefaultSQLPort
-		c.Start(ctx, t.L(), startOpts, install.MakeClusterSettings(), c.All())
+		// Activerecord uses root user with ssl disabled.
+		c.Start(ctx, t.L(), startOpts, install.MakeClusterSettings(install.SecureOption(false)), c.All())
 
 		version, err := fetchCockroachVersion(ctx, t.L(), c, node[0])
 		if err != nil {
@@ -177,15 +169,15 @@ func registerActiveRecord(r registry.Registry) {
 
 		t.Status("running activerecord test suite")
 
-		result, err := c.RunWithDetailsSingleNode(ctx, t.L(), option.WithNodes(node),
+		result, err := c.RunWithDetailsSingleNode(ctx, t.L(), node,
 			fmt.Sprintf(
 				`cd /mnt/data1/activerecord-cockroachdb-adapter/ && `+
 					`sudo RAILS_VERSION=%s RUBYOPT="-W0" TESTOPTS="-v" bundle exec rake test`, supportedRailsVersion),
 		)
 
-		// Fatal for a roachprod or SSH error. A roachprod error is when result.Err==nil.
+		// Fatal for a roachprod or transient error. A roachprod error is when result.Err==nil.
 		// Proceed for any other (command) errors
-		if err != nil && (result.Err == nil || errors.Is(err, rperrors.ErrSSH255)) {
+		if err != nil && (result.Err == nil || rperrors.IsTransient(err)) {
 			t.Fatal(err)
 		}
 
@@ -252,6 +244,8 @@ func registerActiveRecord(r registry.Registry) {
 	}
 
 	r.Add(registry.TestSpec{
+		Skip:             "https://github.com/cockroachdb/activerecord-cockroachdb-adapter/pull/333",
+		SkipDetails:      "upstream test suite is flaky",
 		Name:             "activerecord",
 		Owner:            registry.OwnerSQLFoundations,
 		Timeout:          5 * time.Hour,

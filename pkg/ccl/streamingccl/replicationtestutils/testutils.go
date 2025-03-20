@@ -1,10 +1,7 @@
 // Copyright 2020 The Cockroach Authors.
 //
-// Licensed as a CockroachDB Enterprise file under the Cockroach Community
-// License (the "License"); you may not use this file except in compliance with
-// the License. You may obtain a copy of the License at
-//
-//     https://github.com/cockroachdb/cockroach/blob/master/licenses/CCL.txt
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package replicationtestutils
 
@@ -147,7 +144,7 @@ func (c *TenantStreamingClusters) init(ctx context.Context) {
 	c.SrcSysSQL.Exec(c.T, `ALTER TENANT $1 SET CLUSTER SETTING sql.virtual_cluster.feature_access.zone_configs.enabled=true`, c.Args.SrcTenantName)
 	c.SrcSysSQL.Exec(c.T, `ALTER TENANT $1 SET CLUSTER SETTING sql.virtual_cluster.feature_access.multiregion.enabled=true`, c.Args.SrcTenantName)
 	c.SrcSysSQL.Exec(c.T, `ALTER TENANT $1 GRANT CAPABILITY can_use_nodelocal_storage`, c.Args.SrcTenantName)
-	require.NoError(c.T, c.SrcCluster.Server(0).TenantController().WaitForTenantCapabilities(ctx, c.Args.SrcTenantID, map[tenantcapabilities.ID]string{
+	require.NoError(c.T, c.SrcCluster.Server(0).WaitForTenantCapabilities(ctx, c.Args.SrcTenantID, map[tenantcapabilities.ID]string{
 		tenantcapabilities.CanUseNodelocalStorage: "true",
 	}, ""))
 	if c.Args.SrcInitFunc != nil {
@@ -157,7 +154,7 @@ func (c *TenantStreamingClusters) init(ctx context.Context) {
 	if c.Args.DestInitFunc != nil {
 		c.Args.DestInitFunc(c.T, c.DestSysSQL)
 	}
-	c.SrcSysSQL.Exec(c.T, `SET CLUSTER SETTING physical_replication.enabled = true;`)
+	// Enable stream replication on dest by default.
 	c.DestSysSQL.Exec(c.T, `SET CLUSTER SETTING physical_replication.enabled = true;`)
 }
 
@@ -167,11 +164,11 @@ func (c *TenantStreamingClusters) init(ctx context.Context) {
 // will not yet be active. If the caller passes withTestingKnobs, the
 // destination tenant starts up via a testServer.StartSharedProcessTenant().
 func (c *TenantStreamingClusters) StartDestTenant(
-	ctx context.Context, withTestingKnobs *base.TestingKnobs, server int,
-) func() {
+	ctx context.Context, withTestingKnobs *base.TestingKnobs,
+) func() error {
 	if withTestingKnobs != nil {
 		var err error
-		_, c.DestTenantConn, err = c.DestCluster.Server(server).TenantController().StartSharedProcessTenant(ctx, base.TestSharedProcessTenantArgs{
+		_, c.DestTenantConn, err = c.DestCluster.Server(0).StartSharedProcessTenant(ctx, base.TestSharedProcessTenantArgs{
 			TenantID:    c.Args.DestTenantID,
 			TenantName:  c.Args.DestTenantName,
 			Knobs:       *withTestingKnobs,
@@ -180,7 +177,7 @@ func (c *TenantStreamingClusters) StartDestTenant(
 		require.NoError(c.T, err)
 	} else {
 		c.DestSysSQL.Exec(c.T, `ALTER TENANT $1 START SERVICE SHARED`, c.Args.DestTenantName)
-		c.DestTenantConn = c.DestCluster.Server(server).SystemLayer().SQLConn(c.T, serverutils.DBName("cluster:"+string(c.Args.DestTenantName)+"/defaultdb"))
+		c.DestTenantConn = c.DestCluster.Server(0).SystemLayer().SQLConn(c.T, serverutils.DBName("cluster:"+string(c.Args.DestTenantName)+"/defaultdb"))
 	}
 
 	c.DestTenantSQL = sqlutils.MakeSQLRunner(c.DestTenantConn)
@@ -190,11 +187,11 @@ func (c *TenantStreamingClusters) StartDestTenant(
 	// TODO (msbutler): consider granting the new tenant some capabilities.
 	c.DestSysSQL.Exec(c.T, `ALTER TENANT $1 SET CLUSTER SETTING sql.virtual_cluster.feature_access.zone_configs.enabled=true`, c.Args.DestTenantName)
 	c.DestSysSQL.Exec(c.T, `ALTER TENANT $1 GRANT CAPABILITY can_use_nodelocal_storage`, c.Args.DestTenantName)
-	require.NoError(c.T, c.DestCluster.Server(server).TenantController().WaitForTenantCapabilities(ctx, c.Args.DestTenantID, map[tenantcapabilities.ID]string{
+	require.NoError(c.T, c.DestCluster.Server(0).WaitForTenantCapabilities(ctx, c.Args.DestTenantID, map[tenantcapabilities.ID]string{
 		tenantcapabilities.CanUseNodelocalStorage: "true",
 	}, ""))
-	return func() {
-		require.NoError(c.T, c.DestTenantConn.Close())
+	return func() error {
+		return c.DestTenantConn.Close()
 	}
 }
 
@@ -209,8 +206,8 @@ func (c *TenantStreamingClusters) CompareResult(query string) {
 }
 
 func (c *TenantStreamingClusters) RequireFingerprintMatchAtTimestamp(timestamp string) string {
-	expected := FingerprintTenantAtTimestampNoHistory(c.T, c.SrcSysSQL, c.Args.SrcTenantName, timestamp)
-	actual := FingerprintTenantAtTimestampNoHistory(c.T, c.DestSysSQL, c.Args.DestTenantName, timestamp)
+	expected := FingerprintTenantAtTimestampNoHistory(c.T, c.SrcSysSQL, c.Args.SrcTenantID.ToUint64(), timestamp)
+	actual := FingerprintTenantAtTimestampNoHistory(c.T, c.DestSysSQL, c.Args.DestTenantID.ToUint64(), timestamp)
 	require.Equal(c.T, expected, actual)
 	return actual
 }
@@ -218,15 +215,16 @@ func (c *TenantStreamingClusters) RequireFingerprintMatchAtTimestamp(timestamp s
 func (c *TenantStreamingClusters) RequireDestinationFingerprintAtTimestamp(
 	fingerprint string, timestamp string,
 ) {
-	actual := FingerprintTenantAtTimestampNoHistory(c.T, c.DestSysSQL, c.Args.DestTenantName, timestamp)
+	actual := FingerprintTenantAtTimestampNoHistory(c.T, c.DestSysSQL, c.Args.DestTenantID.ToUint64(), timestamp)
 	require.Equal(c.T, fingerprint, actual)
 }
 
 func FingerprintTenantAtTimestampNoHistory(
-	t sqlutils.Fataler, db *sqlutils.SQLRunner, tenantName roachpb.TenantName, timestamp string,
+	t sqlutils.Fataler, db *sqlutils.SQLRunner, tenantID uint64, timestamp string,
 ) string {
-	fingerprintQuery := fmt.Sprintf(`SELECT fingerprint FROM [SHOW EXPERIMENTAL_FINGERPRINTS FROM TENANT $1] AS OF SYSTEM TIME %s`, timestamp)
-	return db.QueryStr(t, fingerprintQuery, tenantName)[0][0]
+	fingerprintQuery := fmt.Sprintf("SELECT * FROM crdb_internal.fingerprint(crdb_internal."+
+		"tenant_span($1::INT), 0::DECIMAL, false) AS OF SYSTEM TIME %s", timestamp)
+	return db.QueryStr(t, fingerprintQuery, tenantID)[0][0]
 }
 
 // WaitUntilReplicatedTime waits for the ingestion job high watermark
@@ -241,31 +239,6 @@ func (c *TenantStreamingClusters) WaitUntilReplicatedTime(
 // to reach the recorded start time of the job.
 func (c *TenantStreamingClusters) WaitUntilStartTimeReached(ingestionJobID jobspb.JobID) {
 	WaitUntilStartTimeReached(c.T, c.DestSysSQL, ingestionJobID)
-}
-
-// WaitForPostCutoverRetentionJob should be called after cutover completes to
-// verify that there exists a new producer job on the newly cutover to tenant. This should be called after the replication job completes.
-func (c *TenantStreamingClusters) WaitForPostCutoverRetentionJob() {
-	c.DestSysSQL.Exec(c.T, fmt.Sprintf(`ALTER TENANT '%s' SET REPLICATION EXPIRATION WINDOW ='10ms'`, c.Args.DestTenantName))
-	var retentionJobID jobspb.JobID
-	retentionJobQuery := fmt.Sprintf(`SELECT job_id FROM [SHOW JOBS] 
-WHERE description = 'History Retention for Physical Replication of %s'
-ORDER BY created DESC LIMIT 1`, c.Args.DestTenantName)
-	c.DestSysSQL.QueryRow(c.T, retentionJobQuery).Scan(&retentionJobID)
-	testutils.SucceedsSoon(c.T, func() error {
-		// Grab the latest producer job on the destination cluster.
-		var status string
-		c.DestSysSQL.QueryRow(c.T, "SELECT status FROM system.jobs WHERE id = $1", retentionJobID).Scan(&status)
-		if jobs.Status(status) == jobs.StatusRunning {
-			return nil
-		}
-		if jobs.Status(status) == jobs.StatusFailed {
-			payload := jobutils.GetJobPayload(c.T, c.DestSysSQL, retentionJobID)
-			require.Contains(c.T, payload.Error, "replication stream")
-			require.Contains(c.T, payload.Error, "timed out")
-		}
-		return errors.Newf("Unexpected status %s", status)
-	})
 }
 
 // Cutover sets the cutover timestamp on the replication job causing the job to
@@ -288,7 +261,7 @@ func (c *TenantStreamingClusters) Cutover(
 
 	if !async {
 		jobutils.WaitForJobToSucceed(c.T, c.DestSysSQL, jobspb.JobID(ingestionJobID))
-		c.WaitForPostCutoverRetentionJob()
+		jobutils.WaitForJobToSucceed(c.T, c.SrcSysSQL, jobspb.JobID(producerJobID))
 	}
 }
 
@@ -347,7 +320,9 @@ func CreateServerArgs(args TenantStreamingClustersArgs) base.TestServerArgs {
 		}
 	}
 	return base.TestServerArgs{
-		DefaultTestTenant: base.TestControlsTenantsExplicitly,
+		// Test fails because it tries to set a cluster setting only accessible
+		// to system tenants. Tracked with #76378.
+		DefaultTestTenant: base.TODOTestTenantDisabled,
 		Knobs: base.TestingKnobs{
 			JobsTestingKnobs: defaultJobsTestingKnobs(),
 			DistSQL: &execinfra.TestingKnobs{
@@ -542,21 +517,17 @@ func CreateScatteredTable(t *testing.T, c *TenantStreamingClusters, numNodes int
 	c.SrcTenantSQL.Exec(t, "ALTER TABLE d.scattered SPLIT AT (SELECT * FROM generate_series($1::INT, $2::INT, $3::INT))",
 		rowsPerRange, (numRanges-1)*rowsPerRange, rowsPerRange)
 	c.SrcTenantSQL.Exec(t, "ALTER TABLE d.scattered SCATTER")
-	timeout := 45 * time.Second
-	if skip.Duress() {
-		timeout *= 5
-	}
-	testutils.SucceedsWithin(t, func() error {
+	testutils.SucceedsSoon(t, func() error {
 		var leaseHolderCount int
 		c.SrcTenantSQL.QueryRow(t,
 			`SELECT count(DISTINCT lease_holder) FROM [SHOW RANGES FROM DATABASE d WITH DETAILS]`).
 			Scan(&leaseHolderCount)
 		require.Greater(t, leaseHolderCount, 0)
-		if leaseHolderCount < numNodes {
+		if leaseHolderCount == 1 {
 			return errors.New("leaseholders not scattered yet")
 		}
 		return nil
-	}, timeout)
+	})
 }
 
 var defaultSrcClusterSetting = map[string]string{
@@ -567,6 +538,7 @@ var defaultSrcClusterSetting = map[string]string{
 	`kv.rangefeed.closed_timestamp_refresh_interval`: `'200ms'`,
 	`kv.closed_timestamp.side_transport_interval`:    `'50ms'`,
 	// Large timeout makes test to not fail with unexpected timeout failures.
+	`stream_replication.job_liveness.timeout`:            `'3m'`,
 	`stream_replication.stream_liveness_track_frequency`: `'2s'`,
 	`stream_replication.min_checkpoint_frequency`:        `'1s'`,
 	// Make all AddSSTable operation to trigger AddSSTable events.
@@ -583,7 +555,6 @@ var defaultDestClusterSetting = map[string]string{
 	`bulkio.stream_ingestion.cutover_signal_poll_interval`: `'100ms'`,
 	`jobs.registry.interval.adopt`:                         `'1s'`,
 	`spanconfig.reconciliation_job.checkpoint_interval`:    `'100ms'`,
-	`kv.rangefeed.enabled`:                                 `true`,
 }
 
 func ConfigureClusterSettings(setting map[string]string) []string {

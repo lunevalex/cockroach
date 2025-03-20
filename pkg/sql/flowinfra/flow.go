@@ -1,12 +1,7 @@
 // Copyright 2019 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package flowinfra
 
@@ -626,9 +621,8 @@ func (f *FlowBase) MemUsage() int64 {
 func (f *FlowBase) Cancel() {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	if f.mu.status == flowFinished || f.mu.ctxCancel == nil {
-		// The Flow is already done, nothing to cancel. ctxCancel can be nil in
-		// some tests.
+	if f.mu.status == flowFinished {
+		// The Flow is already done, nothing to cancel.
 		return
 	}
 	f.mu.ctxCancel()
@@ -726,8 +720,7 @@ func (f *FlowBase) Cleanup(ctx context.Context) {
 		}
 	}
 
-	// This closes the disk monitor opened in newFlowContext as well as the
-	// memory monitor opened in ServerImpl.setupFlow.
+	// This closes the monitors opened in ServerImpl.setupFlow.
 	if r := recover(); r != nil {
 		f.DiskMonitor.EmergencyStop(ctx)
 		f.Mon.EmergencyStop(ctx)

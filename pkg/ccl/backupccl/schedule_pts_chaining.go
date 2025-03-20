@@ -1,10 +1,7 @@
 // Copyright 2021 The Cockroach Authors.
 //
-// Licensed as a CockroachDB Enterprise file under the Cockroach Community
-// License (the "License"); you may not use this file except in compliance with
-// the License. You may obtain a copy of the License at
-//
-//     https://github.com/cockroachdb/cockroach/blob/master/licenses/CCL.txt
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package backupccl
 
@@ -116,7 +113,7 @@ func maybeUpdateSchedulePTSRecord(
 		}
 
 		schedules := jobs.ScheduledJobTxn(txn)
-		scheduleID := jobspb.ScheduleID(tree.MustBeDInt(datums[0]))
+		scheduleID := int64(tree.MustBeDInt(datums[0]))
 		sj, args, err := getScheduledBackupExecutionArgsFromSchedule(
 			ctx, env, schedules, scheduleID,
 		)
@@ -179,7 +176,7 @@ func manageFullBackupPTSChaining(
 	env scheduledjobs.JobSchedulerEnv,
 	backupDetails jobspb.BackupDetails,
 	fullScheduleArgs *backuppb.ScheduledBackupExecutionArgs,
-	scheduleID jobspb.ScheduleID,
+	scheduleID int64,
 ) error {
 	// Let's resolve the dependent incremental schedule as the first step. If the
 	// schedule has been dropped then we can avoid doing unnecessary work.
@@ -269,7 +266,7 @@ func manageIncrementalBackupPTSChaining(
 	pts protectedts.Storage,
 	ptsRecordID *uuid.UUID,
 	tsToProtect hlc.Timestamp,
-	scheduleID jobspb.ScheduleID,
+	scheduleID int64,
 ) error {
 	if ptsRecordID == nil {
 		return errors.AssertionFailedf("unexpected nil pts record id on incremental schedule %d", scheduleID)
@@ -312,11 +309,11 @@ func protectTimestampRecordForSchedule(
 	targetToProtect *ptpb.Target,
 	deprecatedSpansToProtect roachpb.Spans,
 	tsToProtect hlc.Timestamp,
-	scheduleID jobspb.ScheduleID,
+	scheduleID int64,
 ) (uuid.UUID, error) {
 	protectedtsID := uuid.MakeV4()
 	return protectedtsID, pts.Protect(ctx, jobsprotectedts.MakeRecord(
-		protectedtsID, int64(scheduleID), tsToProtect, deprecatedSpansToProtect,
+		protectedtsID, scheduleID, tsToProtect, deprecatedSpansToProtect,
 		jobsprotectedts.Schedules, targetToProtect,
 	))
 }

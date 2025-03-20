@@ -1,12 +1,7 @@
 // Copyright 2017 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package batcheval
 
@@ -81,14 +76,13 @@ func refreshRange(
 	// Construct an incremental iterator with the desired time bounds. Incremental
 	// iterators will emit MVCC tombstones by default and will emit intents when
 	// configured to do so (see IntentPolicy).
-	iter, err := storage.NewMVCCIncrementalIterator(ctx, reader, storage.MVCCIncrementalIterOptions{
+	iter, err := storage.NewMVCCIncrementalIterator(reader, storage.MVCCIncrementalIterOptions{
 		KeyTypes:     storage.IterKeyTypePointsAndRanges,
 		StartKey:     span.Key,
 		EndKey:       span.EndKey,
 		StartTime:    refreshFrom, // exclusive
 		EndTime:      refreshTo,   // inclusive
 		IntentPolicy: storage.MVCCIncrementalIterIntentPolicyEmit,
-		ReadCategory: storage.BatchEvalReadCategory,
 	})
 	if err != nil {
 		return err

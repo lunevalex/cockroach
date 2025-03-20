@@ -1,12 +1,7 @@
 // Copyright 2021 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 syntax = "proto3";
 package cockroach.sql.sessiondatapb;
@@ -367,8 +362,7 @@ message LocalOnlySessionData {
   // Execution of these deallocated prepared statements will fail until they are
   // prepared again.
   int64 prepared_statements_cache_size = 97;
-  // StreamerEnabled controls whether the Streamer API can be used.
-  bool streamer_enabled = 98;
+  reserved 98;
   // DisableDropVirtualCluster causes errors when the client
   // attempts to drop virtual clusters or tenant records.
   bool disable_drop_virtual_cluster = 99;
@@ -472,13 +466,53 @@ message LocalOnlySessionData {
   // CopyWritePipeliningEnabled indicates whether the write pipelining is
   // enabled for implicit txns used by COPY.
   bool copy_write_pipelining_enabled = 118;
-  // OptimizerMergeJoinsEnabled, when true, instructs the optimizer to explore
-  // query plans with merge joins. When false, the optimizer does not attempt
-  // to plan merge joins.
-  bool optimizer_merge_joins_enabled = 119;
   // CopyNumRetriesPerBatch determines the number of times a single batch of
   // rows can be retried for non-atomic COPY.
   int32 copy_num_retries_per_batch = 120;
+  // OptimizerUseVirtualComputedColumnStats indicates whether we should use
+  // statistics on virtual computed columns for cardinality estimation in the
+  // optimizer.
+  bool optimizer_use_virtual_computed_column_stats = 124;
+  // OptimizerUseTrigramSimilarityOptimization indicates whether the optimizer
+  // should generate improved plans for queries with trigram similarity filters.
+  bool optimizer_use_trigram_similarity_optimization = 125;
+  // OptimizerUseImprovedDistinctOnLimitHintCosting indicates whether the
+  // optimizer should use an improved costing estimate for DistinctOn operators
+  // with limit hints.
+  bool optimizer_use_improved_distinct_on_limit_hint_costing = 126;
+  // OptimizerUseImprovedTrigramSimilaritySelectivity indicates whether the
+  // optimizer should use an improved selectivitiy estimate for trigram
+  // similarity filters.
+  bool optimizer_use_improved_trigram_similarity_selectivity = 127;
+  // OptimizerUseImprovedZigzagJoinCosting, when true, indicates that the
+  // optimizer should use improved logic in the cost model for zigzag joins.
+  bool optimizer_use_improved_zigzag_join_costing = 128;
+  // OptimizerUseImprovedMultiColumnSelectivityEstimate, when true, indicates
+  // that the optimizer should use an improved selectivity estimate for
+  // multi-column predicates.
+  bool optimizer_use_improved_multi_column_selectivity_estimate = 129;
+  // OptimizerProveImplicationWithVirtualComputedColumns, when true, indicates
+  // that the optimizer should use virtual computed columns to prove partial
+  // index implication.
+  bool optimizer_prove_implication_with_virtual_computed_columns = 130;
+  // OptimizerApplyFullScanPenaltyToVirtualTables, when true, indicates that the
+  // huge cost should be assigned to plans that have full scans of virtual
+  // tables when DisallowFullTableScans is set.
+  bool optimizer_apply_full_scan_penalty_to_virtual_tables = 131;
+  // OptimizerPushOffsetIntoIndexJoin, when true, indicates that the optimizer
+  // should push offset expressions into index joins.
+  bool optimizer_push_offset_into_index_join = 132;
+  // PlanCacheMode indicates the method that the optimizer should use to choose
+  // between a custom and generic query plan.
+  PlanCacheMode plan_cache_mode = 133;
+  // DisableVecUnionEagerCancellation disables the eager cancellation that is
+  // performed by the vectorized engine when transitioning into the draining
+  // state in some cases.
+  bool disable_vec_union_eager_cancellation = 143;
+  // LegacyVarcharTyping controls the legacy behavior of allowing some invalid
+  // mix-typed comparisons with VARCHAR types. See #137837, #133037, and
+  // #132268.
+  bool legacy_varchar_typing = 150;
 
   ///////////////////////////////////////////////////////////////////////////
   // WARNING: consider whether a session parameter you're adding needs to  //
@@ -493,6 +527,23 @@ enum ReplicationMode {
   REPLICATION_MODE_DISABLED = 0;
   REPLICATION_MODE_ENABLED = 1;
   REPLICATION_MODE_DATABASE = 2;
+}
+
+// PlanCacheMode controls the optimizer's decision to use a custom or generic
+// query plan.
+enum PlanCacheMode {
+  option (gogoproto.goproto_enum_prefix) = false;
+  option (gogoproto.goproto_enum_stringer) = false;
+
+  // PlanCacheModeForceCustom forces the optimizer to use a custom query plan.
+  force_custom_plan = 0 [(gogoproto.enumvalue_customname) = "PlanCacheModeForceCustom"];
+
+  // PlanCacheModeForceCustom forces the optimizer to use a generic query plan.
+  force_generic_plan = 1 [(gogoproto.enumvalue_customname) = "PlanCacheModeForceGeneric"];
+
+  // PlanCacheModeAuto allows the optimizer to automatically choose between a
+  // custom and generic query plan.
+  auto = 2 [(gogoproto.enumvalue_customname) = "PlanCacheModeAuto"];
 }
 
 // SequenceCacheEntry is an entry in a SequenceCache.

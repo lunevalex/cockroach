@@ -1,12 +1,7 @@
 // Copyright 2015 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package metric
 
@@ -85,6 +80,17 @@ func (r *Registry) AddMetric(metric Iterable) {
 	r.tracked[metric.GetName()] = metric
 	if log.V(2) {
 		log.Infof(context.TODO(), "added metric: %s (%T)", metric.GetName(), metric)
+	}
+}
+
+// RemoveMetric removes the passed-in metric from the registry. If the metric
+// does not exist, this is a no-op.
+func (r *Registry) RemoveMetric(metric Iterable) {
+	r.Lock()
+	defer r.Unlock()
+	delete(r.tracked, metric.GetName())
+	if log.V(2) {
+		log.Infof(context.TODO(), "removed metric: %s (%T)", metric.GetName(), metric)
 	}
 }
 

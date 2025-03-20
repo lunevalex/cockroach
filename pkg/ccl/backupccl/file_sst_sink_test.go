@@ -1,10 +1,7 @@
 // Copyright 2023 The Cockroach Authors.
 //
-// Licensed as a CockroachDB Enterprise file under the Cockroach Community
-// License (the "License"); you may not use this file except in compliance with
-// the License. You may obtain a copy of the License at
-//
-//     https://github.com/cockroachdb/cockroach/blob/master/licenses/CCL.txt
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package backupccl
 
@@ -858,13 +855,12 @@ func (b *exportedSpanBuilder) build() exportedSpan {
 func fileSSTSinkTestSetUp(
 	ctx context.Context, t *testing.T, tc *testcluster.TestCluster, sqlDB *sqlutils.SQLRunner,
 ) (*fileSSTSink, cloud.ExternalStorage) {
-	srv := tc.Servers[0].ApplicationLayer()
 	store, err := cloud.ExternalStorageFromURI(ctx, "userfile:///0",
 		base.ExternalIODirConfig{},
-		srv.ClusterSettings(),
+		tc.Servers[0].ClusterSettings(),
 		blobs.TestEmptyBlobClientFactory,
 		username.RootUserName(),
-		srv.InternalDB().(isql.DB),
+		tc.Servers[0].InternalDB().(isql.DB),
 		nil, /* limiters */
 		cloud.NilMetrics,
 	)
@@ -877,7 +873,7 @@ func fileSSTSinkTestSetUp(
 		id:       1,
 		enc:      nil,
 		progCh:   progCh,
-		settings: &srv.ClusterSettings().SV,
+		settings: &tc.Servers[0].ClusterSettings().SV,
 	}
 
 	sink := makeFileSSTSink(sinkConf, store)

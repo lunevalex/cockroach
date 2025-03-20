@@ -1,12 +1,7 @@
 // Copyright 2021 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package scdeps
 
@@ -33,6 +28,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
 	"github.com/cockroachdb/cockroach/pkg/sql/sessiondata"
 	"github.com/cockroachdb/cockroach/pkg/sql/sqltelemetry"
+	"github.com/cockroachdb/cockroach/pkg/storage"
 	"github.com/cockroachdb/errors"
 )
 
@@ -42,7 +38,7 @@ type JobRegistry interface {
 	MakeJobID() jobspb.JobID
 	CreateJobWithTxn(ctx context.Context, record jobs.Record, jobID jobspb.JobID, txn isql.Txn) (*jobs.Job, error)
 	UpdateJobWithTxn(
-		ctx context.Context, jobID jobspb.JobID, txn isql.Txn, updateFunc jobs.UpdateFn,
+		ctx context.Context, jobID jobspb.JobID, txn isql.Txn, useReadLock bool, updateFunc jobs.UpdateFn,
 	) error
 	CheckPausepoint(name string) error
 }
@@ -129,7 +125,8 @@ func (t nameEntry) GetID() descpb.ID {
 func (d *txnDeps) UpdateSchemaChangeJob(
 	ctx context.Context, id jobspb.JobID, callback scexec.JobUpdateCallback,
 ) error {
-	return d.jobRegistry.UpdateJobWithTxn(ctx, id, d.txn, func(
+	const useReadLock = false
+	return d.jobRegistry.UpdateJobWithTxn(ctx, id, d.txn, useReadLock, func(
 		txn isql.Txn, md jobs.JobMetadata, ju *jobs.JobUpdater,
 	) error {
 		return callback(md, ju.UpdateProgress, ju.UpdatePayload)
@@ -275,6 +272,10 @@ func (d *txnDeps) MakeJobID() jobspb.JobID {
 
 func (d *txnDeps) CheckPausepoint(name string) error {
 	return d.jobRegistry.CheckPausepoint(name)
+}
+
+func (d *txnDeps) UseLegacyGCJob(ctx context.Context) bool {
+	return !storage.CanUseMVCCRangeTombstones(ctx, d.settings)
 }
 
 func (d *txnDeps) SchemaChangerJobID() jobspb.JobID {

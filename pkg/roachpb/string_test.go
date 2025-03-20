@@ -1,12 +1,7 @@
 // Copyright 2016 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package roachpb_test
 
@@ -43,10 +38,10 @@ func TestTransactionString(t *testing.T) {
 		Status:                 roachpb.COMMITTED,
 		LastHeartbeat:          hlc.Timestamp{WallTime: 10, Logical: 11},
 		ReadTimestamp:          hlc.Timestamp{WallTime: 30, Logical: 31},
-		GlobalUncertaintyLimit: hlc.Timestamp{WallTime: 40, Logical: 41},
+		GlobalUncertaintyLimit: hlc.Timestamp{WallTime: 40, Logical: 41, Synthetic: true},
 	}
 	expStr := `"name" meta={id=d7aa0f5e key="foo" iso=Serializable pri=44.58039917 epo=2 ts=0.000000020,21 min=0.000000010,11 seq=15}` +
-		` lock=true stat=COMMITTED rts=0.000000030,31 wto=false gul=0.000000040,41`
+		` lock=true stat=COMMITTED rts=0.000000030,31 wto=false gul=0.000000040,41?`
 
 	if str := txn.String(); str != expStr {
 		t.Errorf(

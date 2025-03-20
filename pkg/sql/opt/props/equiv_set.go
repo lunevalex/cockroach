@@ -1,12 +1,7 @@
 // Copyright 2022 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package props
 
@@ -84,18 +79,6 @@ func (eq *EquivSet) AreColsEquiv(left, right opt.ColumnID) bool {
 		}
 	}
 	return false
-}
-
-// Group returns the group of columns equivalent to the given column. It
-// returns the empty set if no such group exists. The returned should not be
-// mutated without being copied first.
-func (eq *EquivSet) Group(col opt.ColumnID) opt.ColSet {
-	for i := range eq.groups {
-		if eq.groups[i].Contains(col) {
-			return eq.groups[i]
-		}
-	}
-	return opt.ColSet{}
 }
 
 // tryMergeGroups attempts to merge the equality group at the given index with

@@ -1,12 +1,7 @@
 // Copyright 2014 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package kvpb
 
@@ -14,6 +9,7 @@ import (
 	"context"
 	"fmt"
 	"reflect"
+	"slices"
 
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/storage/enginepb"
@@ -488,6 +484,8 @@ func (e *NotLeaseHolderError) printError(s Printer) {
 	}
 	if e.Lease != nil {
 		s.Printf("current lease is %s", e.Lease)
+	} else if e.DeprecatedLeaseHolder != nil {
+		s.Printf("replica %s is", *e.DeprecatedLeaseHolder)
 	} else {
 		s.Printf("lease holder unknown")
 	}
@@ -864,7 +862,7 @@ func (e *TransactionRetryError) SafeFormatError(p errors.Printer) (next error) {
 		msg = redact.Sprintf(" - %s", e.ExtraMsg)
 	}
 	if e.ConflictingTxn != nil {
-		msg = redact.Sprintf("%s - conflicting txn: meta={%s}", msg, e.ConflictingTxn.String())
+		msg = redact.Sprintf(" %s - conflicting txn: meta={%s}", msg, e.ConflictingTxn.String())
 	}
 	p.Printf("TransactionRetryError: retry txn (%s%s)", redact.SafeString(TransactionRetryReason_name[int32(e.Reason)]), msg)
 	return nil
@@ -1137,7 +1135,7 @@ func (e *ReadWithinUncertaintyIntervalError) RetryTimestamp() hlc.Timestamp {
 	// advance the txn's timestamp up to the local uncertainty limit on the node
 	// which hit the error. This ensures that no future read after the retry on
 	// this node (ignoring lease complications in ComputeLocalUncertaintyLimit
-	// and values with future-time timestamps) will throw an uncertainty error,
+	// and values with synthetic timestamps) will throw an uncertainty error,
 	// even when reading other keys.
 	//
 	// Note that if the request was not able to establish a local uncertainty
@@ -1151,9 +1149,9 @@ func (e *ReadWithinUncertaintyIntervalError) RetryTimestamp() hlc.Timestamp {
 	// In general, we expect the local uncertainty limit, if set, to be above
 	// the uncertainty value's timestamp. So we expect this Forward to advance
 	// ts. However, this is not always the case. The one exception is if the
-	// uncertain value had a future-time timestamp, so it was compared against
-	// the global uncertainty limit to determine uncertainty (see IsUncertain).
-	// In such cases, we're ok advancing just past the value's timestamp. Either
+	// uncertain value had a synthetic timestamp, so it was compared against the
+	// global uncertainty limit to determine uncertainty (see IsUncertain). In
+	// such cases, we're ok advancing just past the value's timestamp. Either
 	// way, we won't see the same value in our uncertainty interval on a retry.
 	ts.Forward(e.LocalUncertaintyLimit.ToTimestamp())
 	return ts
@@ -1212,25 +1210,8 @@ var _ ErrorDetailInterface = &RaftGroupDeletedError{}
 
 // NewReplicaCorruptionError creates a new error indicating a corrupt replica.
 // The supplied error is used to provide additional detail in the error message.
-// NB: Take caution when marking errors as replica corruption errors to be sure
-// that they are actually indicative of replica corruption and should be treated
-// as such; for example while in general a failures to apply a command might be,
-// a timeout or context cancellation error may not be, especially if a user
-// request controls that cancellation/timeout. See the helper below in
-// MaybeWrapReplicaCorruptionError.
 func NewReplicaCorruptionError(err error) *ReplicaCorruptionError {
 	return &ReplicaCorruptionError{ErrorMsg: err.Error()}
-}
-
-// MaybeWrapReplicaCorruptionError wraps a passed error as a replica corruption
-// error unless it matches the error in the passed context, which would suggest
-// the whole operation was cancelled due to the latter rather than indicating a
-// fault which implies replica corruption.
-func MaybeWrapReplicaCorruptionError(ctx context.Context, err error) error {
-	if errors.Is(err, ctx.Err()) {
-		return err
-	}
-	return NewReplicaCorruptionError(err)
 }
 
 func (e *ReplicaCorruptionError) Error() string {
@@ -1601,8 +1582,19 @@ func (e *RefreshFailedError) Type() ErrorDetailType {
 var _ ErrorDetailInterface = &RefreshFailedError{}
 
 func (e *InsufficientSpaceError) Error() string {
-	return fmt.Sprintf("store %d has insufficient remaining capacity to %s (remaining: %s / %.1f%%, min required: %.1f%%)",
-		e.StoreID, e.Op, humanizeutil.IBytes(e.Available), float64(e.Available)/float64(e.Capacity)*100, e.Required*100)
+	return fmt.Sprint(e)
+}
+
+// Format implements fmt.Formatter.
+func (e *InsufficientSpaceError) Format(s fmt.State, verb rune) {
+	errors.FormatError(e, s, verb)
+}
+
+// SafeFormatError implements errors.SafeFormatter.
+func (e *InsufficientSpaceError) SafeFormatError(p errors.Printer) (next error) {
+	p.Printf("store %d has insufficient remaining capacity to %s (remaining: %s / %.1f%%, min required: %.1f%%)",
+		e.StoreID, redact.SafeString(e.Op), humanizeutil.IBytes(e.Available), float64(e.Available)/float64(e.Capacity)*100, e.Required*100)
+	return nil
 }
 
 // NewNotLeaseHolderError returns a NotLeaseHolderError initialized with the
@@ -1632,6 +1624,10 @@ func NewNotLeaseHolderError(
 		if stillMember {
 			err.Lease = new(roachpb.Lease)
 			*err.Lease = l
+			// TODO(arul): We only need to return this for the 22.1 <-> 22.2 mixed
+			// version state, as v22.1 use this field to log NLHE messages. We can
+			// get rid of this, and the field, in v23.1.
+			err.DeprecatedLeaseHolder = &err.Lease.Replica
 		}
 	}
 	return err
@@ -1703,6 +1699,35 @@ func (e *DescNotFoundError) SafeFormatError(p errors.Printer) (next error) {
 	return nil
 }
 
+// KeyCollisionError represents a failed attempt to ingest the same key twice.
+type KeyCollisionError struct {
+	Key   roachpb.Key
+	Value []byte
+}
+
+// Format implements fmt.Formatter.
+func (d *KeyCollisionError) Format(s fmt.State, verb rune) {
+	errors.FormatError(d, s, verb)
+}
+
+func (d *KeyCollisionError) SafeFormatError(p errors.Printer) (next error) {
+	p.Printf("ingested key collides with an existing one: %s", d.Key)
+	return nil
+}
+
+func (d *KeyCollisionError) Error() string {
+	return fmt.Sprint(d)
+}
+
+// NewKeyCollisionError constructs a KeyCollisionError, copying its input.
+func NewKeyCollisionError(key roachpb.Key, value []byte) error {
+	ret := &KeyCollisionError{
+		Key:   key.Clone(),
+		Value: slices.Clone(value),
+	}
+	return ret
+}
+
 func init() {
 	errors.RegisterLeafDecoder(errors.GetTypeKey((*MissingRecordError)(nil)), func(_ context.Context, _ string, _ []string, _ proto.Message) error {
 		return &MissingRecordError{}
@@ -1746,3 +1771,5 @@ var _ errors.SafeFormatter = &MinTimestampBoundUnsatisfiableError{}
 var _ errors.SafeFormatter = &RefreshFailedError{}
 var _ errors.SafeFormatter = &MVCCHistoryMutationError{}
 var _ errors.SafeFormatter = &UnhandledRetryableError{}
+var _ errors.SafeFormatter = &ReplicaUnavailableError{}
+var _ errors.SafeFormatter = &KeyCollisionError{}

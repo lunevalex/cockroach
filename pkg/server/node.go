@@ -1,12 +1,7 @@
 // Copyright 2014 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package server
 
@@ -14,6 +9,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"math"
 	"net"
 	"sort"
 	"strings"
@@ -43,6 +39,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/multitenant/tenantcapabilities/tenantcapabilitieswatcher"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/rpc"
+	"github.com/cockroachdb/cockroach/pkg/server/license"
 	"github.com/cockroachdb/cockroach/pkg/server/status"
 	"github.com/cockroachdb/cockroach/pkg/server/tenantsettingswatcher"
 	"github.com/cockroachdb/cockroach/pkg/settings"
@@ -56,7 +53,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/admission"
 	"github.com/cockroachdb/cockroach/pkg/util/admission/admissionpb"
 	"github.com/cockroachdb/cockroach/pkg/util/buildutil"
-	"github.com/cockroachdb/cockroach/pkg/util/envutil"
 	"github.com/cockroachdb/cockroach/pkg/util/future"
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
@@ -66,7 +62,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/metric"
 	"github.com/cockroachdb/cockroach/pkg/util/pprofutil"
 	"github.com/cockroachdb/cockroach/pkg/util/protoutil"
-	"github.com/cockroachdb/cockroach/pkg/util/quotapool"
 	"github.com/cockroachdb/cockroach/pkg/util/startup"
 	"github.com/cockroachdb/cockroach/pkg/util/stop"
 	"github.com/cockroachdb/cockroach/pkg/util/syncutil"
@@ -249,12 +244,14 @@ var (
 		`duration spent in processing above any available stack history is appended to its trace, if automatic trace snapshots are enabled`,
 		time.Second*30,
 	)
-)
 
-// By default, stores will be started concurrently.
-// To start stores sequentially set the environment variable
-// COCKROACH_CONCURRENT_STORE_START=false
-var startStoresAsync = envutil.EnvOrDefaultBool("COCKROACH_CONCURRENT_STORE_START", true)
+	livenessRangeCompactInterval = settings.RegisterDurationSetting(
+		settings.SystemOnly,
+		"kv.liveness_range_compact.interval",
+		`interval at which the liveness range is compacted. A value of 0 disables the periodic compaction`,
+		0,
+	)
+)
 
 type nodeMetrics struct {
 	Latency metric.IHistogram
@@ -413,6 +410,9 @@ type Node struct {
 		encodedVersion string
 		updateCh       chan struct{}
 	}
+
+	// licenseEnforcer is used to enforce license policies on the cluster
+	licenseEnforcer *license.Enforcer
 }
 
 var _ kvpb.InternalServer = &Node{}
@@ -459,25 +459,23 @@ func GetBootstrapSchema(
 func bootstrapCluster(
 	ctx context.Context, engines []storage.Engine, initCfg initServerCfg,
 ) (*initState, error) {
-	// We expect all the stores to be empty at this point, except for
-	// the store cluster version key. Assert so.
-	//
-	// TODO(jackson): Eventually we should be able to avoid opening the
-	// engines altogether until here.
-	if err := assertEnginesEmpty(engines); err != nil {
-		return nil, err
-	}
-
-	// We use our binary version to bootstrap the cluster.
-	bootstrapVersion := clusterversion.ClusterVersion{Version: initCfg.latestVersion}
-	if err := kvstorage.WriteClusterVersionToEngines(ctx, engines, bootstrapVersion); err != nil {
-		return nil, err
-	}
-
 	clusterID := uuid.MakeV4()
 	// TODO(andrei): It'd be cool if this method wouldn't do anything to engines
 	// other than the first one, and let regular node startup code deal with them.
+	var bootstrapVersion clusterversion.ClusterVersion
 	for i, eng := range engines {
+		cv := eng.MinVersion()
+		if cv.Major == 0 {
+			return nil, errors.Errorf("missing bootstrap version")
+		}
+
+		// bootstrapCluster requires matching cluster versions on all engines.
+		if i == 0 {
+			bootstrapVersion.Version = cv
+		} else if bootstrapVersion.Version != cv {
+			return nil, errors.Errorf("found cluster versions %s and %s", bootstrapVersion, cv)
+		}
+
 		sIdent := roachpb.StoreIdent{
 			ClusterID: clusterID,
 			NodeID:    kvstorage.FirstNodeID,
@@ -499,24 +497,23 @@ func bootstrapCluster(
 				DefaultSystemZoneConfig: &initCfg.defaultSystemZoneConfig,
 				Codec:                   keys.SystemSQLCodec,
 			}
-			for _, v := range bootstrap.VersionsWithInitialValues() {
-				if initCfg.latestVersion == v.Version() {
-					initialValuesOpts.OverrideKey = v
-					break
+			if initCfg.testingKnobs.Server != nil {
+				knobs := initCfg.testingKnobs.Server.(*TestingKnobs)
+				// If BinaryVersionOverride is set, and our `binaryMinSupportedVersion`
+				// is at its default value, we must populate the cluster with initial
+				// data from the `binaryMinSupportedVersion`. This cluster will then run
+				// the necessary upgrades until `BinaryVersionOverride` before being
+				// ready to use in the test.
+				if knobs.BinaryVersionOverride != (roachpb.Version{}) {
+					if initCfg.binaryMinSupportedVersion.Equal(
+						clusterversion.ByKey(clusterversion.BinaryMinSupportedVersionKey)) {
+						initialValuesOpts.OverrideKey = clusterversion.BinaryMinSupportedVersionKey
+					}
+				}
+				if knobs.BootstrapVersionKeyOverride != 0 {
+					initialValuesOpts.OverrideKey = initCfg.testingKnobs.Server.(*TestingKnobs).BootstrapVersionKeyOverride
 				}
 			}
-			if initialValuesOpts.OverrideKey == 0 {
-				if initCfg.latestVersion.Less(clusterversion.MinSupported.Version()) {
-					// As an exception, we tolerate tests creating older versions; we just
-					// use the minimum supported version.
-					// TODO(radu): should we make sure there are no upgrades for versions
-					// earlier than this still registered?
-					initialValuesOpts.OverrideKey = clusterversion.MinSupported
-				} else {
-					return nil, errors.AssertionFailedf("cannot bootstrap at version %s", initCfg.latestVersion)
-				}
-			}
-
 			initialValues, tableSplits, err := initialValuesOpts.GenerateInitialValues()
 			if err != nil {
 				return nil, err
@@ -541,9 +538,7 @@ func bootstrapCluster(
 		}
 	}
 
-	// Note that we wrote initcfg.binaryVersion, that will always be the version
-	// that inspectEngines determines.
-	return inspectEngines(ctx, engines, initCfg.latestVersion, initCfg.minSupportedVersion)
+	return inspectEngines(ctx, engines, initCfg.binaryVersion, initCfg.binaryMinSupportedVersion)
 }
 
 // NewNode returns a new instance of Node.
@@ -565,6 +560,7 @@ func NewNode(
 	tenantInfoWatcher *tenantcapabilitieswatcher.Watcher,
 	spanConfigAccessor spanconfig.KVAccessor,
 	spanConfigReporter spanconfig.Reporter,
+	licenseEnforcer *license.Enforcer,
 ) *Node {
 	n := &Node{
 		storeCfg:              cfg,
@@ -582,6 +578,7 @@ func NewNode(
 		spanConfigReporter:    spanConfigReporter,
 		testingErrorEvent:     cfg.TestingKnobs.TestingResponseErrorEvent,
 		spanStatsCollector:    spanstatscollector.New(cfg.Settings),
+		licenseEnforcer:       licenseEnforcer,
 	}
 	n.versionUpdateMu.updateCh = make(chan struct{})
 	n.perReplicaServer = kvserver.MakeServer(&n.Descriptor, n.stores)
@@ -641,7 +638,7 @@ func (n *Node) start(
 		Locality:        locality,
 		LocalityAddress: localityAddress,
 		ClusterName:     clusterName,
-		ServerVersion:   n.storeCfg.Settings.Version.LatestVersion(),
+		ServerVersion:   n.storeCfg.Settings.Version.BinaryVersion(),
 		BuildTag:        build.GetInfo().Tag,
 		StartedAt:       n.startedAt,
 		HTTPAddress:     util.MakeUnresolvedAddr(httpAddr.Network(), httpAddr.String()),
@@ -658,49 +655,15 @@ func (n *Node) start(
 		return errors.Wrapf(err, "couldn't gossip descriptor for node %d", n.Descriptor.NodeID)
 	}
 
-	// Create stores from engines that are already initialized. This uses a
-	// channel to collect errors when starting stores in separate goroutines.
-	// The channel is a buffered channel with the same size as the number of
-	// stores so worker go routines will never wait on the channel.
-	var sem *quotapool.IntPool
-	if !startStoresAsync {
-		sem = quotapool.NewIntPool("store start concurrency", 1)
-	}
-	engineErrC := make(chan error, len(state.initializedEngines))
-	for i := range state.initializedEngines {
-		engine := state.initializedEngines[i]
-		err := n.stopper.RunAsyncTaskEx(ctx,
-			stop.TaskOpts{TaskName: "initialize-stores", SpanOpt: stop.FollowsFromSpan, Sem: sem, WaitForSem: true},
-			func(ctx context.Context) {
-				start := timeutil.Now()
-				s := kvserver.NewStore(ctx, n.storeCfg, engine, &n.Descriptor)
-				if err := s.Start(workersCtx, n.stopper); err != nil {
-					engineErrC <- errors.Wrap(err, "failed to start store")
-					return
-				}
-				n.addStore(ctx, s)
-				log.Infof(ctx, "initialized store s%s in %s (%d replicas)",
-					s.StoreID(), timeutil.Since(start).Truncate(time.Millisecond), s.ReplicaCount())
-				engineErrC <- nil
-			})
-		if err != nil {
-			return err
+	// Create stores from the engines that were already initialized.
+	for _, e := range state.initializedEngines {
+		s := kvserver.NewStore(ctx, n.storeCfg, e, &n.Descriptor)
+		if err := s.Start(workersCtx, n.stopper); err != nil {
+			return errors.Wrap(err, "failed to start store")
 		}
-	}
 
-	// Collect errors from the go routines and return the first error received.
-	// This also waits for all stores to finish starting.
-	for range state.initializedEngines {
-		select {
-		case <-n.stopper.ShouldQuiesce():
-			return errors.New("shutting down")
-		case <-ctx.Done():
-			return ctx.Err()
-		case err := <-engineErrC:
-			if err != nil {
-				return err
-			}
-		}
+		n.addStore(ctx, s)
+		log.Infof(ctx, "initialized store s%s", s.StoreID())
 	}
 
 	// Verify all initialized stores agree on cluster and node IDs.
@@ -794,9 +757,11 @@ func (n *Node) start(
 	allEngines = append(allEngines, state.uninitializedEngines...)
 	for _, e := range allEngines {
 		t := e.Type()
-		log.Infof(ctx, "started with engine type %v", &t)
+		log.Infof(ctx, "started with engine type %v", t)
 	}
 	log.Infof(ctx, "started with attributes %v", attrs.Attrs)
+
+	n.startPeriodicLivenessCompaction(n.stopper, livenessRangeCompactInterval)
 	return nil
 }
 
@@ -910,7 +875,7 @@ func (n *Node) initializeAdditionalStores(
 			}
 
 			n.addStore(ctx, s)
-			log.Infof(ctx, "initialized new store s%s", s.StoreID())
+			log.Infof(ctx, "initialized store s%s", s.StoreID())
 
 			// Done regularly in Node.startGossiping, but this cuts down the time
 			// until this store is used for range allocations.
@@ -1007,6 +972,87 @@ func (n *Node) startComputePeriodicMetrics(stopper *stop.Stopper, interval time.
 			}
 		}
 	})
+}
+
+// startPeriodicLivenessCompaction starts a loop where it periodically compacts
+// the liveness range.
+func (n *Node) startPeriodicLivenessCompaction(
+	stopper *stop.Stopper, livenessRangeCompactInterval *settings.DurationSetting,
+) {
+	ctx := n.AnnotateCtx(context.Background())
+
+	// getCompactionInterval() returns the interval at which the liveness range is
+	// set to be compacted. If the interval is set to 0, the period is set to the
+	// max possible duration because a value of 0 cause the ticker to panic.
+	getCompactionInterval := func() time.Duration {
+		interval := livenessRangeCompactInterval.Get(&n.storeCfg.Settings.SV)
+		if interval == 0 {
+			interval = math.MaxInt64
+		}
+		return interval
+	}
+
+	if err := stopper.RunAsyncTask(ctx, "liveness-compaction", func(ctx context.Context) {
+		interval := getCompactionInterval()
+		ticker := time.NewTicker(interval)
+
+		intervalChangeChan := make(chan time.Duration)
+
+		// Update the compaction interval when the setting changes.
+		livenessRangeCompactInterval.SetOnChange(&n.storeCfg.Settings.SV, func(ctx context.Context) {
+			// intervalChangeChan is used to signal the compaction loop that the
+			// interval has changed. Avoid blocking the main goroutine that is
+			// responsible for handling all settings updates.
+			select {
+			case intervalChangeChan <- getCompactionInterval():
+			default:
+			}
+		})
+
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				// Find the liveness replica in order to compact it.
+				_ = n.stores.VisitStores(func(store *kvserver.Store) error {
+					store.VisitReplicas(func(repl *kvserver.Replica) bool {
+						span := repl.Desc().KeySpan().AsRawSpanWithNoLocals()
+						if keys.NodeLivenessSpan.Overlaps(span) {
+
+							// The CompactRange() method expects the start and end keys to be
+							// encoded.
+							startEngineKey :=
+								storage.EngineKey{
+									Key: span.Key,
+								}.Encode()
+
+							endEngineKey :=
+								storage.EngineKey{
+									Key: span.EndKey,
+								}.Encode()
+
+							timeBeforeCompaction := timeutil.Now()
+							if err := store.StateEngine().CompactRange(startEngineKey, endEngineKey); err != nil {
+								log.Errorf(ctx, "failed compacting liveness replica: %+v with error: %s", repl, err)
+							}
+
+							log.Infof(ctx, "finished compacting liveness replica: %+v and it took: %+v",
+								repl, timeutil.Since(timeBeforeCompaction))
+						}
+						return true
+					})
+					return nil
+				})
+			case newInterval := <-intervalChangeChan:
+				ticker.Reset(newInterval)
+			case <-stopper.ShouldQuiesce():
+				return
+			}
+		}
+	}); err != nil {
+		log.Errorf(ctx, "failed to start the async liveness compaction task")
+	}
+
 }
 
 // computeMetricsPeriodically instructs each store to compute the value of
@@ -1353,7 +1399,7 @@ func (n *Node) batchInternal(
 		}
 		reqSp.finish(br, redact)
 	}()
-	if log.HasSpan(ctx) {
+	if log.HasSpanOrEvent(ctx) {
 		log.Eventf(ctx, "node received request: %s", args.Summary())
 		defer log.Event(ctx, "node sending response")
 	}
@@ -2231,6 +2277,9 @@ func (n *Node) TenantSettings(
 			// between the protobufs.
 			ServiceMode: uint32(tInfo.ServiceMode),
 			DataState:   uint32(tInfo.DataState),
+			// Flow the cluster init grace period end ts. Secondary tenant cannot
+			// access the KV location where this is stored.
+			ClusterInitGracePeriodEndTS: n.licenseEnforcer.GetClusterInitGracePeriodEndTS().Unix(),
 		})
 	}
 
@@ -2324,8 +2373,20 @@ func (n *Node) TenantSettings(
 			// All-tenant overrides have changed, send them again.
 			// TODO(multitenant): We can optimize this by only sending the delta since the last
 			// update, with Incremental set to true.
+
+			// Inject the current storage logical version as an override to
+			// work around the situation where the `system.tenant_settings`
+			// has a wrong version data (see #125702).
+			//
+			// TODO(multitenant): remove this override when the minimum
+			// supported version is 24.1+.
+			verSetting, versionUpdateCh = n.getVersionSettingWithUpdateCh(ctx)
 			allOverrides, allCh = settingsWatcher.GetAllTenantOverrides(ctx)
-			if err := sendSettings(kvpb.TenantSettingsEvent_ALL_TENANTS_OVERRIDES, allOverrides, false /* incremental */); err != nil {
+			actualOverrides := append(
+				append([]kvpb.TenantSetting{}, allOverrides...),
+				verSetting,
+			)
+			if err := sendSettings(kvpb.TenantSettingsEvent_ALL_TENANTS_OVERRIDES, actualOverrides, false /* incremental */); err != nil {
 				return err
 			}
 
@@ -2569,8 +2630,7 @@ func (n *Node) SpanConfigConformance(
 func (n *Node) GetRangeDescriptors(
 	args *kvpb.GetRangeDescriptorsRequest, stream kvpb.Internal_GetRangeDescriptorsServer,
 ) error {
-
-	iter, err := n.execCfg.RangeDescIteratorFactory.NewLazyIterator(stream.Context(), args.Span, int(args.BatchSize))
+	iter, err := n.execCfg.RangeDescIteratorFactory.NewIterator(stream.Context(), args.Span)
 	if err != nil {
 		return err
 	}
@@ -2578,19 +2638,9 @@ func (n *Node) GetRangeDescriptors(
 	var rangeDescriptors []roachpb.RangeDescriptor
 	for iter.Valid() {
 		rangeDescriptors = append(rangeDescriptors, iter.CurRangeDescriptor())
-		if args.BatchSize > 0 && len(rangeDescriptors) >= int(args.BatchSize) {
-			if err := stream.Send(&kvpb.GetRangeDescriptorsResponse{
-				RangeDescriptors: rangeDescriptors,
-			}); err != nil {
-				return err
-			}
-			rangeDescriptors = make([]roachpb.RangeDescriptor, 0, len(rangeDescriptors))
-		}
 		iter.Next()
 	}
-	if err := iter.Error(); err != nil {
-		return err
-	}
+
 	return stream.Send(&kvpb.GetRangeDescriptorsResponse{
 		RangeDescriptors: rangeDescriptors,
 	})

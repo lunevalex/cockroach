@@ -1,12 +1,7 @@
 // Copyright 2022 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 // Package redactcheck defines an Analyzer that checks registered redact-safe
 // types against an allow-list.
@@ -75,8 +70,13 @@ func runAnalyzer(pass *analysis.Pass) (interface{}, error) {
 						"sz":     {},
 						"timing": {},
 					},
+					"github.com/cockroachdb/cockroach/pkg/jobs": {
+						"RunningStatus": {},
+						"Status":        {},
+					},
 					"github.com/cockroachdb/cockroach/pkg/jobs/jobspb": {
-						"Type": {},
+						"Type":                      {},
+						"ResolvedSpan_BoundaryType": {},
 					},
 					"github.com/cockroachdb/cockroach/pkg/kv/bulk": {
 						"sz":     {},
@@ -88,20 +88,6 @@ func runAnalyzer(pass *analysis.Pass) (interface{}, error) {
 						"RaftIndex":         {},
 						"RaftTerm":          {},
 						"PushTxnType":       {},
-					},
-					"github.com/cockroachdb/cockroach/pkg/kv/kvserver/allocator": {
-						"LeaseTransferOutcome": {},
-					},
-					"github.com/cockroachdb/cockroach/pkg/kv/kvserver/allocator/allocatorimpl": {
-						"AllocatorAction":   {},
-						"TargetReplicaType": {},
-						"ReplicaStatus":     {},
-					},
-					"github.com/cockroachdb/cockroach/pkg/kv/kvserver/allocator/load": {
-						"Dimension": {},
-					},
-					"github.com/cockroachdb/cockroach/pkg/kv/kvserver/allocator/storepool": {
-						"storeStatus": {},
 					},
 					"github.com/cockroachdb/cockroach/pkg/kv/kvserver/closedts/ctpb": {
 						"SeqNum": {},
@@ -118,15 +104,9 @@ func runAnalyzer(pass *analysis.Pass) (interface{}, error) {
 					"github.com/cockroachdb/cockroach/pkg/kv/kvserver/kvserverpb": {
 						"SnapshotRequest_Type": {},
 					},
-					"github.com/cockroachdb/cockroach/pkg/kv/kvserver/liveness/livenesspb": {
-						"MembershipStatus": {},
-					},
 					"github.com/cockroachdb/cockroach/pkg/kv/kvserver/spanset": {
 						"SpanAccess": {},
 						"SpanScope":  {},
-					},
-					"github.com/cockroachdb/cockroach/pkg/kv/kvserver/split": {
-						"SplitObjective": {},
 					},
 					"github.com/cockroachdb/cockroach/pkg/multitenant/tenantcapabilities": {
 						"ID": {},
@@ -135,24 +115,27 @@ func runAnalyzer(pass *analysis.Pass) (interface{}, error) {
 						"StreamID": {},
 					},
 					"github.com/cockroachdb/cockroach/pkg/roachpb": {
-						"LeaseSequence":     {},
-						"NodeID":            {},
-						"RangeGeneration":   {},
-						"RangeID":           {},
-						"ReplicaChangeType": {},
-						"ReplicaID":         {},
-						"ReplicaType":       {},
-						"StoreID":           {},
-						"StoreIDSlice":      {},
-						"TenantID":          {},
-						"TransactionStatus": {},
+						"LeaseAcquisitionType": {},
+						"LeaseSequence":        {},
+						"NodeID":               {},
+						"RangeGeneration":      {},
+						"RangeID":              {},
+						"ReplicaChangeType":    {},
+						"ReplicaID":            {},
+						"ReplicaType":          {},
+						"StoreID":              {},
+						"StoreIDSlice":         {},
+						"TenantID":             {},
+						"TransactionStatus":    {},
 					},
-					"github.com/cockroachdb/cockroach/pkg/rpc/rpcpb": {
+					"github.com/cockroachdb/cockroach/pkg/rpc": {
 						"ConnectionClass": {},
 					},
+					"github.com/cockroachdb/cockroach/pkg/server/license": {
+						"LicType": {},
+					},
 					"github.com/cockroachdb/cockroach/pkg/sql/catalog/catpb": {
-						"JobID":      {},
-						"ScheduleID": {},
+						"JobID": {},
 					},
 					"github.com/cockroachdb/cockroach/pkg/sql/catalog/descpb": {
 						"ConstraintValidity":           {},
@@ -196,6 +179,7 @@ func runAnalyzer(pass *analysis.Pass) (interface{}, error) {
 					},
 					"github.com/cockroachdb/cockroach/pkg/sql/sem/tree": {
 						"IsolationLevel": {},
+						"PlaceholderIdx": {},
 					},
 					"github.com/cockroachdb/cockroach/pkg/sql/sqlliveness": {
 						"SessionID": {},

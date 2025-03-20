@@ -1,12 +1,7 @@
 // Copyright 2021 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package main
 
@@ -204,11 +199,5 @@ func (m *monitorImpl) wait() error {
 	// goroutines after wait() returns.
 	monitorErr := m.WaitForNodeDeath()
 
-	// For better error messages in roachtest failures, we make the
-	// "context canceled" error secondary.
-	if errors.Is(userErr, context.Canceled) {
-		return errors.CombineErrors(monitorErr, userErr)
-	}
-
-	return errors.CombineErrors(userErr, monitorErr)
+	return errors.Join(userErr, monitorErr)
 }

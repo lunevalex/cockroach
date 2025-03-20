@@ -1,12 +1,7 @@
 // Copyright 2023 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package instancestorage
 
@@ -22,6 +17,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/desctestutils"
 	"github.com/cockroachdb/cockroach/pkg/sql/enum"
 	"github.com/cockroachdb/cockroach/pkg/sql/sqlliveness/slstorage"
+	"github.com/cockroachdb/cockroach/pkg/sql/sqlliveness/sqllivenesstestutils"
 	"github.com/cockroachdb/cockroach/pkg/testutils/serverutils"
 	"github.com/cockroachdb/cockroach/pkg/testutils/sqlutils"
 	"github.com/cockroachdb/cockroach/pkg/util/grpcutil"
@@ -88,10 +84,14 @@ func TestRangeFeed(t *testing.T) {
 
 	t.Run("success", func(t *testing.T) {
 		storage := newStorage(t, tenant.Codec())
+		startTS := tenant.Clock().Now()
+		session := &sqllivenesstestutils.FakeSession{
+			StartTS: startTS,
+			ExpTS:   startTS.Add(int64(time.Minute), 0),
+		}
+		require.NoError(t, storage.generateAvailableInstanceRows(ctx, [][]byte{enum.One}, session))
 
-		require.NoError(t, storage.generateAvailableInstanceRows(ctx, [][]byte{enum.One}, tenant.Clock().Now().Add(int64(time.Minute), 0)))
-
-		feed, err := storage.newInstanceCache(ctx)
+		feed, err := storage.newInstanceCache(ctx, tenant.AppStopper())
 		require.NoError(t, err)
 		require.NotNil(t, feed)
 		defer feed.Close()
@@ -104,7 +104,7 @@ func TestRangeFeed(t *testing.T) {
 
 	t.Run("auth_error", func(t *testing.T) {
 		storage := newStorage(t, keys.SystemSQLCodec)
-		_, err := storage.newInstanceCache(ctx)
+		_, err := storage.newInstanceCache(ctx, tenant.AppStopper())
 		require.True(t, grpcutil.IsAuthError(err), "expected %+v to be an auth error", err)
 	})
 
@@ -114,7 +114,7 @@ func TestRangeFeed(t *testing.T) {
 		ctx, cancel := context.WithCancel(ctx)
 		cancel()
 
-		_, err := storage.newInstanceCache(ctx)
+		_, err := storage.newInstanceCache(ctx, tenant.AppStopper())
 		require.Error(t, err)
 		require.ErrorIs(t, err, ctx.Err())
 	})

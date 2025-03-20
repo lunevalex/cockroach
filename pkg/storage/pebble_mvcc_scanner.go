@@ -1,12 +1,7 @@
 // Copyright 2019 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package storage
 
@@ -19,6 +14,7 @@ import (
 
 	"github.com/cockroachdb/cockroach/pkg/keys"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvpb"
+	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/concurrency/lock"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/uncertainty"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/storage/enginepb"
@@ -548,8 +544,8 @@ func (p *pebbleMVCCScanner) init(
 	p.uncertainty = ui
 	// We must check uncertainty even if p.ts >= local_uncertainty_limit
 	// because the local uncertainty limit cannot be applied to values with
-	// future-time timestamps with earlier local timestamps. We are only able
-	// to skip uncertainty checks if p.ts >= global_uncertainty_limit.
+	// synthetic timestamps. We are only able to skip uncertainty checks if
+	// p.ts >= global_uncertainty_limit.
 	p.checkUncertainty = p.ts.Less(p.uncertainty.GlobalLimit)
 }
 
@@ -1393,9 +1389,9 @@ func (p *pebbleMVCCScanner) seekVersion(
 			// is set to the transaction's global uncertainty limit, so we are
 			// seeking based on the worst-case uncertainty, but values with a
 			// time in the range (uncertainty.LocalLimit, uncertainty.GlobalLimit]
-			// are only uncertain if they have an earlier local timestamp that is
-			// before uncertainty.LocalLimit. Meanwhile, any value with a time in
-			// the range (ts, uncertainty.LocalLimit] is uncertain.
+			// are only uncertain if their timestamps are synthetic. Meanwhile,
+			// any value with a time in the range (ts, uncertainty.LocalLimit]
+			// is uncertain.
 			localTS := p.curUnsafeValue.GetLocalTimestamp(p.curUnsafeKey.Timestamp)
 			if p.uncertainty.IsUncertain(p.curUnsafeKey.Timestamp, localTS) {
 				return p.uncertaintyError(p.curUnsafeKey.Timestamp, localTS), false
@@ -1804,7 +1800,11 @@ func (p *pebbleMVCCScanner) isKeyLockedByConflictingTxn(
 		p.err = err
 		return false, false
 	}
-	ok, txn, err := p.lockTable.IsKeyLockedByConflictingTxn(ctx, key)
+	strength := lock.None
+	if p.failOnMoreRecent {
+		strength = lock.Exclusive
+	}
+	ok, txn, err := p.lockTable.IsKeyLockedByConflictingTxn(key, strength)
 	if err != nil {
 		p.err = err
 		return false, false

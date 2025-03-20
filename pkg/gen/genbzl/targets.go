@@ -1,12 +1,7 @@
 // Copyright 2022 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package main
 
@@ -114,13 +109,12 @@ kind("generated file", {{ .All }}) - (
 	},
 	{
 		target: "ui",
-		// NB: Note that we don't execute a query to list these genrules.
+		// NB: Note that we don't execute a query to list this genrule.
 		// There are very few specifically in `pkg/ui`, and performing this
 		// query requires fetching a lot of the JS stuff. We don't need to
-		// perform this query just to list these two genrules.
+		// perform this query just to list one genrule.
 		hardCodedQueryResults: []string{
 			"//pkg/ui/distccl:genassets",
-			"//pkg/ui/distoss:genassets",
 		},
 	},
 }

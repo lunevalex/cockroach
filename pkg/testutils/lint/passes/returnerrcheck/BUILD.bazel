@@ -18,13 +18,10 @@ go_test(
     name = "returnerrcheck_test",
     size = "small",
     srcs = ["returnerrcheck_test.go"],
+    args = ["-test.timeout=55s"],
     data = glob(["testdata/**"]) + [
         "@go_sdk//:files",
     ],
-    exec_properties = select({
-        "//build/toolchains:is_heavy": {"Pool": "heavy"},
-        "//conditions:default": {"Pool": "default"},
-    }),
     deps = [
         ":returnerrcheck",
         "//pkg/build/bazel",

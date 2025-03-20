@@ -1,12 +1,7 @@
 // Copyright 2021 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package tabledesc
 
@@ -30,7 +25,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/rowenc"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/semenumpb"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
-	"github.com/cockroachdb/cockroach/pkg/sql/sqlerrors"
 	"github.com/cockroachdb/cockroach/pkg/sql/types"
 	"github.com/cockroachdb/cockroach/pkg/util/errorutil/unimplemented"
 	"github.com/cockroachdb/cockroach/pkg/util/interval"
@@ -869,7 +863,7 @@ func (desc *wrapper) ValidateSelf(vea catalog.ValidationErrorAccumulator) {
 			desc.validateColumnFamilies(columnsByID),
 			desc.validateCheckConstraints(columnsByID),
 			desc.validateUniqueWithoutIndexConstraints(columnsByID),
-			desc.validateTableIndexes(columnsByID, vea.IsActive),
+			desc.validateTableIndexes(columnsByID),
 			desc.validatePartitioning(),
 		}
 		hasErrs := false
@@ -882,6 +876,7 @@ func (desc *wrapper) ValidateSelf(vea catalog.ValidationErrorAccumulator) {
 		if hasErrs {
 			return
 		}
+
 	}
 
 	// Ensure that mutations cannot be queued if a primary key change, TTL change
@@ -1143,7 +1138,7 @@ func (desc *wrapper) validateColumns() error {
 
 		if column.IsComputed() {
 			if column.HasDefault() {
-				return pgerror.Newf(pgcode.InvalidTableDefinition,
+				return pgerror.Newf(pgcode.Syntax,
 					"computed column %q cannot also have a DEFAULT expression",
 					column.GetName(),
 				)
@@ -1389,9 +1384,7 @@ func (desc *wrapper) validateUniqueWithoutIndexConstraints(
 // IDs are unique, and the family of the primary key is 0. This does not check
 // if indexes are unique (i.e. same set of columns, direction, and uniqueness)
 // as there are practical uses for them.
-func (desc *wrapper) validateTableIndexes(
-	columnsByID map[descpb.ColumnID]catalog.Column, isActive func(version clusterversion.Key) bool,
-) error {
+func (desc *wrapper) validateTableIndexes(columnsByID map[descpb.ColumnID]catalog.Column) error {
 	if len(desc.PrimaryIndex.KeyColumnIDs) == 0 {
 		return ErrMissingPrimaryKey
 	}
@@ -1515,10 +1508,6 @@ func (desc *wrapper) validateTableIndexes(
 			}
 			if col.Dropped() && idx.GetEncodingType() != catenumpb.PrimaryIndexEncoding {
 				return errors.Newf("secondary index %q contains dropped stored column %q", idx.GetName(), col.ColName())
-			}
-			// Ensure any active index does not store a primary key column (added and gated in V24.1).
-			if !idx.IsMutation() && catalog.MakeTableColSet(desc.PrimaryIndex.KeyColumnIDs...).Contains(colID) && isActive(clusterversion.V24_1) {
-				return sqlerrors.NewColumnAlreadyExistsInIndexError(idx.GetName(), col.GetName())
 			}
 		}
 		if idx.IsSharded() {
@@ -1657,9 +1646,7 @@ func (desc *wrapper) validateTableIndexes(
 					idx.GetName(), idx.IndexDesc().EncodingType, catenumpb.SecondaryIndexEncoding)
 			}
 		}
-
-		// Ensure that an index column ID shows up at most once in `keyColumnIDs`,
-		// `keySuffixColumnIDs`, and `storeColumnIDs`.
+		// Ensure that index column ID subsets are well formed.
 		if idx.GetVersion() < descpb.StrictIndexColumnIDGuaranteesVersion {
 			continue
 		}

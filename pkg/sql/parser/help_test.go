@@ -1,12 +1,7 @@
 // Copyright 2017 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package parser
 
@@ -78,8 +73,6 @@ func TestContextualHelp(t *testing.T) {
 
 		{`ALTER TENANT foo RENAME TO bar ??`, `ALTER VIRTUAL CLUSTER RENAME`},
 		{`ALTER VIRTUAL CLUSTER foo RENAME TO bar ??`, `ALTER VIRTUAL CLUSTER RENAME`},
-
-		{`ALTER VIRTUAL CLUSTER foo RESET DATA TO SYSTEM TIME -1 ??`, `ALTER VIRTUAL CLUSTER RESET`},
 
 		{`ALTER VIRTUAL CLUSTER foo START SERVICE ??`, `ALTER VIRTUAL CLUSTER SERVICE`},
 		{`ALTER VIRTUAL CLUSTER foo STOP ??`, `ALTER VIRTUAL CLUSTER SERVICE`},
@@ -467,7 +460,6 @@ func TestContextualHelp(t *testing.T) {
 		{`SHOW VIRTUAL CLUSTER ??`, `SHOW VIRTUAL CLUSTER`},
 		{`SHOW TENANT ??`, `SHOW VIRTUAL CLUSTER`},
 		{`SHOW VIRTUAL CLUSTER ?? WITH REPLICATION STATUS`, `SHOW VIRTUAL CLUSTER`},
-		{`SHOW VIRTUAL CLUSTER ?? WITH PRIOR REPLICATION DETAILS`, `SHOW VIRTUAL CLUSTER`},
 		{`SHOW TENANT ?? WITH REPLICATION STATUS`, `SHOW VIRTUAL CLUSTER`},
 
 		{`SHOW TRANSACTION PRIORITY ??`, `SHOW TRANSACTION`},
@@ -498,6 +490,7 @@ func TestContextualHelp(t *testing.T) {
 		{`SELECT * FROM ??`, `<SOURCE>`},
 		{`SELECT 1 AS OF ??`, `SELECT`},
 		{`SELECT 1 FROM foo ??`, `SELECT`},
+		{`SELECT 1 FROM foo WHERE ??`, `SELECT`},
 		{`SELECT 1 FROM (SELECT ??`, `SELECT`},
 		{`SELECT 1 FROM (VALUES ??`, `VALUES`},
 		{`SELECT 1 FROM (TABLE ??`, `TABLE`},

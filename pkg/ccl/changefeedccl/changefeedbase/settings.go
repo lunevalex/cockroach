@@ -1,10 +1,7 @@
 // Copyright 2020 The Cockroach Authors.
 //
-// Licensed as a CockroachDB Enterprise file under the Cockroach Community
-// License (the "License"); you may not use this file except in compliance with
-// the License. You may obtain a copy of the License at
-//
-//     https://github.com/cockroachdb/cockroach/blob/master/licenses/CCL.txt
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package changefeedbase
 
@@ -203,6 +200,14 @@ var ProtectTimestampInterval = settings.RegisterDurationSetting(
 	settings.PositiveDuration,
 	settings.WithPublic)
 
+// ProtectTimestampLag controls how much the protected timestamp record should lag behind the high watermark
+var ProtectTimestampLag = settings.RegisterDurationSetting(
+	settings.ApplicationLevel,
+	"changefeed.protect_timestamp.lag",
+	"controls how far behind the checkpoint the changefeed's protected timestamp is",
+	10*time.Minute,
+	settings.PositiveDuration)
+
 // MaxProtectedTimestampAge controls the frequency of protected timestamp record updates
 var MaxProtectedTimestampAge = settings.RegisterDurationSetting(
 	settings.ApplicationLevel,
@@ -220,6 +225,14 @@ var BatchReductionRetryEnabled = settings.RegisterBoolSetting(
 	false,
 	settings.WithName("changefeed.batch_reduction_retry.enabled"),
 	settings.WithPublic)
+
+// UseMuxRangeFeed enables the use of MuxRangeFeed RPC.
+var UseMuxRangeFeed = settings.RegisterBoolSetting(
+	settings.ApplicationLevel,
+	"changefeed.mux_rangefeed.enabled",
+	"if true, changefeed uses multiplexing rangefeed RPC",
+	util.ConstantWithMetamorphicTestBool("changefeed.mux_rangefeed.enabled", false),
+)
 
 // EventConsumerWorkers specifies the maximum number of workers to use when
 // processing  events.
@@ -283,7 +296,9 @@ var SinkIOWorkers = settings.RegisterIntSetting(
 	settings.ApplicationLevel,
 	"changefeed.sink_io_workers",
 	"the number of workers used by changefeeds when sending requests to the sink "+
-		"(currently webhook only): <0 disables, 0 assigns a reasonable default, >0 assigns the setting value",
+		"(currently the batching versions of webhook, pubsub, and kafka sinks that are "+
+		"enabled by changefeed.new_<sink type>_sink_enabled only): <0 disables, 0 assigns "+
+		"a reasonable default, >0 assigns the setting value",
 	0,
 	settings.WithPublic)
 
@@ -299,6 +314,26 @@ var SinkPacerRequestSize = settings.RegisterDurationSetting(
 		"request more",
 	50*time.Millisecond,
 	settings.PositiveDuration,
+)
+
+// UsageMetricsReportingInterval is the interval at which the changefeed
+// calculates and updates its usage metric.
+var UsageMetricsReportingInterval = settings.RegisterDurationSetting(
+	settings.ApplicationLevel,
+	"changefeed.usage.reporting_interval",
+	"the interval at which the changefeed calculates and updates its usage metric",
+	5*time.Minute,
+	settings.PositiveDuration, settings.DurationInRange(2*time.Minute, 50*time.Minute),
+)
+
+// UsageMetricsReportingTimeoutPercent is the percent of
+// UsageMetricsReportingInterval that may be spent gathering the usage metrics.
+var UsageMetricsReportingTimeoutPercent = settings.RegisterIntSetting(
+	settings.ApplicationLevel,
+	"changefeed.usage.reporting_timeout_percent",
+	"the percent of changefeed.usage.reporting_interval that may be spent gathering the usage metrics",
+	50,
+	settings.IntInRange(10, 100),
 )
 
 // DefaultLaggingRangesThreshold is the default duration by which a range must be

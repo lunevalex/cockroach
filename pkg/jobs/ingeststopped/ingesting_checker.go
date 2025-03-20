@@ -1,12 +1,7 @@
 // Copyright 2023 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package ingeststopped
 
@@ -16,6 +11,7 @@ import (
 	"time"
 
 	"github.com/cockroachdb/cockroach/pkg/jobs"
+	"github.com/cockroachdb/cockroach/pkg/jobs/jobspb"
 	"github.com/cockroachdb/cockroach/pkg/sql"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/catpb"
 	"github.com/cockroachdb/cockroach/pkg/sql/execinfrapb"
@@ -59,8 +55,9 @@ func WaitForNoIngestingNodes(
 		}
 
 		if timeutil.Since(lastStatusUpdate) > statusUpdateFrequency {
-			status := jobs.RunningStatus(fmt.Sprintf("waiting for all nodes to finish ingesting writing before proceeding: %s", err))
-			if statusErr := job.NoTxn().RunningStatus(ctx, status); statusErr != nil {
+			if statusErr := job.NoTxn().RunningStatus(ctx, func(_ context.Context, _ jobspb.Details) (jobs.RunningStatus, error) {
+				return jobs.RunningStatus(fmt.Sprintf("waiting for all nodes to finish ingesting writing before proceeding: %s", err)), nil
+			}); statusErr != nil {
 				log.Warningf(ctx, "failed to update running status of job %d: %s", job.ID(), statusErr)
 			} else {
 				lastStatusUpdate = timeutil.Now()

@@ -1,12 +1,7 @@
 // Copyright 2020 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package sql
 
@@ -44,6 +39,10 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/timeutil"
 	"github.com/cockroachdb/errors"
 	"github.com/cockroachdb/redact"
+)
+
+const (
+	tenantCreationMinSupportedVersionKey = clusterversion.BinaryMinSupportedVersionKey
 )
 
 // CreateTenant implements the tree.TenantOperator interface.
@@ -157,28 +156,24 @@ func (p *planner) createTenantInternal(
 	var splits []roachpb.RKey
 
 	var bootstrapVersionOverride clusterversion.Key
-	switch {
-	case p.EvalContext().TestingKnobs.TenantLogicalVersionKeyOverride != 0:
+	if p.EvalContext().TestingKnobs.TenantLogicalVersionKeyOverride != 0 {
 		// An override was passed using testing knobs. Bootstrap the cluster
 		// using this override.
-		tenantVersion.Version = p.EvalContext().TestingKnobs.TenantLogicalVersionKeyOverride.Version()
+		tenantVersion.Version = clusterversion.ByKey(p.EvalContext().TestingKnobs.TenantLogicalVersionKeyOverride)
 		bootstrapVersionOverride = p.EvalContext().TestingKnobs.TenantLogicalVersionKeyOverride
-	case p.EvalContext().Settings.Version.IsActive(ctx, clusterversion.Latest):
+	} else if !p.EvalContext().Settings.Version.IsActive(ctx, clusterversion.BinaryVersionKey) {
+		// The cluster is not running the latest version.
+		// Use the previous major version to create the tenant and bootstrap it
+		// just like the previous major version binary would, using hardcoded
+		// initial values.
+		tenantVersion.Version = clusterversion.ByKey(tenantCreationMinSupportedVersionKey)
+		bootstrapVersionOverride = tenantCreationMinSupportedVersionKey
+	} else {
 		// The cluster is running the latest version.
 		// Use this version to create the tenant and bootstrap it using the host
 		// cluster's bootstrapping logic.
-		tenantVersion.Version = clusterversion.Latest.Version()
+		tenantVersion.Version = clusterversion.ByKey(clusterversion.BinaryVersionKey)
 		bootstrapVersionOverride = 0
-	case p.EvalContext().Settings.Version.IsActive(ctx, clusterversion.PreviousRelease):
-		// If the previous major version is active, use that version to create the
-		// tenant and bootstrap it just like the previous major version binary
-		// would, using hardcoded initial values.
-		tenantVersion.Version = clusterversion.PreviousRelease.Version()
-		bootstrapVersionOverride = clusterversion.PreviousRelease
-	default:
-		// Otherwise, use the initial values from the min supported version.
-		tenantVersion.Version = clusterversion.MinSupported.Version()
-		bootstrapVersionOverride = clusterversion.MinSupported
 	}
 
 	initialValuesOpts := bootstrap.InitialValuesOpts{
@@ -271,6 +266,9 @@ func CreateTenantRecord(
 		return roachpb.TenantID{}, err
 	}
 	if info.Name != "" {
+		if !settings.Version.IsActive(ctx, clusterversion.V23_1TenantNamesStateAndServiceMode) {
+			return roachpb.TenantID{}, pgerror.Newf(pgcode.FeatureNotSupported, "cannot use tenant names")
+		}
 		if err := info.Name.IsValid(); err != nil {
 			return roachpb.TenantID{}, pgerror.WithCandidateCode(err, pgcode.Syntax)
 		}
@@ -294,20 +292,23 @@ func CreateTenantRecord(
 		return roachpb.TenantID{}, pgerror.Newf(pgcode.ProgramLimitExceeded, "tenant ID %d out of range", info.ID)
 	}
 
-	// Update the ID sequence.
+	// Update the ID sequence if available.
 	// We only keep the latest ID.
-	if err := updateTenantIDSequence(ctx, txn, info.ID); err != nil {
-		return roachpb.TenantID{}, err
+	if settings.Version.IsActive(ctx, clusterversion.V23_1_TenantIDSequence) {
+		if err := updateTenantIDSequence(ctx, txn, info.ID); err != nil {
+			return roachpb.TenantID{}, err
+		}
 	}
 
 	if info.Name == "" {
-		// No name: generate one.
-		info.Name = roachpb.TenantName(fmt.Sprintf("cluster-%d", info.ID))
+		// No name: generate one if we are at the appropriate version.
+		if settings.Version.IsActive(ctx, clusterversion.V23_1TenantNamesStateAndServiceMode) {
+			info.Name = roachpb.TenantName(fmt.Sprintf("cluster-%d", info.ID))
+		}
 	}
 
 	// Populate the deprecated DataState field for compatibility
 	// with pre-v23.1 servers.
-	// TODO(radu): we can remove this now.
 	switch info.DataState {
 	case mtinfopb.DataStateReady:
 		info.DeprecatedDataState = mtinfopb.ProtoInfo_READY
@@ -333,6 +334,9 @@ func CreateTenantRecord(
 	// Insert into the tenant table and detect collisions.
 	var name tree.Datum
 	if info.Name != "" {
+		if !settings.Version.IsActive(ctx, clusterversion.V23_1TenantNamesStateAndServiceMode) {
+			return roachpb.TenantID{}, pgerror.Newf(pgcode.FeatureNotSupported, "cannot use tenant names")
+		}
 		name = tree.NewDString(string(info.Name))
 	} else {
 		name = tree.DNull
@@ -340,6 +344,11 @@ func CreateTenantRecord(
 
 	query := `INSERT INTO system.tenants (id, active, info, name, data_state, service_mode) VALUES ($1, $2, $3, $4, $5, $6)`
 	args := []interface{}{tenID, active, infoBytes, name, info.DataState, info.ServiceMode}
+	if !settings.Version.IsActive(ctx, clusterversion.V23_1TenantNamesStateAndServiceMode) {
+		// Ensure the insert can succeed if the upgrade is not finalized yet.
+		query = `INSERT INTO system.tenants (id, active, info) VALUES ($1, $2, $3)`
+		args = args[:3]
+	}
 
 	if num, err := txn.ExecEx(
 		ctx, "create-tenant", txn.KV(), sessiondata.NodeUserSessionDataOverride,
@@ -592,9 +601,12 @@ HAVING ($1 = '' OR NOT EXISTS (SELECT 1 FROM system.tenants t WHERE t.name = $1)
 	nextIDFromTable := uint64(*row[0].(*tree.DInt))
 
 	// Is the sequence available yet?
-	lastIDFromSequence, err := getTenantIDSequenceValue(ctx, txn)
-	if err != nil {
-		return roachpb.TenantID{}, err
+	var lastIDFromSequence int64
+	if settings.Version.IsActive(ctx, clusterversion.V23_1_TenantIDSequence) {
+		lastIDFromSequence, err = getTenantIDSequenceValue(ctx, txn)
+		if err != nil {
+			return roachpb.TenantID{}, err
+		}
 	}
 
 	nextID := nextIDFromTable

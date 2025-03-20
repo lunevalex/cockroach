@@ -16,7 +16,7 @@ go_library(
     visibility = ["//visibility:public"],
     # Pin the dependencies used in auto-generated code.
     deps = [
-        "//pkg/geo/geopb",
+        "//pkg/geo/geoindex",
         "//pkg/kv/kvserver/concurrency/isolation",
         "//pkg/roachpb",
         "//pkg/sql/appstatspb",
@@ -56,14 +56,11 @@ go_test(
         "output_test.go",
         "plan_gist_test.go",
     ],
+    args = ["-test.timeout=55s"],
     data = glob(["testdata/**"]) + [
         "//pkg/sql/opt/testutils/opttester:testfixtures",
     ],
     embed = [":explain"],
-    exec_properties = select({
-        "//build/toolchains:is_heavy": {"Pool": "heavy"},
-        "//conditions:default": {"Pool": "default"},
-    }),
     deps = [
         "//pkg/base",
         "//pkg/multitenant/tenantcapabilities",

@@ -1,12 +1,7 @@
 // Copyright 2020 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package sql
 
@@ -318,7 +313,7 @@ func (p *planner) createUserDefinedType(params runParams, n *createTypeNode) err
 		if !p.execCfg.Settings.Version.IsActive(params.ctx, clusterversion.V23_1) {
 			return pgerror.Newf(pgcode.FeatureNotSupported,
 				"version %v must be finalized to create composite types",
-				clusterversion.V23_1)
+				clusterversion.ByKey(clusterversion.V23_1))
 		}
 		return params.p.createCompositeWithID(
 			params, id, n.n.CompositeTypeList, n.dbDesc, n.typeName,

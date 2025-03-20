@@ -1,23 +1,16 @@
 // Copyright 2020 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package tests
 
 import (
 	"context"
 	"fmt"
-	//"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/option"
 	"math/rand"
 
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/cluster"
-	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/option"
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/registry"
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/roachtestutil"
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/roachtestutil/mixedversion"
@@ -34,6 +27,7 @@ func registerSchemaChangeMixedVersions(r registry.Registry) {
 		Cluster:          r.MakeClusterSpec(4),
 		CompatibleClouds: registry.AllExceptAWS,
 		Suites:           registry.Suites(registry.Nightly),
+		Randomized:       true,
 		NativeLibs:       registry.LibGEOS,
 		Run: func(ctx context.Context, t test.Test, c cluster.Cluster) {
 			maxOps := 1000
@@ -51,7 +45,17 @@ func runSchemaChangeMixedVersions(
 	ctx context.Context, t test.Test, c cluster.Cluster, maxOps int, concurrency int,
 ) {
 	numFeatureRuns := 0
-	mvt := mixedversion.NewTest(ctx, t, t.L(), c, c.All(), mixedversion.NumUpgrades(1))
+	mvt := mixedversion.NewTest(
+		ctx, t, t.L(), c, c.All(),
+		// Disable version skipping and limit the test to only one upgrade as the workload is only
+		// compatible with the branch it was built from and the major version before that.
+		mixedversion.NumUpgrades(1),
+		mixedversion.DisableSkipVersionUpgrades,
+		// Always use latest predecessors, since mixed-version bug fixes only
+		// appear in the latest patch of the predecessor version.
+		// See: https://github.com/cockroachdb/cockroach/issues/121411.
+		mixedversion.AlwaysUseLatestPredecessors,
+	)
 
 	workloadNode := c.Node(c.Spec().NodeCount)
 	c.Put(ctx, t.DeprecatedWorkload(), "./workload", workloadNode)
@@ -69,22 +73,25 @@ func runSchemaChangeMixedVersions(
 			Flag("concurrency", concurrency).
 			Arg("{pgurl%s}", c.All()).
 			String()
-		if err := c.RunE(ctx, option.WithNodes(workloadNode), runCmd); err != nil {
+		if err := c.RunE(ctx, workloadNode, runCmd); err != nil {
 			return err
 		}
 
-		randomNode := h.RandomNode(r, c.All())
+		randomNode := c.All().SeededRandNode(r)[0]
 		doctorURL := fmt.Sprintf("{pgurl:%d}", randomNode)
 		// Now we validate that nothing is broken after the random schema changes have been run.
 		runCmd = roachtestutil.NewCommand("%s debug doctor examine cluster", test.DefaultCockroachPath).
 			Flag("url", doctorURL).
 			String()
-		return c.RunE(ctx, option.WithNodes(workloadNode), runCmd)
+		return c.RunE(ctx,
+			workloadNode,
+			//option.NodeListOption{randomNode},
+			runCmd)
 	}
 
 	// Stage our workload node with the schemachange workload.
 	mvt.OnStartup("set up schemachange workload", func(ctx context.Context, l *logger.Logger, r *rand.Rand, helper *mixedversion.Helper) error {
-		return c.RunE(ctx, option.WithNodes(workloadNode), fmt.Sprintf("./workload init schemachange {pgurl%s}", workloadNode))
+		return c.RunE(ctx, workloadNode, fmt.Sprintf("./workload init schemachange {pgurl%s}", workloadNode))
 	})
 
 	mvt.InMixedVersion("run schemachange workload and validation in mixed version", schemaChangeAndValidationStep)

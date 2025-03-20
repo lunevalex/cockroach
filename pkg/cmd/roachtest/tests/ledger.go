@@ -1,12 +1,7 @@
 // Copyright 2018 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package tests
 
@@ -42,7 +37,7 @@ func registerLedger(r registry.Registry) {
 			c.Put(ctx, t.DeprecatedWorkload(), "./workload", loadNode)
 
 			// Don't start a scheduled backup on this perf sensitive roachtest that reports to roachperf.
-			c.Start(ctx, t.L(), option.DefaultStartOptsNoBackups(), install.MakeClusterSettings(), roachNodes)
+			c.Start(ctx, t.L(), option.NewStartOpts(option.NoBackupSchedule), install.MakeClusterSettings(), roachNodes)
 
 			t.Status("running workload")
 			m := c.NewMonitor(ctx, roachNodes)
@@ -53,7 +48,7 @@ func registerLedger(r registry.Registry) {
 				// See https://github.com/cockroachdb/cockroach/issues/94062 for the --data-loader.
 				cmd := fmt.Sprintf("./workload run ledger --init --data-loader=INSERT --histograms="+t.PerfArtifactsDir()+"/stats.json"+
 					concurrency+duration+" {pgurl%s}", gatewayNodes)
-				c.Run(ctx, option.WithNodes(loadNode), cmd)
+				c.Run(ctx, loadNode, cmd)
 				return nil
 			})
 			m.Wait()

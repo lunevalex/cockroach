@@ -74,15 +74,12 @@ go_test(
         "general_funcs_test.go",
         "norm_test.go",
     ],
+    args = ["-test.timeout=55s"],
     data = glob(["testdata/**"]) + [
         "//c-deps:libgeos",
         "//pkg/sql/opt/testutils/opttester:testfixtures",
     ],
     embed = [":norm"],
-    exec_properties = select({
-        "//build/toolchains:is_heavy": {"Pool": "heavy"},
-        "//conditions:default": {"Pool": "default"},
-    }),
     deps = [
         "//pkg/settings/cluster",
         "//pkg/sql/opt",
@@ -94,6 +91,7 @@ go_test(
         "//pkg/sql/sem/catconstants",
         "//pkg/sql/sem/eval",
         "//pkg/sql/sem/tree",
+        "//pkg/sql/sessiondatapb",
         "//pkg/sql/types",
         "//pkg/testutils/datapathutils",
         "//pkg/util/leaktest",

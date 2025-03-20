@@ -1,12 +1,7 @@
 // Copyright 2018 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 // The Column and Index backfill primitives.
 
@@ -711,8 +706,7 @@ func (ib *IndexBackfiller) Close(ctx context.Context) {
 func (ib *IndexBackfiller) GrowBoundAccount(ctx context.Context, growBy int64) error {
 	ib.muBoundAccount.Lock()
 	defer ib.muBoundAccount.Unlock()
-	err := ib.muBoundAccount.boundAccount.Grow(ctx, growBy)
-	return err
+	return ib.muBoundAccount.boundAccount.Grow(ctx, growBy)
 }
 
 // ShrinkBoundAccount shrinks the mutex protected bound account backing the

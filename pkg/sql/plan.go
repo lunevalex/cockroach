@@ -1,12 +1,7 @@
 // Copyright 2015 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package sql
 
@@ -313,9 +308,6 @@ type planTop struct {
 	// is eligible for auditing (see sql/audit_logging.go)
 	auditEventBuilders []auditlogging.AuditEventBuilder
 
-	// flags is populated during planning and execution.
-	flags planFlags
-
 	// avoidBuffering, when set, causes the execution to avoid buffering
 	// results.
 	avoidBuffering bool
@@ -423,6 +415,9 @@ type planComponents struct {
 	// subqueryPlans contains all the sub-query plans.
 	subqueryPlans []subquery
 
+	// flags is populated during planning and execution.
+	flags planFlags
+
 	// plan for the main query.
 	main planMaybePhysical
 
@@ -486,7 +481,11 @@ func (p *planTop) savePlanInfo() {
 		distribution = physicalplan.PartiallyDistributedPlan
 	}
 	containsMutation := p.flags.IsSet(planFlagContainsMutation)
-	p.instrumentation.RecordPlanInfo(distribution, vectorized, containsMutation)
+	generic := p.flags.IsSet(planFlagGeneric)
+	optimized := p.flags.IsSet(planFlagOptimized)
+	p.instrumentation.RecordPlanInfo(
+		distribution, vectorized, containsMutation, generic, optimized,
+	)
 }
 
 // startExec calls startExec() on each planNode using a depth-first, post-order
@@ -596,40 +595,53 @@ const (
 	// engine.
 	planFlagVectorized
 
+	// planFlagTenant is set if the plan is executed on behalf of a tenant.
+	planFlagTenant
+
 	// planFlagContainsFullTableScan is set if the plan involves an unconstrained
 	// scan on (the primary key of) a table. This could be an unconstrained scan
-	// of any cardinality.
+	// of any cardinality. Full scans of virtual tables are ignored.
 	planFlagContainsFullTableScan
 
 	// planFlagContainsFullIndexScan is set if the plan involves an unconstrained
 	// non-partial secondary index scan. This could be an unconstrainted scan of
-	// any cardinality.
+	// any cardinality. Full scans of virtual tables are ignored.
 	planFlagContainsFullIndexScan
 
 	// planFlagContainsLargeFullTableScan is set if the plan involves an
 	// unconstrained scan on (the primary key of) a table estimated to read more
-	// than large_full_scan_rows (or without available stats).
+	// than large_full_scan_rows (or without available stats). Large scans of
+	// virtual tables are ignored.
 	planFlagContainsLargeFullTableScan
 
 	// planFlagContainsLargeFullIndexScan is set if the plan involves an
 	// unconstrained non-partial secondary index scan estimated to read more than
-	// large_full_scan_rows (or without available stats).
+	// large_full_scan_rows (or without available stats). Large scans of virtual
+	// tables are ignored.
 	planFlagContainsLargeFullIndexScan
 
 	// planFlagContainsMutation is set if the plan has any mutations.
 	planFlagContainsMutation
 
-	// planFlagContainsNonDefaultLocking is set if the plan has a node with
-	// non-default key locking strength.
-	planFlagContainsNonDefaultLocking
+	// planFlagContainsLocking is set if the plan has a node with locking.
+	planFlagContainsLocking
 
-	// planFlagCheckContainsNonDefaultLocking is set if at least one check plan
-	// has a node with non-default key locking strength.
-	planFlagCheckContainsNonDefaultLocking
+	// planFlagCheckContainsLocking is set if at least one check plan has a node
+	// with locking.
+	planFlagCheckContainsLocking
 
 	// planFlagSessionMigration is set if the plan is being created during
 	// a session migration.
 	planFlagSessionMigration
+
+	// planFlagGeneric is set if a generic query plan was used. A generic query
+	// plan is a plan that is fully-optimized once and can be reused without
+	// being re-optimized.
+	planFlagGeneric
+
+	// planFlagOptimized is set if optimization was performed during the
+	// current execution of the query.
+	planFlagOptimized
 )
 
 func (pf planFlags) IsSet(flag planFlags) bool {
@@ -641,7 +653,7 @@ func (pf *planFlags) Set(flag planFlags) {
 }
 
 func (pf *planFlags) Unset(flag planFlags) {
-	*pf &= ^flag
+	*pf &^= flag
 }
 
 // IsDistributed returns true if either the fully or the partially distributed

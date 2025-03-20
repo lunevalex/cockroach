@@ -1,10 +1,7 @@
 // Copyright 2020 The Cockroach Authors.
 //
-// Licensed as a CockroachDB Enterprise file under the Cockroach Community
-// License (the "License"); you may not use this file except in compliance with
-// the License. You may obtain a copy of the License at
-//
-//     https://github.com/cockroachdb/cockroach/blob/master/licenses/CCL.txt
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package streamingest
 
@@ -13,10 +10,8 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/cockroachdb/cockroach/pkg/ccl/revertccl"
 	"github.com/cockroachdb/cockroach/pkg/ccl/streamingccl/replicationutils"
 	"github.com/cockroachdb/cockroach/pkg/ccl/streamingccl/streamclient"
-	"github.com/cockroachdb/cockroach/pkg/ccl/streamingccl/streamproducer"
 	"github.com/cockroachdb/cockroach/pkg/jobs"
 	"github.com/cockroachdb/cockroach/pkg/jobs/jobspb"
 	"github.com/cockroachdb/cockroach/pkg/jobs/jobsprotectedts"
@@ -28,7 +23,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
 	"github.com/cockroachdb/cockroach/pkg/sql"
 	"github.com/cockroachdb/cockroach/pkg/sql/isql"
-	"github.com/cockroachdb/cockroach/pkg/sql/sem/eval"
 	bulkutil "github.com/cockroachdb/cockroach/pkg/util/bulk"
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
@@ -120,10 +114,6 @@ func completeIngestion(
 		details.StreamID)
 	updateRunningStatus(ctx, ingestionJob, jobspb.ReplicationCuttingOver, msg)
 	completeProducerJob(ctx, ingestionJob, execCtx.ExecCfg().InternalDB, true)
-	evalContext := &execCtx.ExtendedEvalContext().Context
-	if err := startPostCutoverRetentionJob(ctx, execCtx.ExecCfg(), details, evalContext, cutoverTimestamp); err != nil {
-		log.Warningf(ctx, "failed to begin post cutover retention job: %s", err.Error())
-	}
 
 	// Now that we have completed the cutover we can release the protected
 	// timestamp record on the destination tenant's keyspace.
@@ -163,30 +153,6 @@ func completeProducerJob(
 	); err != nil {
 		log.Warningf(ctx, `encountered error when completing the source cluster producer job %d: %s`, streamID, err.Error())
 	}
-}
-
-// startPostCutoverRetentionJob begins a dummy producer job on the newly cutover
-// to tenant. This producer job will lay PTS over the whole tenant, enabling a
-// fast failback to the original source cluster.
-func startPostCutoverRetentionJob(
-	ctx context.Context,
-	execCfg *sql.ExecutorConfig,
-	details jobspb.StreamIngestionDetails,
-	evalCtx *eval.Context,
-	cutoverTime hlc.Timestamp,
-) error {
-
-	return execCfg.InternalDB.Txn(ctx, func(ctx context.Context, txn isql.Txn) error {
-		info, err := sql.GetTenantRecordByID(ctx, txn, details.DestinationTenantID, execCfg.Settings)
-		if err != nil {
-			return err
-		}
-		req := streampb.ReplicationProducerRequest{
-			ReplicationStartTime: cutoverTime,
-		}
-		_, err = streamproducer.StartReplicationProducerJob(ctx, evalCtx, txn, info.Name, req)
-		return err
-	})
 }
 
 func ingest(
@@ -247,11 +213,11 @@ func ingestWithRetries(
 		if err == nil {
 			break
 		}
-		// By default, all errors are retryable unless it's marked as
-		// permanent job error in which case we pause the job.
-		// We also stop the job when this is a context cancellation error
-		// as requested pause or cancel will trigger a context cancellation.
-		if jobs.IsPermanentJobError(err) || errors.Is(err, context.Canceled) {
+		// By default, all errors are retryable unless it's marked as permanent job
+		// error in which case we pause the job. We also stop the job when the
+		// coordinator receives a context cancellation error which implies the user
+		// has requested to pause or cancel the job..
+		if jobs.IsPermanentJobError(err) || ctx.Err() != nil {
 			break
 		}
 		// If we're retrying repeatedly, update the status to reflect the error we
@@ -259,6 +225,9 @@ func ingestWithRetries(
 		if i := r.CurrentAttempt(); i > 5 {
 			status := redact.Sprintf("retrying after error on attempt %d: %s", i, err)
 			updateRunningStatus(ctx, ingestionJob, jobspb.ReplicationError, status)
+		} else {
+			// At least log the retryable error if we're not updating the status.
+			log.Infof(ctx, "hit retryable error %s", err)
 		}
 		newReplicatedTime := loadReplicatedTime(ctx, execCtx.ExecCfg().InternalDB, ingestionJob)
 		if lastReplicatedTime.Less(newReplicatedTime) {
@@ -307,6 +276,10 @@ func (s *streamIngestionResumer) handleResumeError(
 func (s *streamIngestionResumer) Resume(ctx context.Context, execCtx interface{}) error {
 	// Protect the destination tenant's keyspan from garbage collection.
 	jobExecCtx := execCtx.(sql.JobExecContext)
+
+	if err := jobExecCtx.ExecCfg().JobRegistry.CheckPausepoint("stream_ingestion.before_protection"); err != nil {
+		return err
+	}
 	err := s.protectDestinationTenant(ctx, jobExecCtx)
 	if err != nil {
 		return s.handleResumeError(ctx, jobExecCtx, err)
@@ -492,11 +465,11 @@ func maybeRevertToCutoverTimestamp(
 		return cutoverTimestamp, false, err
 	}
 
-	batchSize := int64(revertccl.RevertDefaultBatchSize)
+	batchSize := int64(sql.RevertTableDefaultBatchSize)
 	if p.ExecCfg().StreamingTestingKnobs != nil && p.ExecCfg().StreamingTestingKnobs.OverrideRevertRangeBatchSize != 0 {
 		batchSize = p.ExecCfg().StreamingTestingKnobs.OverrideRevertRangeBatchSize
 	}
-	if err := revertccl.RevertSpansFanout(ctx,
+	if err := sql.RevertSpansFanout(ctx,
 		p.ExecCfg().DB,
 		p,
 		remainingSpansToRevert,

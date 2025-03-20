@@ -1,10 +1,7 @@
 // Copyright 2020 The Cockroach Authors.
 //
-// Licensed as a CockroachDB Enterprise file under the Cockroach Community
-// License (the "License"); you may not use this file except in compliance with
-// the License. You may obtain a copy of the License at
-//
-//     https://github.com/cockroachdb/cockroach/blob/master/licenses/CCL.txt
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package oidcccl
 
@@ -167,6 +164,22 @@ func (s *oidcAuthenticationServer) GetOIDCConf() ui.OIDCUIConf {
 	}
 }
 
+// maybeInitializeLocked intializes the OIDC authentication server
+// if not already initialized using the parameters passed in the arguments.
+// It assumes oidcAuthenticationServer struct to be in locked state.
+func (s *oidcAuthenticationServer) maybeInitializeLocked(
+	ctx context.Context, locality roachpb.Locality, st *cluster.Settings,
+) error {
+	if s.enabled && !s.initialized {
+		reloadConfigLocked(ctx, s, locality, st)
+		if !s.initialized {
+			return errors.New("OIDC: auth server could not be initialized")
+		}
+	}
+
+	return nil
+}
+
 type oidcManager struct {
 	oauth2Config *oauth2.Config
 	verifier     *oidc.IDTokenVerifier
@@ -232,6 +245,14 @@ var NewOIDCManager func(context.Context, oidcAuthenticationConf, string, []strin
 	redirectURL string,
 	scopes []string,
 ) (IOIDCManager, error) {
+	// We need to provide a context which cannot be cancelled because of a specific implementation
+	// which prohibits context to be cancelled if we are to reuse the provider object
+	// https://github.com/coreos/go-oidc/issues/339
+	// TODO(souravcrl): Update go-oidc version - to control the context, in the current version of
+	// go-oidc, verifier instance can be created with VerifierContext
+	// https://github.com/coreos/go-oidc/blob/6d6be43e852de391805e5a5bc14146ba3cdd4195/oidc/verify.go#L125
+	ctx = context.WithoutCancel(ctx)
+
 	provider, err := oidc.NewProvider(ctx, conf.providerURL)
 	if err != nil {
 		return nil, err
@@ -386,8 +407,9 @@ var ConfigureOIDC = func(
 		oidcAuthentication.mutex.Lock()
 		defer oidcAuthentication.mutex.Unlock()
 
-		if oidcAuthentication.enabled && !oidcAuthentication.initialized {
-			reloadConfigLocked(ctx, oidcAuthentication, locality, st)
+		if err := oidcAuthentication.maybeInitializeLocked(ctx, locality, st); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
 		}
 
 		if !oidcAuthentication.enabled {
@@ -474,7 +496,7 @@ var ConfigureOIDC = func(
 			return
 		}
 
-		if err := utilccl.CheckEnterpriseEnabled(st, "OIDC"); err != nil {
+		if err := utilccl.CheckEnterpriseEnabled(st, cluster, "OIDC"); err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
@@ -492,8 +514,9 @@ var ConfigureOIDC = func(
 		oidcAuthentication.mutex.Lock()
 		defer oidcAuthentication.mutex.Unlock()
 
-		if oidcAuthentication.enabled && !oidcAuthentication.initialized {
-			reloadConfigLocked(ctx, oidcAuthentication, locality, st)
+		if err := oidcAuthentication.maybeInitializeLocked(ctx, locality, st); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
 		}
 
 		if !oidcAuthentication.enabled {
@@ -701,8 +724,9 @@ var ConfigureOIDC = func(
 		oidcAuthentication.mutex.Lock()
 		defer oidcAuthentication.mutex.Unlock()
 
-		if oidcAuthentication.enabled && !oidcAuthentication.initialized {
-			reloadConfigLocked(ctx, oidcAuthentication, locality, st)
+		if err := oidcAuthentication.maybeInitializeLocked(ctx, locality, st); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
 		}
 
 		if !oidcAuthentication.enabled {

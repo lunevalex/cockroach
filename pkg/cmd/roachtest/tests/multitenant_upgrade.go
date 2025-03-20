@@ -1,12 +1,7 @@
 // Copyright 2021 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package tests
 
@@ -36,7 +31,7 @@ func registerMultiTenantUpgrade(r registry.Registry) {
 		Cluster:           r.MakeClusterSpec(2),
 		CompatibleClouds:  registry.AllExceptAWS,
 		Suites:            registry.Suites(registry.Nightly),
-		Owner:             registry.OwnerMultiTenant,
+		Owner:             registry.OwnerServer,
 		NonReleaseBlocker: false,
 		Run: func(ctx context.Context, t test.Test, c cluster.Cluster) {
 			runMultiTenantUpgrade(ctx, t, c, t.BuildVersion())
@@ -79,22 +74,21 @@ func runMultiTenantUpgrade(
 	// Update this map with every new release.
 	versionToMinSupportedVersion := map[string]string{
 		"23.2": "23.1",
-		"24.1": "23.1",
 	}
 	curBinaryMajorAndMinorVersion := getMajorAndMinorVersionOnly(v)
 	currentBinaryMinSupportedVersion, ok := versionToMinSupportedVersion[curBinaryMajorAndMinorVersion]
 	require.True(t, ok, "current binary '%s' not found in 'versionToMinSupportedVersion' map", curBinaryMajorAndMinorVersion)
 
-	predecessorVersionStr, err := release.LatestPredecessor(v)
+	predecessorV, err := release.LatestPredecessor(v)
 	require.NoError(t, err)
-	predecessor := clusterupgrade.MustParseVersion(predecessorVersionStr)
+	predecessor := clusterupgrade.MustParseVersion(predecessorV)
 
 	currentBinary := uploadCockroach(ctx, t, c, c.All(), clusterupgrade.CurrentVersion())
 	predecessorBinary := uploadCockroach(ctx, t, c, c.All(), predecessor)
 
 	kvNodes := c.Node(1)
 
-	settings := install.MakeClusterSettings(install.BinaryOption(predecessorBinary), install.SecureOption(true))
+	settings := install.MakeClusterSettings(install.BinaryOption(predecessorBinary))
 	c.Start(ctx, t.L(), option.DefaultStartOpts(), settings, kvNodes)
 
 	const tenant11aHTTPPort, tenant11aSQLPort = 8011, 20011
@@ -164,7 +158,7 @@ func runMultiTenantUpgrade(
 	settings.Binary = currentBinary
 	// TODO (msbutler): investigate why the scheduled backup command fails due to a `Is the Server
 	// running?` error.
-	c.Start(ctx, t.L(), option.DefaultStartOptsNoBackups(), settings, kvNodes)
+	c.Start(ctx, t.L(), option.NewStartOpts(option.NoBackupSchedule), settings, kvNodes)
 	time.Sleep(time.Second)
 
 	t.Status("checking the pre-upgrade sql server still works after the system tenant binary upgrade")
@@ -248,11 +242,17 @@ func runMultiTenantUpgrade(
 		"SELECT version = crdb_internal.node_executable_version() FROM [SHOW CLUSTER SETTING version]",
 		[][]string{{"true"}})
 
+	tenant11aRunner, tenant11aRunnerCloser := openDBAndMakeSQLRunner(t, tenant11a.pgURL)
+	defer tenant11aRunnerCloser()
+
+	finalVersion := tenant11aRunner.QueryStr(t, "SELECT * FROM crdb_internal.node_executable_version();")[0][0]
 	// Remove patch release from predecessorVersion.
 	predecessorVersion := fmt.Sprintf("%d.%d", predecessor.Major(), predecessor.Minor())
+
 	t.Status("migrating first tenant 11 server to the current version after system tenant is finalized which should fail because second server is still on old binary - expecting a failure here too")
 	expectErr(t, tenant11a.pgURL,
-		fmt.Sprintf(`sql server 2 is running a binary version %s which is less than the attempted upgrade version`, predecessorVersion),
+		fmt.Sprintf(`pq: error validating the version of one or more SQL server instances: rpc error: code = Unknown desc = sql server 2 is running a binary version %s which is less than the attempted upgrade version %s
+HINT: check the binary versions of all running SQL server instances to ensure that they are compatible with the attempted upgrade version`, predecessorVersion, finalVersion),
 		"SET CLUSTER SETTING version = crdb_internal.node_executable_version()")
 
 	t.Status("verify that the first tenant 11 server can now query the storage cluster")
@@ -368,8 +368,8 @@ func runMultiTenantUpgrade(
 			withResults([][]string{{"true"}}))
 
 	t.Status("restarting the tenant 14 server to check it works after a restart")
-	tenant13.stop(ctx, t, c)
-	tenant13.start(ctx, t, c, currentBinary)
+	tenant14.stop(ctx, t, c)
+	tenant14.start(ctx, t, c, currentBinary)
 
 	t.Status("verifying the post-upgrade tenant works and has the proper version")
 	verifySQL(t, tenant14.pgURL,
@@ -377,6 +377,19 @@ func runMultiTenantUpgrade(
 			withResults([][]string{{"1", "bar"}}),
 		mkStmt("SELECT version = crdb_internal.node_executable_version() FROM [SHOW CLUSTER SETTING version]").
 			withResults([][]string{{"true"}}))
+
+	t.Status("restarting the tenant 14 server to check it works with preserve downgrade option as an override")
+	runner.Exec(
+		t,
+		`ALTER TENANT [14] SET CLUSTER SETTING cluster.preserve_downgrade_option = crdb_internal.node_executable_version()`)
+	tenant14.stop(ctx, t, c)
+	tenant14.start(ctx, t, c, currentBinary)
+
+	t.Status("restarting the tenant 13 server to check it works with preserve downgrade option in the tenant")
+	verifySQL(t, tenant13.pgURL,
+		mkStmt("SET CLUSTER SETTING cluster.preserve_downgrade_option = crdb_internal.node_executable_version()"))
+	tenant13.stop(ctx, t, c)
+	tenant13.start(ctx, t, c, currentBinary)
 }
 
 type sqlVerificationStmt struct {

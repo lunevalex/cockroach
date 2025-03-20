@@ -1,12 +1,7 @@
 // Copyright 2018 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package execbuilder
 
@@ -57,7 +52,7 @@ func init() {
 		opt.VariableOp:       (*Builder).buildVariable,
 		opt.ConstOp:          (*Builder).buildTypedExpr,
 		opt.NullOp:           (*Builder).buildNull,
-		opt.PlaceholderOp:    (*Builder).buildTypedExpr,
+		opt.PlaceholderOp:    (*Builder).buildPlaceholder,
 		opt.TupleOp:          (*Builder).buildTuple,
 		opt.FunctionOp:       (*Builder).buildFunction,
 		opt.CaseOp:           (*Builder).buildCase,
@@ -128,6 +123,15 @@ func (b *Builder) buildTypedExpr(
 	ctx *buildScalarCtx, scalar opt.ScalarExpr,
 ) (tree.TypedExpr, error) {
 	return scalar.Private().(tree.TypedExpr), nil
+}
+
+func (b *Builder) buildPlaceholder(
+	ctx *buildScalarCtx, scalar opt.ScalarExpr,
+) (tree.TypedExpr, error) {
+	if b.evalCtx != nil && b.evalCtx.Placeholders != nil {
+		return eval.Expr(b.ctx, b.evalCtx, scalar.Private().(*tree.Placeholder))
+	}
+	return b.buildTypedExpr(ctx, scalar)
 }
 
 func (b *Builder) buildNull(ctx *buildScalarCtx, scalar opt.ScalarExpr) (tree.TypedExpr, error) {
@@ -858,6 +862,7 @@ func (b *Builder) buildSubquery(
 			}
 			plan, err := b.factory.ConstructPlan(
 				ePlan.root, nil /* subqueries */, nil /* cascades */, nil /* checks */, inputRowCount,
+				eb.flags,
 			)
 			if err != nil {
 				return err
@@ -947,7 +952,7 @@ func (b *Builder) buildUDF(ctx *buildScalarCtx, scalar opt.ScalarExpr) (tree.Typ
 
 	for _, s := range udf.Def.Body {
 		if s.Relational().CanMutate {
-			b.ContainsMutation = true
+			b.flags.Set(exec.PlanFlagContainsMutation)
 			break
 		}
 	}

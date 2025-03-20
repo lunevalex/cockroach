@@ -1,12 +1,7 @@
 // Copyright 2021 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package sidetransport
 
@@ -62,9 +57,9 @@ func (m *mockStores) getAndClearRecording() []rangeUpdate {
 var ts10 = hlc.Timestamp{WallTime: 10}
 var ts11 = hlc.Timestamp{WallTime: 11}
 var ts12 = hlc.Timestamp{WallTime: 12}
-var ts20 = hlc.Timestamp{WallTime: 20}
-var ts21 = hlc.Timestamp{WallTime: 21}
-var ts22 = hlc.Timestamp{WallTime: 22}
+var ts20 = hlc.Timestamp{WallTime: 20, Synthetic: true}
+var ts21 = hlc.Timestamp{WallTime: 21, Synthetic: true}
+var ts22 = hlc.Timestamp{WallTime: 22, Synthetic: true}
 var laiZero = kvpb.LeaseAppliedIndex(0)
 
 const lai100 = kvpb.LeaseAppliedIndex(100)

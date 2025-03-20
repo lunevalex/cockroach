@@ -1,12 +1,7 @@
 // Copyright 2015 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package metric
 
@@ -98,7 +93,7 @@ func TestCounter(t *testing.T) {
 
 func TestCounterFloat64(t *testing.T) {
 	g := NewCounterFloat64(emptyMetadata)
-	g.UpdateIfHigher(10)
+	g.Update(10)
 	if v := g.Count(); v != 10 {
 		t.Fatalf("unexpected value: %f", v)
 	}
@@ -116,7 +111,7 @@ func TestCounterFloat64(t *testing.T) {
 
 	for i := int64(55); i < 65; i++ {
 		wg.Add(1)
-		go func(i int64) { g.UpdateIfHigher(float64(i)); wg.Done() }(i)
+		go func(i int64) { g.Update(float64(i)); wg.Done() }(i)
 	}
 	wg.Wait()
 	if v := g.Count(); math.Abs(v-64.0) > 0.001 {

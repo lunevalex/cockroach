@@ -1,12 +1,7 @@
 // Copyright 2019 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package execbuilder
 
@@ -193,11 +188,26 @@ func (b *Builder) tryBuildFastPathInsert(ins *memo.InsertExpr) (_ execPlan, ok b
 				panic(errors.AssertionFailedf("expected %d tuple elements in insert fast path uniqueness check, found %d", len(c.InsertCols), len(tuple.Elems)))
 			}
 			for k := 0; k < len(tuple.Elems); k++ {
-				constExpr, _ := tuple.Elems[k].(*memo.ConstExpr)
-				execFastPathCheck.DatumsFromConstraint[j][execFastPathCheck.InsertCols[k]] = constExpr.Value
+				var constDatum tree.Datum
+				switch e := tuple.Elems[k].(type) {
+				case *memo.ConstExpr:
+					constDatum = e.Value
+				case *memo.TrueExpr:
+					constDatum = tree.DBoolTrue
+				case *memo.FalseExpr:
+					constDatum = tree.DBoolFalse
+				default:
+					return execPlan{}, false, nil
+				}
+				execFastPathCheck.DatumsFromConstraint[j][execFastPathCheck.InsertCols[k]] = constDatum
 			}
 		}
 		uniqCheck := &ins.UniqueChecks[i]
+		// TODO(mgartner): We shouldn't keep references to md, uniqCheck, and
+		// execFastPathCheck. Ideally, the query plan for the constraint would
+		// produce the constraint column names as output columns. Then, the
+		// error message could be constructed without needing to access the
+		// catalog or metadata.
 		execFastPathCheck.MkErr = func(values tree.Datums) error {
 			return mkFastPathUniqueCheckErr(md, uniqCheck, values, execFastPathCheck.ReferencedIndex)
 		}
@@ -484,9 +494,12 @@ func (b *Builder) buildUpsert(ups *memo.UpsertExpr) (execPlan, error) {
 	tab := md.Table(ups.Table)
 	canaryCol := exec.NodeColumnOrdinal(-1)
 	if ups.CanaryCol != 0 {
-		canaryCol, err = input.getNodeColumnOrdinal(ups.CanaryCol)
-		if err != nil {
-			return execPlan{}, err
+		// The canary column comes after the insert, fetch, and update columns.
+		canaryCol = exec.NodeColumnOrdinal(
+			ups.InsertCols.Len() + ups.FetchCols.Len() + ups.UpdateCols.Len(),
+		)
+		if colList[canaryCol] != ups.CanaryCol {
+			return execPlan{}, errors.AssertionFailedf("canary column not found")
 		}
 	}
 	insertColOrds := ordinalSetFromColList(ups.InsertCols)
@@ -748,11 +761,15 @@ func mutationOutputColMap(mutation memo.RelExpr) opt.ColMap {
 	return colMap
 }
 
-// checkContainsLocking sets CheckContainsNonDefaultKeyLocking based on whether
-// we found non-default locking while building a check query plan.
+// checkContainsLocking sets PlanFlagCheckContainsLocking based on whether we
+// found locking while building a check query plan.
 func (b *Builder) checkContainsLocking(mainContainsLocking bool) {
-	b.CheckContainsNonDefaultKeyLocking = b.CheckContainsNonDefaultKeyLocking || b.ContainsNonDefaultKeyLocking
-	b.ContainsNonDefaultKeyLocking = b.ContainsNonDefaultKeyLocking || mainContainsLocking
+	if b.flags.IsSet(exec.PlanFlagContainsLocking) {
+		b.flags.Set(exec.PlanFlagCheckContainsLocking)
+	}
+	if mainContainsLocking {
+		b.flags.Set(exec.PlanFlagContainsLocking)
+	}
 }
 
 // buildUniqueChecks builds uniqueness check queries. These check queries are
@@ -762,8 +779,8 @@ func (b *Builder) checkContainsLocking(mainContainsLocking bool) {
 // violated. Those queries are each wrapped in an ErrorIfRows operator, which
 // will throw an appropriate error in case the inner query returns any rows.
 func (b *Builder) buildUniqueChecks(checks memo.UniqueChecksExpr) error {
-	defer b.checkContainsLocking(b.ContainsNonDefaultKeyLocking)
-	b.ContainsNonDefaultKeyLocking = false
+	defer b.checkContainsLocking(b.flags.IsSet(exec.PlanFlagContainsLocking))
+	b.flags.Unset(exec.PlanFlagContainsLocking)
 	md := b.mem.Metadata()
 	for i := range checks {
 		c := &checks[i]
@@ -794,8 +811,8 @@ func (b *Builder) buildUniqueChecks(checks memo.UniqueChecksExpr) error {
 }
 
 func (b *Builder) buildFKChecks(checks memo.FKChecksExpr) error {
-	defer b.checkContainsLocking(b.ContainsNonDefaultKeyLocking)
-	b.ContainsNonDefaultKeyLocking = false
+	defer b.checkContainsLocking(b.flags.IsSet(exec.PlanFlagContainsLocking))
+	b.flags.Unset(exec.PlanFlagContainsLocking)
 	md := b.mem.Metadata()
 	for i := range checks {
 		c := &checks[i]
@@ -867,6 +884,41 @@ func mkUniqueCheckErr(md *opt.Metadata, c *memo.UniqueChecksItem, keyVals tree.D
 	)
 }
 
+// mkUniqueCheckErrWithoutColNames is a simpler version of mkUniqueCheckErr that
+// omits column names from the error details.
+func mkUniqueCheckErrWithoutColNames(
+	md *opt.Metadata, c *memo.UniqueChecksItem, keyVals tree.Datums,
+) error {
+	tabMeta := md.TableMeta(c.Table)
+	uc := tabMeta.Table.Unique(c.CheckOrdinal)
+	constraintName := uc.Name()
+	var msg, details bytes.Buffer
+
+	// Generate an error of the form:
+	//   ERROR:  duplicate key value violates unique constraint "foo"
+	//   DETAIL: Key (2) already exists.
+	msg.WriteString("duplicate key value violates unique constraint ")
+	lexbase.EncodeEscapedSQLIdent(&msg, constraintName)
+
+	details.WriteString("Key (")
+	for i, d := range keyVals {
+		if i > 0 {
+			details.WriteString(", ")
+		}
+		details.WriteString(d.String())
+	}
+
+	details.WriteString(") already exists.")
+
+	return errors.WithDetail(
+		pgerror.WithConstraintName(
+			pgerror.Newf(pgcode.UniqueViolation, "%s", msg.String()),
+			constraintName,
+		),
+		details.String(),
+	)
+}
+
 // mkFastPathUniqueCheckErr is a wrapper for mkUniqueCheckErr in the insert fast
 // path flow, which reorders the keyVals row according to the ordering of the
 // key columns in index `idx`. This is needed because mkUniqueCheckErr assumes
@@ -884,7 +936,7 @@ func mkFastPathUniqueCheckErr(
 	for i := 0; i < uc.ColumnCount(); i++ {
 		ord := uc.ColumnOrdinal(tabMeta.Table, i)
 		found := false
-		for j := 0; j < idx.ColumnCount(); j++ {
+		for j := 0; j < idx.KeyColumnCount() && j < len(keyVals); j++ {
 			keyCol := idx.Column(j)
 			keyColOrd := keyCol.Column.Ordinal()
 			if ord == keyColOrd {
@@ -894,10 +946,11 @@ func mkFastPathUniqueCheckErr(
 			}
 		}
 		if !found {
-			// We still need to return an error, even if the key values could not be
-			// determined.
-			return errors.AssertionFailedf(
-				"insert fast path failed uniqueness check, but could not find unique columns for row, %v", keyVals)
+			// The unique constraint columns could not be matched to the index
+			// key columns. This can happen when the index columns are computed
+			// columns that map to the unique constraint columns (see #126988).
+			// When this happens, produce a simpler error message.
+			return mkUniqueCheckErrWithoutColNames(md, c, keyVals)
 		}
 	}
 	return mkUniqueCheckErr(md, c, newKeyVals)

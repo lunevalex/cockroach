@@ -7,13 +7,8 @@
 //
 // Copyright 2015 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 // This code was derived from https://github.com/youtube/vitess.
 
@@ -113,7 +108,7 @@ type ShowBackup struct {
 func (node *ShowBackup) Format(ctx *FmtCtx) {
 	if node.InCollection != nil && node.Path == nil {
 		ctx.WriteString("SHOW BACKUPS IN ")
-		ctx.FormatNode(&node.InCollection)
+		ctx.FormatURIs(node.InCollection)
 		return
 	}
 	ctx.WriteString("SHOW BACKUP ")
@@ -133,10 +128,12 @@ func (node *ShowBackup) Format(ctx *FmtCtx) {
 		ctx.WriteString("FROM ")
 	}
 
-	ctx.FormatNode(node.Path)
 	if node.InCollection != nil {
+		ctx.FormatNode(node.Path)
 		ctx.WriteString(" IN ")
-		ctx.FormatNode(&node.InCollection)
+		ctx.FormatURIs(node.InCollection)
+	} else {
+		ctx.FormatURI(node.Path)
 	}
 	if !node.Options.IsDefault() {
 		ctx.WriteString(" WITH OPTIONS (")
@@ -205,7 +202,7 @@ func (o *ShowBackupOptions) Format(ctx *FmtCtx) {
 	if o.IncrementalStorage != nil {
 		maybeAddSep()
 		ctx.WriteString("incremental_location = ")
-		ctx.FormatNode(&o.IncrementalStorage)
+		ctx.FormatURIs(o.IncrementalStorage)
 	}
 
 	if o.Privileges {
@@ -221,7 +218,7 @@ func (o *ShowBackupOptions) Format(ctx *FmtCtx) {
 	if o.DecryptionKMSURI != nil {
 		maybeAddSep()
 		ctx.WriteString("kms = ")
-		ctx.FormatNode(&o.DecryptionKMSURI)
+		ctx.FormatURIs(o.DecryptionKMSURI)
 	}
 	if o.SkipSize {
 		maybeAddSep()
@@ -1108,8 +1105,6 @@ func (node *ShowRangeForRow) Format(ctx *FmtCtx) {
 type ShowFingerprints struct {
 	TenantSpec *TenantSpec
 	Table      *UnresolvedObjectName
-
-	Options ShowFingerprintOptions
 }
 
 // Format implements the NodeFormatter interface.
@@ -1121,55 +1116,7 @@ func (node *ShowFingerprints) Format(ctx *FmtCtx) {
 		ctx.WriteString("SHOW EXPERIMENTAL_FINGERPRINTS FROM VIRTUAL CLUSTER ")
 		ctx.FormatNode(node.TenantSpec)
 	}
-
-	if !node.Options.IsDefault() {
-		ctx.WriteString(" WITH OPTIONS (")
-		ctx.FormatNode(&node.Options)
-		ctx.WriteString(")")
-	}
 }
-
-// ShowFingerprintOptions describes options for the SHOW EXPERIMENTAL_FINGERPINT
-// execution.
-type ShowFingerprintOptions struct {
-	StartTimestamp Expr
-}
-
-func (s *ShowFingerprintOptions) Format(ctx *FmtCtx) {
-	if s.StartTimestamp != nil {
-		ctx.WriteString("START TIMESTAMP = ")
-		_, canOmitParentheses := s.StartTimestamp.(alreadyDelimitedAsSyntacticDExpr)
-		if !canOmitParentheses {
-			ctx.WriteByte('(')
-		}
-		ctx.FormatNode(s.StartTimestamp)
-		if !canOmitParentheses {
-			ctx.WriteByte(')')
-		}
-	}
-}
-
-// CombineWith merges other TenantReplicationOptions into this struct.
-// An error is returned if the same option merged multiple times.
-func (s *ShowFingerprintOptions) CombineWith(other *ShowFingerprintOptions) error {
-	if s.StartTimestamp != nil {
-		if other.StartTimestamp != nil {
-			return errors.New("START TIMESTAMP option specified multiple times")
-		}
-	} else {
-		s.StartTimestamp = other.StartTimestamp
-	}
-
-	return nil
-}
-
-// IsDefault returns true if this backup options struct has default value.
-func (s ShowFingerprintOptions) IsDefault() bool {
-	options := ShowFingerprintOptions{}
-	return s.StartTimestamp == options.StartTimestamp
-}
-
-var _ NodeFormatter = &ShowFingerprintOptions{}
 
 // ShowTableStats represents a SHOW STATISTICS FOR TABLE statement.
 type ShowTableStats struct {
@@ -1195,9 +1142,8 @@ func (node *ShowTableStats) Format(ctx *FmtCtx) {
 
 // ShowTenantOptions represents the WITH clause in SHOW VIRTUAL CLUSTER.
 type ShowTenantOptions struct {
-	WithReplication      bool
-	WithPriorReplication bool
-	WithCapabilities     bool
+	WithReplication  bool
+	WithCapabilities bool
 }
 
 // ShowTenant represents a SHOW VIRTUAL CLUSTER statement.
@@ -1214,9 +1160,6 @@ func (node *ShowTenant) Format(ctx *FmtCtx) {
 	withs := []string{}
 	if node.WithReplication {
 		withs = append(withs, "REPLICATION STATUS")
-	}
-	if node.WithPriorReplication {
-		withs = append(withs, "PRIOR REPLICATION DETAILS")
 	}
 	if node.WithCapabilities {
 		withs = append(withs, "CAPABILITIES")

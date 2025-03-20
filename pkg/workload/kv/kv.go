@@ -1,12 +1,7 @@
 // Copyright 2017 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package kv
 
@@ -79,7 +74,6 @@ type kv struct {
 	minBlockSizeBytes, maxBlockSizeBytes int
 	cycleLength                          int64
 	readPercent                          int
-	followerReadPercent                  int
 	spanPercent                          int
 	delPercent                           int
 	spanLimit                            int
@@ -96,7 +90,7 @@ type kv struct {
 	enum                                 bool
 	keySize                              int
 	insertCount                          int
-	txnQoS                               string
+	useBackgroundTxnQoS                  bool
 }
 
 func init() {
@@ -143,8 +137,6 @@ var kvMeta = workload.Meta{
 			`Number of keys repeatedly accessed by each writer through upserts.`)
 		g.flags.IntVar(&g.readPercent, `read-percent`, 0,
 			`Percent (0-100) of operations that are reads of existing keys.`)
-		g.flags.IntVar(&g.followerReadPercent, `follower-read-percent`, 0,
-			`Percent (0-100) of read operations that are follower reads.`)
 		g.flags.IntVar(&g.spanPercent, `span-percent`, 0,
 			`Percent (0-100) of operations that are spanning queries of all ranges.`)
 		g.flags.IntVar(&g.delPercent, `del-percent`, 0,
@@ -182,9 +174,8 @@ var kvMeta = workload.Meta{
 			`Use string key of appropriate size instead of int`)
 		g.flags.DurationVar(&g.sfuDelay, `sfu-wait-delay`, 10*time.Millisecond,
 			`Delay before sfu write transaction commits or aborts`)
-		g.flags.StringVar(&g.txnQoS, `txn-qos`, `regular`,
-			`Set default_transaction_quality_of_service session variable, accepted`+
-				`values are 'background', 'regular' and 'critical'.`)
+		g.flags.BoolVar(&g.useBackgroundTxnQoS, `background-qos`, false,
+			`Set default_transaction_quality_of_service session variable to "background".`)
 		g.connFlags = workload.NewConnFlags(&g.flags)
 		return g
 	},
@@ -274,12 +265,6 @@ func (w *kv) validateConfig() (err error) {
 			return errors.Errorf(
 				"zipfian --write-seq is incompatible with a --sequential or default (random) key sequence")
 		}
-	}
-	if w.txnQoS != "" && w.txnQoS != "background" &&
-		w.txnQoS != "regular" && w.txnQoS != "critical" {
-		return errors.Errorf(
-			"--txn-qos must be one of 'background', 'regular' or 'critical', found %s", w.txnQoS,
-		)
 	}
 	// We create generator and discard it to have a single piece of code that
 	// handles generator type which affects target key range.
@@ -459,27 +444,25 @@ func (w *kv) Ops(
 
 	// Read statement
 	var buf strings.Builder
-	var folBuf strings.Builder
 	if w.enum {
 		buf.WriteString(`SELECT k, v, e FROM kv WHERE k IN (`)
-		folBuf.WriteString(`SELECT k, v, e FROM kv AS OF SYSTEM TIME follower_read_timestamp() WHERE k IN (`)
+		for i := 0; i < w.batchSize; i++ {
+			if i > 0 {
+				buf.WriteString(", ")
+			}
+			fmt.Fprintf(&buf, `$%d`, i+1)
+		}
 	} else {
 		buf.WriteString(`SELECT k, v FROM kv WHERE k IN (`)
-		folBuf.WriteString(`SELECT k, v FROM kv AS OF SYSTEM TIME follower_read_timestamp() WHERE k IN (`)
-	}
-	for i := 0; i < w.batchSize; i++ {
-		if i > 0 {
-			buf.WriteString(", ")
-			folBuf.WriteString(", ")
+		for i := 0; i < w.batchSize; i++ {
+			if i > 0 {
+				buf.WriteString(", ")
+			}
+			fmt.Fprintf(&buf, `$%d`, i+1)
 		}
-		fmt.Fprintf(&buf, `$%d`, i+1)
-		fmt.Fprintf(&folBuf, `$%d`, i+1)
 	}
 	buf.WriteString(`)`)
-	folBuf.WriteString(`)`)
-
 	readStmtStr := buf.String()
-	followerReadStmtStr := folBuf.String()
 
 	// Write statement
 	buf.Reset()
@@ -543,15 +526,13 @@ func (w *kv) Ops(
 			numEmptyResults: &numEmptyResults,
 		}
 		op.readStmt = op.sr.Define(readStmtStr)
-		op.followerReadStmt = op.sr.Define(followerReadStmtStr)
 		op.writeStmt = op.sr.Define(writeStmtStr)
 		if len(sfuStmtStr) > 0 {
 			op.sfuStmt = op.sr.Define(sfuStmtStr)
 		}
 		op.spanStmt = op.sr.Define(spanStmtStr)
-		if w.txnQoS != `regular` {
-			stmt := op.sr.Define(fmt.Sprintf(
-				" SET default_transaction_quality_of_service = %s", w.txnQoS))
+		if w.useBackgroundTxnQoS {
+			stmt := op.sr.Define(" SET default_transaction_quality_of_service = background")
 			op.qosStmt = &stmt
 		}
 		op.delStmt = op.sr.Define(delStmtStr)
@@ -568,20 +549,19 @@ func (w *kv) Ops(
 }
 
 type kvOp struct {
-	config           *kv
-	hists            *histogram.Histograms
-	sr               workload.SQLRunner
-	mcp              *workload.MultiConnPool
-	qosStmt          *workload.StmtHandle
-	readStmt         workload.StmtHandle
-	followerReadStmt workload.StmtHandle
-	writeStmt        workload.StmtHandle
-	spanStmt         workload.StmtHandle
-	sfuStmt          workload.StmtHandle
-	delStmt          workload.StmtHandle
-	g                keyGenerator
-	t                keyTransformer
-	numEmptyResults  *atomic.Int64
+	config          *kv
+	hists           *histogram.Histograms
+	sr              workload.SQLRunner
+	mcp             *workload.MultiConnPool
+	qosStmt         *workload.StmtHandle
+	readStmt        workload.StmtHandle
+	writeStmt       workload.StmtHandle
+	spanStmt        workload.StmtHandle
+	sfuStmt         workload.StmtHandle
+	delStmt         workload.StmtHandle
+	g               keyGenerator
+	t               keyTransformer
+	numEmptyResults *atomic.Int64
 }
 
 func (o *kvOp) run(ctx context.Context) (retErr error) {
@@ -604,12 +584,7 @@ func (o *kvOp) run(ctx context.Context) (retErr error) {
 			args[i] = o.t.getKey(o.g.readKey())
 		}
 		start := timeutil.Now()
-		readStmt := o.readStmt
-
-		if o.g.rand().Intn(100) < o.config.followerReadPercent {
-			readStmt = o.followerReadStmt
-		}
-		rows, err := readStmt.Query(ctx, args...)
+		rows, err := o.readStmt.Query(ctx, args...)
 		if err != nil {
 			return err
 		}
@@ -650,9 +625,6 @@ func (o *kvOp) run(ctx context.Context) (retErr error) {
 			_, err = o.spanStmt.Exec(ctx, arg)
 		} else {
 			_, err = o.spanStmt.Exec(ctx)
-		}
-		if err != nil {
-			return err
 		}
 		elapsed := timeutil.Since(start)
 		o.hists.Get(`span`).Record(elapsed)
@@ -710,9 +682,6 @@ func (o *kvOp) run(ctx context.Context) (retErr error) {
 		}
 	} else {
 		_, err = o.writeStmt.Exec(ctx, writeArgs...)
-	}
-	if err != nil {
-		return err
 	}
 	elapsed := timeutil.Since(start)
 	o.hists.Get(`write`).Record(elapsed)

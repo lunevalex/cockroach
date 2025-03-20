@@ -1,12 +1,7 @@
 // Copyright 2022 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package colflow_test
 
@@ -89,6 +84,9 @@ func TestDrainingAfterRemoteError(t *testing.T) {
 	// Make sure that the query is fully distributed (i.e. all execution happens
 	// on node 2).
 	sqlDB.Exec(t, "SET distsql = always;")
+	// Disable the streamer to prevent this test from triggering the known race
+	// #119201.
+	sqlDB.Exec(t, "SET streamer_enabled = false;")
 
 	// Sanity check that, indeed, node 2 is part of the physical plan.
 	rows, err := conn.Query("EXPLAIN (VEC) SELECT sum(length(v)) FROM large, small WHERE small.k = large.k GROUP BY large.k;")

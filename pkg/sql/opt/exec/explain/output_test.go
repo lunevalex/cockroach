@@ -1,12 +1,7 @@
 // Copyright 2020 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package explain_test
 
@@ -237,11 +232,11 @@ func TestContentionTimeOnWrites(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
 
+	tc := testcluster.StartTestCluster(t, 1, base.TestClusterArgs{})
 	ctx := context.Background()
-	s, conn, _ := serverutils.StartServer(t, base.TestServerArgs{})
-	defer s.Stopper().Stop(ctx)
+	defer tc.Stopper().Stop(ctx)
 
-	runner := sqlutils.MakeSQLRunner(conn)
+	runner := sqlutils.MakeSQLRunner(tc.Conns[0])
 	runner.Exec(t, "CREATE TABLE t (k INT PRIMARY KEY, v INT)")
 
 	// The test involves three goroutines:
@@ -270,7 +265,7 @@ func TestContentionTimeOnWrites(t *testing.T) {
 				close(sem)
 			}
 		}()
-		txn, err := conn.Begin()
+		txn, err := tc.Conns[0].Begin()
 		if err != nil {
 			errCh <- err
 			return

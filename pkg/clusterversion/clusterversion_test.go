@@ -1,12 +1,7 @@
 // Copyright 2017 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package clusterversion
 
@@ -16,6 +11,7 @@ import (
 
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/settings"
+	"github.com/cockroachdb/cockroach/pkg/util/protoutil"
 	"github.com/stretchr/testify/require"
 )
 
@@ -33,7 +29,7 @@ func TestClusterVersionOnChange(t *testing.T) {
 		"test description",
 		&cvs.VersionSetting)
 
-	handle := newHandleImpl(cvs, &sv, Latest.Version(), MinSupported.Version())
+	handle := newHandleImpl(cvs, &sv, binaryVersion, binaryMinSupportedVersion)
 	newCV := ClusterVersion{
 		Version: roachpb.Version{
 			Major:    1,
@@ -42,10 +38,13 @@ func TestClusterVersionOnChange(t *testing.T) {
 			Internal: 4,
 		},
 	}
+	encoded, err := protoutil.Marshal(&newCV)
+	require.NoError(t, err)
+
 	var capturedV ClusterVersion
 	handle.SetOnChange(func(ctx context.Context, newVersion ClusterVersion) {
 		capturedV = newVersion
 	})
-	cvs.SetInternal(ctx, &sv, newCV)
+	cvs.SetInternal(ctx, &sv, encoded)
 	require.Equal(t, newCV, capturedV)
 }

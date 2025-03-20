@@ -1,12 +1,7 @@
 // Copyright 2020 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 // Package explain implements "explaining" for cockroach.
 package explain
@@ -155,6 +150,7 @@ func (f *Factory) ConstructPlan(
 	cascades []exec.Cascade,
 	checks []exec.Node,
 	rootRowCount int64,
+	flags exec.PlanFlags,
 ) (exec.Plan, error) {
 	p := &Plan{
 		Root:       root.(*Node),
@@ -237,7 +233,7 @@ func (f *Factory) ConstructPlan(
 	}
 	var err error
 	p.WrappedPlan, err = f.wrappedFactory.ConstructPlan(
-		p.Root.WrappedNode(), wrappedSubqueries, wrappedCascades, wrappedChecks, rootRowCount,
+		p.Root.WrappedNode(), wrappedSubqueries, wrappedCascades, wrappedChecks, rootRowCount, flags,
 	)
 	if err != nil {
 		return nil, err

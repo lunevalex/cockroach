@@ -1,12 +1,7 @@
 // Copyright 2019 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package storage
 
@@ -17,7 +12,6 @@ import (
 	"testing"
 
 	"github.com/cockroachdb/cockroach/pkg/clusterversion"
-	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/concurrency/lock"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
 	"github.com/cockroachdb/cockroach/pkg/testutils/skip"
@@ -63,7 +57,7 @@ func setupMVCCInMemPebbleWithSeparatedIntents(b testing.TB) Engine {
 func setupPebbleInMemPebbleForLatestRelease(b testing.TB, _ string) Engine {
 	ctx := context.Background()
 	s := cluster.MakeClusterSettings()
-	if err := clusterversion.Initialize(ctx, clusterversion.Latest.Version(),
+	if err := clusterversion.Initialize(ctx, clusterversion.TestingBinaryVersion,
 		&s.SV); err != nil {
 		b.Fatalf("failed to set current cluster version: %+v", err)
 	}
@@ -663,33 +657,6 @@ func BenchmarkMVCCDeleteRangeUsingTombstone_Pebble(b *testing.B) {
 	}
 }
 
-// BenchmarkMVCCDeleteRangeWithPredicate_Pebble benchmarks predicate based
-// delete range under certain configs. A lower streak bound simulates sequential
-// imports with more interspersed keys, leading to fewer range tombstones and
-// more point tombstones.
-func BenchmarkMVCCDeleteRangeWithPredicate_Pebble(b *testing.B) {
-	// TODO(radu): run one configuration under Short once the above TODO is
-	// resolved.
-	skip.UnderShort(b)
-	defer log.Scope(b).Close(b)
-	ctx := context.Background()
-	for _, streakBound := range []int{10, 100, 200, 500} {
-		b.Run(fmt.Sprintf("streakBound=%d", streakBound), func(b *testing.B) {
-			for _, rangeKeyThreshold := range []int64{64} {
-				b.Run(fmt.Sprintf("rangeKeyThreshold=%d", rangeKeyThreshold), func(b *testing.B) {
-					config := mvccImportedData{
-						streakBound: streakBound,
-						keyCount:    2000,
-						valueBytes:  64,
-						layers:      2,
-					}
-					runMVCCDeleteRangeWithPredicate(ctx, b, config, 0, rangeKeyThreshold)
-				})
-			}
-		})
-	}
-}
-
 func BenchmarkClearMVCCVersions_Pebble(b *testing.B) {
 	// TODO(radu): run one configuration under Short once the above TODO is
 	// resolved.
@@ -752,64 +719,6 @@ func BenchmarkBatchApplyBatchRepr_Pebble(b *testing.B) {
 			ctx := context.Background()
 			runBatchApplyBatchRepr(ctx, b, setupMVCCInMemPebble,
 				tc.indexed, tc.sequential, tc.valueSize, tc.batchSize)
-		})
-	}
-}
-
-type acquireLockTestCase struct {
-	batch        bool
-	heldOtherTxn bool
-	heldSameTxn  bool
-	strength     lock.Strength
-}
-
-func (tc acquireLockTestCase) name() string {
-	return fmt.Sprintf(
-		"batch=%t/heldOtherTxn=%t/heldSameTxn=%t/strength=%s",
-		tc.batch, tc.heldOtherTxn, tc.heldSameTxn, tc.strength,
-	)
-}
-
-func acquireLockTestCases() []acquireLockTestCase {
-	var res []acquireLockTestCase
-	for _, batch := range []bool{false, true} {
-		for _, heldOtherTxn := range []bool{false, true} {
-			for _, heldSameTxn := range []bool{false, true} {
-				if heldOtherTxn && heldSameTxn {
-					continue // not possible
-				}
-				for _, strength := range []lock.Strength{lock.Shared, lock.Exclusive} {
-					res = append(res, acquireLockTestCase{
-						batch:        batch,
-						heldOtherTxn: heldOtherTxn,
-						heldSameTxn:  heldSameTxn,
-						strength:     strength,
-					})
-				}
-			}
-		}
-	}
-	return res
-}
-
-func BenchmarkMVCCCheckForAcquireLock_Pebble(b *testing.B) {
-	defer log.Scope(b).Close(b)
-
-	for _, tc := range acquireLockTestCases() {
-		b.Run(tc.name(), func(b *testing.B) {
-			ctx := context.Background()
-			runMVCCCheckForAcquireLock(ctx, b, setupMVCCInMemPebble, tc.batch, tc.heldOtherTxn, tc.heldSameTxn, tc.strength)
-		})
-	}
-}
-
-func BenchmarkMVCCAcquireLock_Pebble(b *testing.B) {
-	defer log.Scope(b).Close(b)
-
-	for _, tc := range acquireLockTestCases() {
-		b.Run(tc.name(), func(b *testing.B) {
-			ctx := context.Background()
-			runMVCCAcquireLock(ctx, b, setupMVCCInMemPebble, tc.batch, tc.heldOtherTxn, tc.heldSameTxn, tc.strength)
 		})
 	}
 }

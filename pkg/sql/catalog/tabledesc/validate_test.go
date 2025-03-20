@@ -1,12 +1,7 @@
 // Copyright 2020 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package tabledesc
 
@@ -1390,53 +1385,6 @@ func TestValidateTableDesc(t *testing.T) {
 				NextIndexID:      2,
 				NextConstraintID: 2,
 			}},
-		{err: `index "idx" already contains column "i"`,
-			desc: descpb.TableDescriptor{
-				Name:          "t",
-				ID:            2,
-				ParentID:      1,
-				FormatVersion: descpb.InterleavedFormatVersion,
-				Columns: []descpb.ColumnDescriptor{
-					{ID: 1, Name: "i"},
-					{ID: 2, Name: "j"},
-				},
-				Families: []descpb.ColumnFamilyDescriptor{{
-					Name:        "primary",
-					ColumnIDs:   []descpb.ColumnID{1, 2},
-					ColumnNames: []string{"i", "j"},
-				}},
-				PrimaryIndex: descpb.IndexDescriptor{
-					ID:                  1,
-					Name:                "t_pkey",
-					ConstraintID:        1,
-					KeyColumnIDs:        []descpb.ColumnID{1},
-					KeyColumnNames:      []string{"i"},
-					KeyColumnDirections: []catenumpb.IndexColumn_Direction{catenumpb.IndexColumn_ASC},
-					StoreColumnIDs:      []descpb.ColumnID{2},
-					StoreColumnNames:    []string{"j"},
-					EncodingType:        catenumpb.PrimaryIndexEncoding,
-					Version:             descpb.LatestIndexDescriptorVersion,
-				},
-				Indexes: []descpb.IndexDescriptor{
-					{
-						Name:                "idx",
-						ID:                  2,
-						Version:             descpb.LatestIndexDescriptorVersion,
-						EncodingType:        catenumpb.SecondaryIndexEncoding,
-						KeyColumnIDs:        []descpb.ColumnID{2},
-						KeyColumnNames:      []string{"j"},
-						KeyColumnDirections: []catenumpb.IndexColumn_Direction{catenumpb.IndexColumn_ASC},
-						StoreColumnIDs:      []descpb.ColumnID{1},
-						StoreColumnNames:    []string{"i"},
-					},
-				},
-				NextColumnID:     3,
-				NextFamilyID:     1,
-				NextIndexID:      3,
-				NextConstraintID: 2,
-				Version:          1,
-			},
-		},
 		{err: `index "primary" contains key column "quux" with unknown ID 3`,
 			desc: descpb.TableDescriptor{
 				ID:            2,
@@ -1532,7 +1480,7 @@ func TestValidateTableDesc(t *testing.T) {
 				NextIndexID:      2,
 				NextConstraintID: 2,
 			}},
-		{err: `index "primary" already contains column "bar"`,
+		{err: `index "primary" has column ID 1 present in: [KeyColumnIDs StoreColumnIDs]`,
 			desc: descpb.TableDescriptor{
 				ID:            2,
 				ParentID:      1,
@@ -2112,7 +2060,7 @@ func TestValidateTableDesc(t *testing.T) {
 				NextIndexID:      3,
 				NextConstraintID: 2,
 			}},
-		{err: `index "sec" already contains column "c2"`,
+		{err: `index "sec" has column ID 2 present in: [KeyColumnIDs StoreColumnIDs]`,
 			desc: descpb.TableDescriptor{
 				ID:            2,
 				ParentID:      1,
@@ -2801,6 +2749,47 @@ func TestValidateTableDesc(t *testing.T) {
 					SelectBatchSize: -2,
 				},
 			}},
+		{err: `unimplemented: non-ascending ordering on PRIMARY KEYs are not supported with row-level TTL`,
+			desc: descpb.TableDescriptor{
+				ID:            2,
+				ParentID:      1,
+				Name:          "foo",
+				FormatVersion: descpb.InterleavedFormatVersion,
+				Columns: []descpb.ColumnDescriptor{
+					{ID: 1, Name: "a"},
+					{
+						ID:           2,
+						Name:         "crdb_internal_expiration",
+						Hidden:       true,
+						OnUpdateExpr: pointer("current_timestamp():::TIMESTAMPTZ + INTERVAL '2 minutes'"),
+						DefaultExpr:  pointer("current_timestamp():::TIMESTAMPTZ + INTERVAL '2 minutes'"),
+					},
+				},
+				Families: []descpb.ColumnFamilyDescriptor{
+					{ID: 0, Name: "fam", ColumnIDs: []descpb.ColumnID{1, 2}, ColumnNames: []string{"a", "crdb_internal_expiration"}},
+				},
+				PrimaryIndex: descpb.IndexDescriptor{
+					ID:                  1,
+					Name:                "primary",
+					Unique:              true,
+					KeyColumnIDs:        []descpb.ColumnID{1},
+					KeyColumnNames:      []string{"a"},
+					KeyColumnDirections: []catenumpb.IndexColumn_Direction{catenumpb.IndexColumn_DESC},
+					StoreColumnIDs:      []descpb.ColumnID{2},
+					StoreColumnNames:    []string{"crdb_internal_expiration"},
+					Version:             descpb.PrimaryIndexWithStoredColumnsVersion,
+					EncodingType:        catenumpb.PrimaryIndexEncoding,
+					ConstraintID:        1,
+				},
+				NextColumnID:     3,
+				NextFamilyID:     1,
+				NextIndexID:      2,
+				NextConstraintID: 2,
+				RowLevelTTL: &catpb.RowLevelTTL{
+					DurationExpr: catpb.Expression("INTERVAL '2 minutes'"),
+				},
+			},
+			version: clusterversion.V22_2},
 		{err: `unknown mutation ID 123 associated with job ID 456`,
 			desc: descpb.TableDescriptor{
 				ID:            2,
@@ -2938,7 +2927,7 @@ func TestValidateTableDesc(t *testing.T) {
 			version := d.version
 			if version != 0 {
 				clusterVersion = clusterversion.ClusterVersion{
-					Version: version.Version(),
+					Version: clusterversion.ByKey(version),
 				}
 			}
 			err := validate.Self(clusterVersion, desc)

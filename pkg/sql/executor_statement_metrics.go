@@ -1,12 +1,7 @@
 // Copyright 2017 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package sql
 
@@ -75,10 +70,12 @@ type StatsMetrics struct {
 
 	DiscardedStatsCount *metric.Counter
 
-	SQLStatsFlushStarted  *metric.Counter
-	SQLStatsFlushFailure  *metric.Counter
-	SQLStatsFlushDuration metric.IHistogram
-	SQLStatsRemovedRows   *metric.Counter
+	SQLStatsFlushStarted            *metric.Counter
+	SQLStatsFlushDoneSignalsIgnored *metric.Counter
+	SQLStatsFlushFingerprintCount   *metric.Counter
+	SQLStatsFlushFailure            *metric.Counter
+	SQLStatsFlushDuration           metric.IHistogram
+	SQLStatsRemovedRows             *metric.Counter
 
 	SQLTxnStatsCollectionOverhead metric.IHistogram
 }
@@ -244,6 +241,7 @@ func (ex *connExecutor) recordStatementSummary(
 
 		if queryLevelStats.ContentionTime > 0 {
 			ex.planner.DistSQLPlanner().distSQLSrv.Metrics.ContendedQueriesCount.Inc(1)
+			ex.planner.DistSQLPlanner().distSQLSrv.Metrics.CumulativeContentionNanos.Inc(queryLevelStats.ContentionTime.Nanoseconds())
 		}
 
 		err = ex.statsCollector.RecordStatementExecStats(recordedStmtStatsKey, *queryLevelStats)
@@ -253,6 +251,8 @@ func (ex *connExecutor) recordStatementSummary(
 			}
 		}
 	}
+
+	ex.statsCollector.ObserveStatement(stmtFingerprintID, recordedStmtStats)
 
 	// Do some transaction level accounting for the transaction this statement is
 	// a part of.

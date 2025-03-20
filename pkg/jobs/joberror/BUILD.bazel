@@ -20,11 +20,8 @@ go_library(
 go_test(
     name = "joberror_test",
     srcs = ["errors_test.go"],
+    args = ["-test.timeout=295s"],
     embed = [":joberror"],
-    exec_properties = select({
-        "//build/toolchains:is_heavy": {"Pool": "heavy"},
-        "//conditions:default": {"Pool": "default"},
-    }),
     deps = [
         "//pkg/util/circuit",
         "@com_github_cockroachdb_errors//:errors",

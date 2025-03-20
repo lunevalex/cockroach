@@ -1,12 +1,7 @@
 // Copyright 2021 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package persistedsqlstats_test
 
@@ -17,6 +12,7 @@ import (
 	"math"
 	"regexp"
 	"strconv"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -68,7 +64,7 @@ func TestSQLStatsFlush(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
 
-	skip.UnderStressRace(t)
+	skip.UnderRace(t, "test uses multi-node cluster; takes too long to run")
 
 	fakeTime := stubTime{
 		aggInterval: time.Hour,
@@ -678,8 +674,7 @@ func TestSQLStatsReadLimitSizeOnLockedTable(t *testing.T) {
 	// Ensure we have some rows in system.statement_statistics
 	require.GreaterOrEqual(t, stmtStatsCountFlush, minNumExpectedStmts)
 
-	// Set sql.stats.persisted_rows.max
-	sqlConn.Exec(t, fmt.Sprintf("SET CLUSTER SETTING sql.stats.persisted_rows.max=%d", maxNumPersistedRows))
+	persistedsqlstats.SQLStatsMaxPersistedRows.Override(ctx, &s.ClusterSettings().SV, maxNumPersistedRows)
 
 	// We need SucceedsSoon here for the follower read timestamp to catch up
 	// enough for this state to be reached.
@@ -701,7 +696,7 @@ func TestSQLStatsReadLimitSizeOnLockedTable(t *testing.T) {
 
 	// Set table size check interval to .0000001 second. So the next check doesn't
 	// use the cached value.
-	sqlConn.Exec(t, "SET CLUSTER SETTING sql.stats.limit_table_size_check.interval='.0000001s'")
+	persistedsqlstats.SQLStatsLimitTableCheckInterval.Override(ctx, &s.ClusterSettings().SV, time.Nanosecond)
 
 	// Begin a transaction.
 	sqlConn.Exec(t, "BEGIN")
@@ -710,28 +705,35 @@ func TestSQLStatsReadLimitSizeOnLockedTable(t *testing.T) {
 
 	// Ensure that we can read from the table despite it being locked, due to the follower read (AOST).
 	// Expect that the number of statements in the table exceeds sql.stats.persisted_rows.max * 1.5
-	// (meaning that the limit will be reached) and no error. Loop to make sure that
-	// checking it multiple times still returns the correct value.
+	// (meaning that the limit will be reached) and no error. Every iteration picks a random shard, and we
+	// loop 3 times to make sure that we find at least one shard with a count over the limit. In the wild,
+	// we've observed individual shards only having a single statement recorded which makes this check fail
+	// otherwise.
+	foundLimit := false
 	for i := 0; i < 3; i++ {
 		limitReached, err = pss.StmtsLimitSizeReached(ctx)
 		require.NoError(t, err)
-		if !limitReached {
-			readStmt := `SELECT crdb_internal_aggregated_ts_app_name_fingerprint_id_node_id_plan_hash_transaction_fingerprint_id_shard_8, count(*)
+		if limitReached {
+			foundLimit = true
+		}
+	}
+
+	if !foundLimit {
+		readStmt := `SELECT crdb_internal_aggregated_ts_app_name_fingerprint_id_node_id_plan_hash_transaction_fingerprint_id_shard_8, count(*)
       FROM system.statement_statistics
       AS OF SYSTEM TIME follower_read_timestamp()
       GROUP BY crdb_internal_aggregated_ts_app_name_fingerprint_id_node_id_plan_hash_transaction_fingerprint_id_shard_8`
 
-			sqlConn2 := sqlutils.MakeSQLRunner(s.SQLConn(t))
-			rows := sqlConn2.Query(t, readStmt)
-			shard := make([]int64, 8)
-			count := make([]int64, 8)
-			for j := 0; rows.Next(); {
-				err := rows.Scan(&shard[j], &count[j])
-				require.NoError(t, err)
-				j += 1
-			}
-			t.Fatalf("limitReached should be true. loop: %d; shards: %d counts: %d", i, shard, count)
+		sqlConn2 := sqlutils.MakeSQLRunner(s.SQLConn(t))
+		rows := sqlConn2.Query(t, readStmt)
+		shard := make([]int64, 8)
+		count := make([]int64, 8)
+		for j := 0; rows.Next(); {
+			err := rows.Scan(&shard[j], &count[j])
+			require.NoError(t, err)
+			j += 1
 		}
+		t.Fatalf("limitReached should be true. shards: %d counts: %d", shard, count)
 	}
 
 	// Close the transaction.
@@ -1070,4 +1072,41 @@ func smallestStatsCountAcrossAllShards(
 	}
 
 	return numStmtStats
+}
+
+func TestSQLStatsFlushDoesntWaitForFlushSigReceiver(t *testing.T) {
+	defer leaktest.AfterTest(t)()
+	defer log.Scope(t).Close(t)
+
+	sqlStatsKnobs := sqlstats.CreateTestingKnobs()
+	var sqlStmtFlushCount, sqlTxnFlushCount atomic.Int32
+	sqlStatsKnobs.OnStmtStatsFlushFinished = func() {
+		sqlStmtFlushCount.Add(1)
+	}
+	sqlStatsKnobs.OnTxnStatsFlushFinished = func() {
+		sqlTxnFlushCount.Add(1)
+	}
+	tc := serverutils.StartCluster(t, 3 /* numNodes */, base.TestClusterArgs{
+		ServerArgs: base.TestServerArgs{
+			Knobs: base.TestingKnobs{
+				SQLStatsKnobs: sqlStatsKnobs,
+			},
+		},
+	})
+
+	ctx := context.Background()
+	defer tc.Stopper().Stop(ctx)
+
+	ss := tc.ApplicationLayer(0).SQLServer().(*sql.Server).GetSQLStatsProvider().(*persistedsqlstats.PersistedSQLStats)
+	flushDoneCh := make(chan struct{})
+	ss.SetFlushDoneSignalCh(flushDoneCh)
+
+	// It should not block on the flush signal receiver.
+	persistedsqlstats.SQLStatsFlushInterval.Override(ctx, &tc.Server(0).ClusterSettings().SV, 100*time.Millisecond)
+	testutils.SucceedsSoon(t, func() error {
+		if sqlStmtFlushCount.Load() < 5 || sqlTxnFlushCount.Load() < 5 {
+			return errors.New("flush count hasn't been reached yet")
+		}
+		return nil
+	})
 }

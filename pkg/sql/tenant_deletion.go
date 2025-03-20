@@ -1,12 +1,7 @@
 // Copyright 2023 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package sql
 
@@ -14,6 +9,7 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/cockroachdb/cockroach/pkg/clusterversion"
 	"github.com/cockroachdb/cockroach/pkg/jobs"
 	"github.com/cockroachdb/cockroach/pkg/jobs/jobspb"
 	"github.com/cockroachdb/cockroach/pkg/multitenant/mtinfopb"
@@ -85,19 +81,21 @@ func dropTenantInternal(
 		return err
 	}
 
-	if ignoreServiceMode {
-		// Compatibility with CC serverless use of
-		// crdb_internal.destroy_tenant(): we want to disable the check
-		// immediately below, as well as the additional check performed
-		// inside UpdateTenantRecord() (via validateTenantInfo).
-		info.ServiceMode = mtinfopb.ServiceModeNone
-	}
-	// We can only check the service mode after upgrading to a version
-	// that supports the service mode column.
-	if info.ServiceMode != mtinfopb.ServiceModeNone {
-		return errors.WithHint(pgerror.Newf(pgcode.ObjectNotInPrerequisiteState,
-			"cannot drop tenant %q (%d) in service mode %v", info.Name, tenID, info.ServiceMode),
-			"Use ALTER VIRTUAL CLUSTER STOP SERVICE before DROP VIRTUAL CLUSTER.")
+	if settings.Version.IsActive(ctx, clusterversion.V23_1TenantNamesStateAndServiceMode) {
+		if ignoreServiceMode {
+			// Compatibility with CC serverless use of
+			// crdb_internal.destroy_tenant(): we want to disable the check
+			// immediately below, as well as the additional check performed
+			// inside UpdateTenantRecord() (via validateTenantInfo).
+			info.ServiceMode = mtinfopb.ServiceModeNone
+		}
+		// We can only check the service mode after upgrading to a version
+		// that supports the service mode column.
+		if info.ServiceMode != mtinfopb.ServiceModeNone {
+			return errors.WithHint(pgerror.Newf(pgcode.ObjectNotInPrerequisiteState,
+				"cannot drop tenant %q (%d) in service mode %v", info.Name, tenID, info.ServiceMode),
+				"Use ALTER VIRTUAL CLUSTER STOP SERVICE before DROP VIRTUAL CLUSTER.")
+		}
 	}
 
 	if info.DataState == mtinfopb.DataStateDrop {

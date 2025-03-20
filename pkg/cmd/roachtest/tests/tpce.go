@@ -1,12 +1,7 @@
 // Copyright 2020 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package tests
 
@@ -54,8 +49,8 @@ type tpceConnectionOpts struct {
 
 const (
 	defaultFixtureBucket = "gs://cockroach-fixtures-us-east1/tpce-csv"
-	defaultUser          = "root"
-	defaultPassword      = ""
+	defaultUser          = install.DefaultUser
+	defaultPassword      = install.DefaultPassword
 )
 
 func defaultTPCEConnectionOpts() tpceConnectionOpts {
@@ -120,7 +115,7 @@ func (ts *tpceSpec) newCmd(o tpceCmdOptions) *roachtestutil.Command {
 // import of the data and schema creation.
 func (ts *tpceSpec) init(ctx context.Context, t test.Test, c cluster.Cluster, o tpceCmdOptions) {
 	cmd := ts.newCmd(o).Option("init")
-	c.Run(ctx, option.WithNodes(c.Node(ts.loadNode)), fmt.Sprintf("%s %s %s", cmd, ts.portFlag, ts.roachNodeIPFlags[0]))
+	c.Run(ctx, c.Node(ts.loadNode), fmt.Sprintf("%s %s %s", cmd, ts.portFlag, ts.roachNodeIPFlags[0]))
 }
 
 // run runs the tpce workload on cluster that has been initialized with the tpce schema.
@@ -128,7 +123,7 @@ func (ts *tpceSpec) run(
 	ctx context.Context, t test.Test, c cluster.Cluster, o tpceCmdOptions,
 ) (install.RunResultDetails, error) {
 	cmd := fmt.Sprintf("%s %s %s", ts.newCmd(o), ts.portFlag, strings.Join(ts.roachNodeIPFlags, " "))
-	return c.RunWithDetailsSingleNode(ctx, t.L(), option.WithNodes(c.Node(ts.loadNode)), cmd)
+	return c.RunWithDetailsSingleNode(ctx, t.L(), c.Node(ts.loadNode), cmd)
 }
 
 type tpceOptions struct {
@@ -178,6 +173,7 @@ func runTPCE(ctx context.Context, t test.Test, c cluster.Cluster, opts tpceOptio
 			t.Status("installing cockroach")
 			startOpts := option.DefaultStartOpts()
 			startOpts.RoachprodOpts.StoreCount = opts.ssds
+			roachtestutil.SetDefaultSQLPort(c, &startOpts.RoachprodOpts)
 			settings := install.MakeClusterSettings(install.NumRacksOption(racks))
 			c.Start(ctx, t.L(), startOpts, settings, crdbNodes)
 		}

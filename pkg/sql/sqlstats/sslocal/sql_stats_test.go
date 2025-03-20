@@ -1,12 +1,7 @@
 // Copyright 2021 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package sslocal_test
 
@@ -22,7 +17,6 @@ import (
 	"time"
 
 	"github.com/cockroachdb/cockroach/pkg/base"
-	"github.com/cockroachdb/cockroach/pkg/obs"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/security/username"
 	"github.com/cockroachdb/cockroach/pkg/server/serverpb"
@@ -42,9 +36,11 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/testutils/serverutils"
 	"github.com/cockroachdb/cockroach/pkg/testutils/sqlutils"
 	"github.com/cockroachdb/cockroach/pkg/util"
+	"github.com/cockroachdb/cockroach/pkg/util/ctxgroup"
 	"github.com/cockroachdb/cockroach/pkg/util/leaktest"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/cockroach/pkg/util/mon"
+	"github.com/cockroachdb/cockroach/pkg/util/syncutil"
 	"github.com/cockroachdb/cockroach/pkg/util/timeutil"
 	"github.com/jackc/pgx/v4"
 	"github.com/stretchr/testify/require"
@@ -440,7 +436,7 @@ func TestExplicitTxnFingerprintAccounting(t *testing.T) {
 		nil /* curCount */, nil /* maxHist */, math.MaxInt64, st,
 	)
 
-	insightsProvider := insights.New(st, insights.NewMetrics(), obs.NoopEventsExporter{})
+	insightsProvider := insights.New(st, insights.NewMetrics())
 	sqlStats := sslocal.New(
 		st,
 		sqlstats.MaxMemSQLStatsStmtFingerprints,
@@ -458,7 +454,9 @@ func TestExplicitTxnFingerprintAccounting(t *testing.T) {
 	statsCollector := sslocal.NewStatsCollector(
 		st,
 		appStats,
+		insightsProvider.Writer(false /* internal */),
 		sessionphase.NewTimes(),
+		sqlStats.GetCounters(),
 		nil, /* knobs */
 	)
 
@@ -571,7 +569,7 @@ func TestAssociatingStmtStatsWithTxnFingerprint(t *testing.T) {
 		require.NoError(t, err)
 
 		// Construct the SQL Stats machinery.
-		insightsProvider := insights.New(st, insights.NewMetrics(), obs.NoopEventsExporter{})
+		insightsProvider := insights.New(st, insights.NewMetrics())
 		sqlStats := sslocal.New(
 			st,
 			sqlstats.MaxMemSQLStatsStmtFingerprints,
@@ -588,7 +586,9 @@ func TestAssociatingStmtStatsWithTxnFingerprint(t *testing.T) {
 		statsCollector := sslocal.NewStatsCollector(
 			st,
 			appStats,
+			insightsProvider.Writer(false /* internal */),
 			sessionphase.NewTimes(),
+			sqlStats.GetCounters(),
 			nil, /* knobs */
 		)
 
@@ -711,57 +711,84 @@ func TestTransactionServiceLatencyOnExtendedProtocol(t *testing.T) {
 	defer log.Scope(t).Close(t)
 	ctx := context.Background()
 
-	testData := []*struct {
+	type testData struct {
+		syncutil.Mutex
+
 		query        string
 		placeholders []interface{}
 		phaseTimes   *sessionphase.Times
-	}{
-		{
-			query:        "SELECT $1::INT8",
-			placeholders: []interface{}{1},
-			phaseTimes:   nil,
-		},
 	}
 
+	tc := &testData{
+		query:        "SELECT $1::INT8",
+		placeholders: []interface{}{1},
+		phaseTimes:   nil,
+	}
+
+	g := ctxgroup.WithContext(ctx)
+	var finishedExecute syncutil.AtomicBool
 	waitTxnFinish := make(chan struct{})
-	currentTestCaseIdx := 0
 	const latencyThreshold = time.Second * 5
 
 	var params base.TestServerArgs
 	params.Knobs.SQLExecutor = &sql.ExecutorTestingKnobs{
-		OnRecordTxnFinish: func(isInternal bool, phaseTimes *sessionphase.Times, stmt string) {
-			if !isInternal && testData[currentTestCaseIdx].query == stmt {
-				testData[currentTestCaseIdx].phaseTimes = phaseTimes.Clone()
-				go func() {
+		AfterExecute: func(ctx context.Context, stmt string, isInternal bool, err error) {
+			tc.Lock()
+			defer tc.Unlock()
+			if tc.query == stmt {
+				finishedExecute.Set(true)
+			}
+		},
+		OnRecordTxnFinish: func(isInternal bool, phaseTimes *sessionphase.Times, stmt string, _ sqlstats.RecordedTxnStats) {
+			tc.Lock()
+			defer tc.Unlock()
+			if !isInternal && tc.query == stmt && finishedExecute.Get() {
+				tc.phaseTimes = phaseTimes.Clone()
+				g.GoCtx(func(ctx context.Context) error {
 					waitTxnFinish <- struct{}{}
-				}()
+					return nil
+				})
 			}
 		},
 	}
 	s := serverutils.StartServerOnly(t, params)
 	defer s.Stopper().Stop(ctx)
+	ts := s.ApplicationLayer()
 
 	pgURL, cleanupGoDB := sqlutils.PGUrl(
-		t, s.AdvSQLAddr(), "StartServer", url.User(username.RootUser))
+		t, ts.AdvSQLAddr(), "StartServer", url.User(username.RootUser))
 	defer cleanupGoDB()
 	c, err := pgx.Connect(ctx, pgURL.String())
 	require.NoError(t, err, "error connecting with pg url")
 
-	for currentTestCaseIdx < len(testData) {
-		tc := testData[currentTestCaseIdx]
-		// Make extended protocol query
-		_ = c.QueryRow(ctx, tc.query, tc.placeholders...)
-		require.NoError(t, err, "error scanning row")
-		<-waitTxnFinish
+	finishedExecute.Set(false)
 
+	var p string
+	var q []interface{}
+	func() {
+		tc.Lock()
+		defer tc.Unlock()
+		p = tc.query
+		q = tc.placeholders
+	}()
+
+	// Make extended protocol query
+	_ = c.QueryRow(ctx, p, q...)
+	require.NoError(t, err, "error scanning row")
+	<-waitTxnFinish
+
+	func() {
+		tc.Lock()
+		defer tc.Unlock()
 		// Ensure test case phase times are populated by query txn.
-		require.True(t, tc.phaseTimes != nil)
+		require.NotNil(t, tc.phaseTimes)
 		// Ensure SessionTransactionStarted variable is populated.
-		require.True(t, !tc.phaseTimes.GetSessionPhaseTime(sessionphase.SessionTransactionStarted).IsZero())
+		require.False(t, tc.phaseTimes.GetSessionPhaseTime(sessionphase.SessionTransactionStarted).IsZero())
 		// Ensure compute transaction service latency is within a reasonable threshold.
-		require.True(t, tc.phaseTimes.GetTransactionServiceLatency() < latencyThreshold)
-		currentTestCaseIdx++
-	}
+		require.Less(t, tc.phaseTimes.GetTransactionServiceLatency(), latencyThreshold)
+	}()
+
+	require.NoError(t, g.Wait())
 }
 
 func TestFingerprintCreation(t *testing.T) {

@@ -17,7 +17,10 @@ go_library(
         "//pkg/sql/isql",
         "//pkg/sql/privilege",
         "//pkg/sql/roleoption",
+        "//pkg/sql/sem/tree",
+        "//pkg/sql/sessiondata",
         "//pkg/sql/syntheticprivilege",
+        "@com_github_cockroachdb_errors//:errors",
         "@org_golang_google_grpc//codes",
         "@org_golang_google_grpc//status",
     ],
@@ -29,10 +32,7 @@ go_test(
         "main_test.go",
         "privchecker_test.go",
     ],
-    exec_properties = select({
-        "//build/toolchains:is_heavy": {"Pool": "heavy"},
-        "//conditions:default": {"Pool": "default"},
-    }),
+    args = ["-test.timeout=295s"],
     deps = [
         ":privchecker",
         "//pkg/base",

@@ -1,12 +1,7 @@
 // Copyright 2021 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package scbuildstmt
 
@@ -103,6 +98,7 @@ func maybeDropIndex(
 	// We don't support handling zone config related properties for tables, so
 	// throw an unsupported error.
 	fallBackIfSubZoneConfigExists(b, nil, sie.TableID)
+	panicIfSchemaIsLocked(b.QueryByID(sie.TableID))
 	// Cannot drop the index if not CASCADE and a unique constraint depends on it.
 	if dropBehavior != tree.DropCascade && sie.IsUnique && !sie.IsCreatedExplicitly {
 		panic(errors.WithHint(
@@ -111,7 +107,6 @@ func maybeDropIndex(
 			"use CASCADE if you really want to drop it.",
 		))
 	}
-	panicIfSchemaIsLocked(b.QueryByID(sie.TableID))
 	dropSecondaryIndex(b, indexName, dropBehavior, sie)
 	return sie
 }

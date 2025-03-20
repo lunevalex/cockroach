@@ -1,12 +1,7 @@
 // Copyright 2020 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package log
 
@@ -38,10 +33,10 @@ func StructuredEvent(ctx context.Context, event logpb.EventPayload) {
 		0, /* depth */
 		event)
 
-	if sp := getSpan(ctx); sp != nil {
+	if sp, el, ok := getSpanOrEventLog(ctx); ok {
 		// Prevent `entry` from moving to the heap when this branch is not taken.
 		heapEntry := entry
-		eventInternal(sp, entry.sev >= severity.ERROR, &heapEntry)
+		eventInternal(sp, el, entry.sev >= severity.ERROR, &heapEntry)
 	}
 
 	logger := logging.getLogger(entry.ch)

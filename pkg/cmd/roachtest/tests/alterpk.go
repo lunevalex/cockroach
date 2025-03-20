@@ -1,12 +1,7 @@
 // Copyright 2020 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package tests
 
@@ -18,7 +13,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/cluster"
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/option"
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/registry"
-	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/roachtestutil"
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/spec"
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/test"
 	"github.com/cockroachdb/cockroach/pkg/roachprod/install"
@@ -54,19 +48,19 @@ func registerAlterPK(r registry.Registry) {
 
 			// Init the workload.
 			cmd := fmt.Sprintf("./workload init bank --drop --rows %d {pgurl%s}", numRows, roachNodes)
-			if err := c.RunE(ctx, option.WithNodes(loadNode), cmd); err != nil {
+			if err := c.RunE(ctx, loadNode, cmd); err != nil {
 				t.Fatal(err)
 			}
 			initDone <- struct{}{}
 
 			// Run the workload while the primary key change is happening.
 			cmd = fmt.Sprintf("./workload run bank --duration=%s {pgurl%s}", duration, roachNodes)
-			c.Run(ctx, option.WithNodes(loadNode), cmd)
+			c.Run(ctx, loadNode, cmd)
 			// Wait for the primary key change to finish.
 			<-pkChangeDone
 			t.Status("starting second run of the workload after primary key change")
 			// Run the workload after the primary key change occurs.
-			c.Run(ctx, option.WithNodes(loadNode), cmd)
+			c.Run(ctx, loadNode, cmd)
 			return nil
 		})
 		m.Go(func(ctx context.Context) error {
@@ -105,16 +99,11 @@ func registerAlterPK(r registry.Registry) {
 		const duration = 10 * time.Minute
 
 		roachNodes, loadNode := setupTest(ctx, t, c)
-		pgurl, err := roachtestutil.DefaultPGUrl(ctx, c, t.L(), c.Node(1))
-		if err != nil {
-			t.Fatal(err)
-		}
 		cmd := fmt.Sprintf(
-			"./cockroach workload fixtures import tpcc --warehouses=%d --db=tpcc '%s'",
+			"./cockroach workload fixtures import tpcc --warehouses=%d --db=tpcc {pgurl:1}",
 			warehouses,
-			pgurl,
 		)
-		if err := c.RunE(ctx, option.WithNodes(c.Node(roachNodes[0])), cmd); err != nil {
+		if err := c.RunE(ctx, c.Node(roachNodes[0]), cmd); err != nil {
 			t.Fatal(err)
 		}
 
@@ -128,7 +117,7 @@ func registerAlterPK(r registry.Registry) {
 				roachNodes,
 			)
 			t.Status("beginning workload")
-			c.Run(ctx, option.WithNodes(loadNode), runCmd)
+			c.Run(ctx, loadNode, runCmd)
 			t.Status("finished running workload")
 			return nil
 		})
@@ -178,7 +167,7 @@ func registerAlterPK(r registry.Registry) {
 			c.Node(roachNodes[0]),
 		)
 		t.Status("beginning database verification")
-		c.Run(ctx, option.WithNodes(loadNode), checkCmd)
+		c.Run(ctx, loadNode, checkCmd)
 		t.Status("finished database verification")
 	}
 	r.Add(registry.TestSpec{

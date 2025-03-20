@@ -1,12 +1,7 @@
 // Copyright 2017 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package security_test
 
@@ -42,7 +37,9 @@ func TestManagerWithEmbedded(t *testing.T) {
 		t.Error("expected non-nil NodeCert")
 	}
 	clientCerts := cm.ClientCerts()
-	if a, e := len(clientCerts), 4; a != e {
+	// We expect 6 client certificates for root, testuser, testuser2, testuser3,
+	// testuser_cn_only, testuser_san_only, testuser_cn_and_san.
+	if a, e := len(clientCerts), 7; a != e {
 		t.Errorf("expected %d client certs, found %d", e, a)
 	}
 
@@ -119,21 +116,9 @@ func TestManagerWithPrincipalMap(t *testing.T) {
 		return ci.Error
 	}
 
+	// at this point certificate need not have principals match node user
 	setCertPrincipalMap("")
-	require.Regexp(t, `node certificate has principals \["node.crdb.io" "foo"\]`, newCertificateManager())
-
-	// We can map the "node.crdb.io" principal to "node".
-	setCertPrincipalMap("node.crdb.io:node")
 	require.NoError(t, newCertificateManager())
-
-	// We can map the "foo" principal to "node".
-	setCertPrincipalMap("foo:node")
-	require.NoError(t, newCertificateManager())
-
-	// Mapping the "testuser" principal to a different name should result in an
-	// error as it no longer matches the file name.
-	setCertPrincipalMap("testuser:foo,node.crdb.io:node")
-	require.Regexp(t, `client certificate has principals \["foo"\], expected "testuser"`, loadUserCert(username.TestUserName()))
 
 	// Renaming "client.testuser.crt" to "client.foo.crt" allows us to load it
 	// under that name.

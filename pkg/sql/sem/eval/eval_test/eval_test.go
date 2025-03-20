@@ -1,12 +1,7 @@
 // Copyright 2015 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package eval_test
 
@@ -29,7 +24,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/execinfra"
 	"github.com/cockroachdb/cockroach/pkg/sql/execinfrapb"
 	"github.com/cockroachdb/cockroach/pkg/sql/parser"
-	"github.com/cockroachdb/cockroach/pkg/sql/rowenc"
 	"github.com/cockroachdb/cockroach/pkg/sql/rowexec"
 	_ "github.com/cockroachdb/cockroach/pkg/sql/sem/builtins"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/eval"
@@ -38,6 +32,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/testutils/serverutils"
 	"github.com/cockroachdb/cockroach/pkg/util/leaktest"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
+	"github.com/cockroachdb/cockroach/pkg/util/randutil"
 	"github.com/cockroachdb/datadriven"
 	"github.com/stretchr/testify/require"
 )
@@ -141,6 +136,7 @@ func TestEval(t *testing.T) {
 	})
 
 	t.Run("vectorized", func(t *testing.T) {
+		rng, _ := randutil.NewTestRand()
 		var monitorRegistry colexecargs.MonitorRegistry
 		defer monitorRegistry.Close(ctx)
 		walk(t, func(t *testing.T, d *datadriven.TestData) string {
@@ -187,7 +183,8 @@ func TestEval(t *testing.T) {
 							if batchesReturned > 0 {
 								return coldata.ZeroBatch
 							}
-							// It doesn't matter what types we create the input batch with.
+							// It doesn't matter what types we create the input
+							// batch with.
 							batch := coldata.NewMemBatch([]*types.T{}, coldata.StandardColumnFactory)
 							batch.SetLength(1)
 							batchesReturned++
@@ -195,10 +192,21 @@ func TestEval(t *testing.T) {
 						}},
 				}},
 				StreamingMemAccount: &acc,
-				// Unsupported post processing specs are wrapped and run through the
-				// row execution engine.
+				// Unsupported post-processing specs are wrapped and run through
+				// the row execution engine.
 				ProcessorConstructor: rowexec.NewProcessor,
 				MonitorRegistry:      &monitorRegistry,
+			}
+			// If the expression is of the boolean type, in 50% cases we'll
+			// additionally run it as a filter (i.e. as a "selection" operator
+			// as opposed to a "projection").
+			var doFilter bool
+			if typedExpr.ResolvedType().Family() == types.BoolFamily && rng.Float64() < 0.5 {
+				doFilter = true
+				args.Spec.Core.Noop = nil
+				args.Spec.Core.Filterer = &execinfrapb.FiltererSpec{
+					Filter: execinfrapb.Expression{LocalExpr: typedExpr},
+				}
 			}
 			result, err := colbuilder.NewColOperator(ctx, flowCtx, args)
 			require.NoError(t, err)
@@ -211,19 +219,31 @@ func TestEval(t *testing.T) {
 				[]*types.T{typedExpr.ResolvedType()},
 			)
 
-			var (
-				row  rowenc.EncDatumRow
-				meta *execinfrapb.ProducerMetadata
-			)
 			mat.Start(ctx)
-			row, meta = mat.Next()
+			row, meta := mat.Next()
 			if meta != nil {
 				if meta.Err != nil {
 					return fmt.Sprint(meta.Err)
 				}
 				t.Fatalf("unexpected metadata: %+v", meta)
 			}
-			if row == nil {
+			if doFilter {
+				switch strings.ToLower(strings.TrimSpace(d.Expected)) {
+				case "true":
+					if row == nil {
+						t.Fatalf("the row should not be filtered out: %s", d.Input)
+					}
+				case "false", "null":
+					if row != nil {
+						t.Fatalf("the row should be filtered out: %s", d.Input)
+					}
+					// The row is filtered out, so we just return the expected
+					// output here.
+					return strings.TrimSpace(d.Expected)
+				default:
+					t.Fatalf("unexpected bool value: %s", d.Expected)
+				}
+			} else if row == nil {
 				t.Fatal("unexpected end of input")
 			}
 			return row[0].Datum.String()

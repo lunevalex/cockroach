@@ -1,12 +1,7 @@
 // Copyright 2020 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package gc
 
@@ -436,22 +431,24 @@ func assertLiveData(
 		GCTTL:     gcTTL,
 		Threshold: gcThreshold,
 	}
-	pointIt, err := before.NewMVCCIterator(context.Background(), storage.MVCCKeyAndIntentsIterKind, storage.IterOptions{
-		LowerBound: desc.StartKey.AsRawKey(),
-		UpperBound: desc.EndKey.AsRawKey(),
-		KeyTypes:   storage.IterKeyTypePointsAndRanges,
-	})
+	pointIt, err := before.NewMVCCIterator(storage.MVCCKeyAndIntentsIterKind,
+		storage.IterOptions{
+			LowerBound: desc.StartKey.AsRawKey(),
+			UpperBound: desc.EndKey.AsRawKey(),
+			KeyTypes:   storage.IterKeyTypePointsAndRanges,
+		})
 	require.NoError(t, err)
 	defer pointIt.Close()
 	pointIt.SeekGE(storage.MVCCKey{Key: desc.StartKey.AsRawKey()})
 	pointExpectationsGenerator := getExpectationsGenerator(t, pointIt, gcThreshold, intentThreshold,
 		&expInfo)
 
-	rangeIt, err := before.NewMVCCIterator(context.Background(), storage.MVCCKeyIterKind, storage.IterOptions{
-		LowerBound: desc.StartKey.AsRawKey(),
-		UpperBound: desc.EndKey.AsRawKey(),
-		KeyTypes:   storage.IterKeyTypeRangesOnly,
-	})
+	rangeIt, err := before.NewMVCCIterator(storage.MVCCKeyIterKind,
+		storage.IterOptions{
+			LowerBound: desc.StartKey.AsRawKey(),
+			UpperBound: desc.EndKey.AsRawKey(),
+			KeyTypes:   storage.IterKeyTypeRangesOnly,
+		})
 	require.NoError(t, err)
 	defer rangeIt.Close()
 	rangeIt.SeekGE(storage.MVCCKey{Key: desc.StartKey.AsRawKey()})
@@ -460,7 +457,7 @@ func assertLiveData(
 
 	// Loop over engine data after applying GCer requests and compare with
 	// expected point keys.
-	itAfter, err := after.NewMVCCIterator(context.Background(), storage.MVCCKeyAndIntentsIterKind, storage.IterOptions{
+	itAfter, err := after.NewMVCCIterator(storage.MVCCKeyAndIntentsIterKind, storage.IterOptions{
 		LowerBound: desc.StartKey.AsRawKey(),
 		UpperBound: desc.EndKey.AsRawKey(),
 		KeyTypes:   storage.IterKeyTypePointsOnly,
@@ -498,7 +495,7 @@ func assertLiveData(
 		}
 	}
 
-	rangeItAfter, err := after.NewMVCCIterator(context.Background(), storage.MVCCKeyIterKind, storage.IterOptions{
+	rangeItAfter, err := after.NewMVCCIterator(storage.MVCCKeyIterKind, storage.IterOptions{
 		LowerBound:           desc.StartKey.AsRawKey(),
 		UpperBound:           desc.EndKey.AsRawKey(),
 		KeyTypes:             storage.IterKeyTypeRangesOnly,
@@ -674,7 +671,7 @@ func getExpectationsGenerator(
 func getKeyHistory(t *testing.T, r storage.Reader, key roachpb.Key) string {
 	var result []string
 
-	it, err := r.NewMVCCIterator(context.Background(), storage.MVCCKeyAndIntentsIterKind, storage.IterOptions{
+	it, err := r.NewMVCCIterator(storage.MVCCKeyAndIntentsIterKind, storage.IterOptions{
 		LowerBound:           key,
 		UpperBound:           key.Next(),
 		KeyTypes:             storage.IterKeyTypePointsAndRanges,

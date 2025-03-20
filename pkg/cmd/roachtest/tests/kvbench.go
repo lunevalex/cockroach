@@ -1,12 +1,7 @@
 // Copyright 2019 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package tests
 
@@ -228,8 +223,8 @@ func runKVBench(ctx context.Context, t test.Test, c cluster.Cluster, b kvBenchSp
 		// Wipe cluster before starting a new run because factors like load-based
 		// splitting can significantly change the underlying layout of the table and
 		// affect benchmark results.
-		c.Wipe(ctx, false /* preserveCerts */, roachNodes)
-		c.Start(ctx, t.L(), option.DefaultStartOptsNoBackups(), install.MakeClusterSettings(), roachNodes)
+		c.Wipe(ctx, roachNodes)
+		c.Start(ctx, t.L(), option.NewStartOpts(option.NoBackupSchedule), install.MakeClusterSettings(), roachNodes)
 		time.Sleep(restartWait)
 
 		// We currently only support one loadGroup.
@@ -245,7 +240,7 @@ func runKVBench(ctx context.Context, t test.Test, c cluster.Cluster, b kvBenchSp
 				initCmd.WriteString(` --secondary-index`)
 			}
 			fmt.Fprintf(&initCmd, ` {pgurl%s}`, roachNodes)
-			if err := c.RunE(ctx, option.WithNodes(loadNodes), initCmd.String()); err != nil {
+			if err := c.RunE(ctx, loadNodes, initCmd.String()); err != nil {
 				return err
 			}
 
@@ -300,7 +295,7 @@ func runKVBench(ctx context.Context, t test.Test, c cluster.Cluster, b kvBenchSp
 				panic(`unexpected`)
 			}
 
-			err := c.RunE(ctx, option.WithNodes(loadNodes), workloadCmd.String())
+			err := c.RunE(ctx, loadNodes, workloadCmd.String())
 			if err != nil {
 				return errors.Wrapf(err, `error running workload`)
 			}

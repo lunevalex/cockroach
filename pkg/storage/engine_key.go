@@ -1,12 +1,7 @@
 // Copyright 2020 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package storage
 
@@ -31,7 +26,7 @@ import (
 // should consider changing all the legacy code).
 //
 // The version can have the following lengths in addition to 0 length.
-// - Timestamp of MVCC keys: 8, 12, or 13 bytes.
+// - Timestamp of MVCC keys: 8 or 12 bytes.
 // - Lock table key: 17 bytes.
 type EngineKey struct {
 	Key     roachpb.Key
@@ -153,11 +148,13 @@ func (k EngineKey) ToMVCCKey() (MVCCKey, error) {
 		// No-op.
 	case engineKeyVersionWallTimeLen:
 		key.Timestamp.WallTime = int64(binary.BigEndian.Uint64(k.Version[0:8]))
-	case engineKeyVersionWallAndLogicalTimeLen, engineKeyVersionWallLogicalAndSyntheticTimeLen:
+	case engineKeyVersionWallAndLogicalTimeLen:
 		key.Timestamp.WallTime = int64(binary.BigEndian.Uint64(k.Version[0:8]))
 		key.Timestamp.Logical = int32(binary.BigEndian.Uint32(k.Version[8:12]))
-		// NOTE: byte 13 used to store the timestamp's synthetic bit, but this is no
-		// longer consulted and can be ignored during decoding.
+	case engineKeyVersionWallLogicalAndSyntheticTimeLen:
+		key.Timestamp.WallTime = int64(binary.BigEndian.Uint64(k.Version[0:8]))
+		key.Timestamp.Logical = int32(binary.BigEndian.Uint32(k.Version[8:12]))
+		key.Timestamp.Synthetic = k.Version[12] != 0
 	default:
 		return MVCCKey{}, errors.Errorf("version is not an encoded timestamp %x", k.Version)
 	}
@@ -362,4 +359,9 @@ func (lk LockTableKey) EncodedSize() int64 {
 type EngineRangeKeyValue struct {
 	Version []byte
 	Value   []byte
+}
+
+// EngineKeyRange is a key range composed of EngineKeys.
+type EngineKeyRange struct {
+	Start, End EngineKey
 }

@@ -1,12 +1,7 @@
 // Copyright 2014 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package storage
 
@@ -24,7 +19,6 @@ import (
 
 	"github.com/cockroachdb/cockroach/pkg/keys"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvpb"
-	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/concurrency/lock"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog"
@@ -370,7 +364,7 @@ func BenchmarkIntentScan(b *testing.B) {
 					setupKeysWithIntent(b, eng, numVersions, numFlushedVersions, false, /* resolveAll */
 						1, false /* resolveIntentForLatestVersionWhenNotLockUpdate */)
 					lower := makeKey(nil, 0)
-					iter, err := eng.NewMVCCIterator(context.Background(), MVCCKeyAndIntentsIterKind, IterOptions{
+					iter, err := eng.NewMVCCIterator(MVCCKeyAndIntentsIterKind, IterOptions{
 						LowerBound: lower,
 						UpperBound: makeKey(nil, numIntentKeys),
 					})
@@ -459,7 +453,7 @@ func BenchmarkScanAllIntentsResolved(b *testing.B) {
 							// practice, so we don't want it to happen in this Benchmark
 							// either.
 							b.StopTimer()
-							iter, err = eng.NewMVCCIterator(context.Background(), MVCCKeyAndIntentsIterKind, IterOptions{
+							iter, err = eng.NewMVCCIterator(MVCCKeyAndIntentsIterKind, IterOptions{
 								LowerBound: lower,
 								UpperBound: makeKey(nil, numIntentKeys),
 							})
@@ -507,7 +501,7 @@ func BenchmarkScanOneAllIntentsResolved(b *testing.B) {
 					buf := append([]byte(nil), lower...)
 					b.ResetTimer()
 					for i := 0; i < b.N; i++ {
-						iter, err := eng.NewMVCCIterator(context.Background(), MVCCKeyAndIntentsIterKind, IterOptions{
+						iter, err := eng.NewMVCCIterator(MVCCKeyAndIntentsIterKind, IterOptions{
 							LowerBound: buf,
 							UpperBound: upper,
 						})
@@ -772,7 +766,7 @@ func runMVCCScan(ctx context.Context, b *testing.B, opts benchScanOptions) {
 		// Pull all of the sstables into the RocksDB cache in order to make the
 		// timings more stable. Otherwise, the first run will be penalized pulling
 		// data into the cache while later runs will not.
-		if _, err := ComputeStats(ctx, eng, keys.LocalMax, roachpb.KeyMax, 0); err != nil {
+		if _, err := ComputeStats(eng, keys.LocalMax, roachpb.KeyMax, 0); err != nil {
 			b.Fatalf("stats failed: %s", err)
 		}
 	}
@@ -1220,7 +1214,7 @@ func runMVCCDeleteRangeUsingTombstone(
 			eng := getInitialStateEngine(ctx, b, opts, false /* inMemory */)
 			defer eng.Close()
 
-			ms, err := ComputeStats(ctx, eng, keys.LocalMax, keys.MaxKey, 0)
+			ms, err := ComputeStats(eng, keys.LocalMax, keys.MaxKey, 0)
 			require.NoError(b, err)
 
 			leftPeekBound = keys.LocalMax
@@ -1256,53 +1250,6 @@ func runMVCCDeleteRangeUsingTombstone(
 				b.Fatal(err)
 			}
 			b.StopTimer()
-		}()
-	}
-}
-
-// runMVCCDeleteRangeWithPredicate issues a predicate based delete range that
-// deletes all keys created after the `deleteAfterLayer` (0 indexed).
-func runMVCCDeleteRangeWithPredicate(
-	ctx context.Context,
-	b *testing.B,
-	config mvccImportedData,
-	deleteAfterLayer int64,
-	rangeTombstoneThreshold int64,
-) {
-	b.SetBytes(int64(config.layers*config.keyCount) * int64(overhead+config.valueBytes))
-	b.StopTimer()
-	b.ResetTimer()
-
-	// Since the db engine creates mvcc versions at 5 ns increments, multiply the
-	// deleteAtVersion by 5 to compute the delete range timestamp predicate.
-	predicates := kvpb.DeleteRangePredicates{
-		StartTime: hlc.Timestamp{WallTime: (deleteAfterLayer+1)*5 + 1},
-	}
-	var leftPeekBound, rightPeekBound roachpb.Key
-	for i := 0; i < b.N; i++ {
-		func() {
-			eng := getInitialStateEngine(ctx, b, config, false)
-			defer eng.Close()
-			b.StartTimer()
-			resumeSpan, err := MVCCPredicateDeleteRange(
-				ctx,
-				eng,
-				&enginepb.MVCCStats{},
-				keys.LocalMax,
-				roachpb.KeyMax,
-				hlc.MaxTimestamp,
-				hlc.ClockTimestamp{},
-				leftPeekBound,
-				rightPeekBound,
-				predicates,
-				0,
-				math.MaxInt64,
-				rangeTombstoneThreshold,
-				0,
-			)
-			b.StopTimer()
-			require.NoError(b, err)
-			require.Nil(b, resumeSpan)
 		}()
 	}
 }
@@ -1356,7 +1303,7 @@ func runMVCCComputeStats(ctx context.Context, b *testing.B, valueBytes int, numR
 	var stats enginepb.MVCCStats
 	var err error
 	for i := 0; i < b.N; i++ {
-		stats, err = ComputeStats(ctx, eng, keys.LocalMax, keys.MaxKey, 0)
+		stats, err = ComputeStats(eng, keys.LocalMax, keys.MaxKey, 0)
 		if err != nil {
 			b.Fatal(err)
 		}
@@ -1569,107 +1516,6 @@ func runBatchApplyBatchRepr(
 			b.Fatal(err)
 		}
 		batch.Close()
-	}
-
-	b.StopTimer()
-}
-
-func runMVCCCheckForAcquireLock(
-	ctx context.Context,
-	b *testing.B,
-	emk engineMaker,
-	useBatch bool,
-	heldOtherTxn bool,
-	heldSameTxn bool,
-	strength lock.Strength,
-) {
-	runMVCCAcquireLockCommon(ctx, b, emk, useBatch, heldOtherTxn, heldSameTxn, strength, true /* checkFor */)
-}
-
-func runMVCCAcquireLock(
-	ctx context.Context,
-	b *testing.B,
-	emk engineMaker,
-	useBatch bool,
-	heldOtherTxn bool,
-	heldSameTxn bool,
-	strength lock.Strength,
-) {
-	runMVCCAcquireLockCommon(ctx, b, emk, useBatch, heldOtherTxn, heldSameTxn, strength, false /* checkFor */)
-}
-
-func runMVCCAcquireLockCommon(
-	ctx context.Context,
-	b *testing.B,
-	emk engineMaker,
-	useBatch bool,
-	heldOtherTxn bool,
-	heldSameTxn bool,
-	strength lock.Strength,
-	checkFor bool,
-) {
-	if heldOtherTxn && heldSameTxn {
-		b.Fatalf("heldOtherTxn and heldSameTxn cannot both be true")
-	}
-
-	keyBuf := append(make([]byte, 0, 64), []byte("key-")...)
-	makeKey := func(i int) roachpb.Key {
-		// NOTE: we're appending to a buffer with sufficient capacity, so this does
-		// not allocate, but as a result, we need to watch out for aliasing bugs.
-		return encoding.EncodeUvarintAscending(keyBuf[:4], uint64(i))
-	}
-	makeTxn := func(name string) roachpb.Transaction {
-		return roachpb.MakeTransaction(name, keyBuf, 0, 0, hlc.Timestamp{WallTime: 1}, 0, 0, 0, false /* omitInRangefeeds */)
-	}
-	txn1 := makeTxn("txn1")
-	txn2 := makeTxn("txn2")
-
-	loc := "acquire_lock"
-	if checkFor {
-		loc = "check_for_acquire_lock"
-	}
-	eng := emk(b, loc)
-	defer eng.Close()
-
-	for i := 0; i < b.N; i++ {
-		key := makeKey(i)
-		if heldOtherTxn || heldSameTxn {
-			txn := &txn1
-			if heldOtherTxn {
-				txn = &txn2
-			}
-			// Acquire a shared and an exclusive lock on the key.
-			err := MVCCAcquireLock(ctx, eng, txn, lock.Shared, key, nil, 0)
-			require.NoError(b, err)
-			err = MVCCAcquireLock(ctx, eng, txn, lock.Exclusive, key, nil, 0)
-			require.NoError(b, err)
-		}
-	}
-
-	rw := ReadWriter(eng)
-	if useBatch {
-		batch := eng.NewBatch()
-		defer batch.Close()
-		rw = batch
-	}
-	ms := &enginepb.MVCCStats{}
-
-	b.ResetTimer()
-
-	for i := 0; i < b.N; i++ {
-		key := makeKey(i)
-		txn := &txn1
-		var err error
-		if checkFor {
-			err = MVCCCheckForAcquireLock(ctx, rw, txn, strength, key, 0)
-		} else {
-			err = MVCCAcquireLock(ctx, rw, txn, strength, key, ms, 0)
-		}
-		if heldOtherTxn {
-			require.Error(b, err)
-		} else {
-			require.NoError(b, err)
-		}
 	}
 
 	b.StopTimer()
@@ -2065,9 +1911,7 @@ func BenchmarkMVCCScannerWithIntentsAndVersions(b *testing.B) {
 		// Read the keys from the Batch and write them to a sstable to ingest.
 		reader := batch.(*pebbleBatch).batch.Reader()
 		kind, key, value, ok, err := reader.Next()
-		if err != nil {
-			b.Fatal(err)
-		}
+		require.NoError(b, err)
 		type kvPair struct {
 			key   []byte
 			kind  pebble.InternalKeyKind
@@ -2077,9 +1921,7 @@ func BenchmarkMVCCScannerWithIntentsAndVersions(b *testing.B) {
 		for ; ok; kind, key, value, ok, err = reader.Next() {
 			kvPairs = append(kvPairs, kvPair{key: key, kind: kind, value: value})
 		}
-		if err != nil {
-			b.Fatal(err)
-		}
+		require.NoError(b, err)
 		sort.Slice(kvPairs, func(i, j int) bool {
 			cmp := EngineKeyCompare(kvPairs[i].key, kvPairs[j].key)
 			if cmp == 0 {
@@ -2111,7 +1953,7 @@ func BenchmarkMVCCScannerWithIntentsAndVersions(b *testing.B) {
 		startKey := makeKey(nil, 0)
 		endKey := makeKey(nil, totalNumKeys+1)
 		iter, err := newMVCCIterator(
-			ctx, rw, ts, false, false, IterOptions{
+			rw, ts, false, false, IterOptions{
 				KeyTypes:   IterKeyTypePointsAndRanges,
 				LowerBound: startKey,
 				UpperBound: endKey,

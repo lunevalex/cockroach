@@ -51,16 +51,14 @@ go_test(
         "entry_test.go",
         "main_test.go",
     ],
+    args = ["-test.timeout=895s"],
     embed = [":tenant"],
-    exec_properties = select({
-        "//build/toolchains:is_heavy": {"Pool": "heavy"},
-        "//conditions:default": {"Pool": "default"},
-    }),
     tags = ["ccl_test"],
     deps = [
         "//pkg/base",
         "//pkg/ccl",
         "//pkg/ccl/sqlproxyccl/tenantdirsvr",
+        "//pkg/ccl/testutilsccl",
         "//pkg/roachpb",
         "//pkg/security/securityassets",
         "//pkg/security/securitytest",

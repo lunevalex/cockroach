@@ -1,10 +1,7 @@
 // Copyright 2020 The Cockroach Authors.
 //
-// Licensed as a CockroachDB Enterprise file under the Cockroach Community
-// License (the "License"); you may not use this file except in compliance with
-// the License. You may obtain a copy of the License at
-//
-//     https://github.com/cockroachdb/cockroach/blob/master/licenses/CCL.txt
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package backupccl
 
@@ -15,6 +12,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/cockroachdb/cockroach/pkg/clusterversion"
 	"github.com/cockroachdb/cockroach/pkg/jobs/jobspb"
 	"github.com/cockroachdb/cockroach/pkg/keys"
 	"github.com/cockroachdb/cockroach/pkg/security/username"
@@ -90,8 +88,6 @@ type systemBackupConfiguration struct {
 
 	// expectMissingInSystemTenant is true for tables that only exist in secondary tenants.
 	expectMissingInSystemTenant bool
-	// expectMissingInSystemTenant is true for tables that only exist in the system tenant.
-	expectMissingInSecondaryTenant bool
 }
 
 type customRestoreFuncDeps struct {
@@ -244,6 +240,10 @@ func roleMembersRestoreFunc(
 	txn isql.Txn,
 	systemTableName, tempTableName string,
 ) error {
+	if !deps.settings.Version.IsActive(ctx, clusterversion.V23_1RoleMembersTableHasIDColumns) {
+		return defaultSystemTableRestoreFunc(ctx, deps, txn, systemTableName, tempTableName)
+	}
+
 	// It's enough to just check if role_id exists since member_id was added at
 	// the same time.
 	hasIDColumns, err := tableHasNotNullColumn(ctx, txn, tempTableName, "role_id")
@@ -367,6 +367,10 @@ func systemPrivilegesRestoreFunc(
 	txn isql.Txn,
 	systemTableName, tempTableName string,
 ) error {
+	if !deps.settings.Version.IsActive(ctx, clusterversion.V23_1SystemPrivilegesTableHasUserIDColumn) {
+		return defaultSystemTableRestoreFunc(ctx, deps, txn, systemTableName, tempTableName)
+	}
+
 	hasUserIDColumn, err := tableHasNotNullColumn(ctx, txn, tempTableName, "user_id")
 	if err != nil {
 		return err
@@ -418,6 +422,10 @@ func systemDatabaseRoleSettingsRestoreFunc(
 	txn isql.Txn,
 	systemTableName, tempTableName string,
 ) error {
+	if !deps.settings.Version.IsActive(ctx, clusterversion.V23_1DatabaseRoleSettingsHasRoleIDColumn) {
+		return defaultSystemTableRestoreFunc(ctx, deps, txn, systemTableName, tempTableName)
+	}
+
 	hasRoleIDColumn, err := tableHasNotNullColumn(ctx, txn, tempTableName, "role_id")
 	if err != nil {
 		return err
@@ -469,6 +477,10 @@ func systemExternalConnectionsRestoreFunc(
 	txn isql.Txn,
 	systemTableName, tempTableName string,
 ) error {
+	if !deps.settings.Version.IsActive(ctx, clusterversion.V23_1ExternalConnectionsTableHasOwnerIDColumn) {
+		return defaultSystemTableRestoreFunc(ctx, deps, txn, systemTableName, tempTableName)
+	}
+
 	hasOwnerIDColumn, err := tableHasNotNullColumn(ctx, txn, tempTableName, "owner_id")
 	if err != nil {
 		return err
@@ -712,8 +724,7 @@ var systemTableBackupConfiguration = map[string]systemBackupConfiguration{
 		shouldIncludeInClusterBackup: optOutOfClusterBackup,
 	},
 	systemschema.TenantsTable.GetName(): {
-		shouldIncludeInClusterBackup:   optOutOfClusterBackup,
-		expectMissingInSecondaryTenant: true,
+		shouldIncludeInClusterBackup: optOutOfClusterBackup,
 	},
 	systemschema.WebSessionsTable.GetName(): {
 		shouldIncludeInClusterBackup: optOutOfClusterBackup,
@@ -752,9 +763,8 @@ var systemTableBackupConfiguration = map[string]systemBackupConfiguration{
 		shouldIncludeInClusterBackup: optOutOfClusterBackup,
 	},
 	systemschema.TenantSettingsTable.GetName(): {
-		shouldIncludeInClusterBackup:   optInToClusterBackup, // No desc ID columns.
-		customRestoreFunc:              tenantSettingsTableRestoreFunc,
-		expectMissingInSecondaryTenant: true,
+		shouldIncludeInClusterBackup: optInToClusterBackup, // No desc ID columns.
+		customRestoreFunc:            tenantSettingsTableRestoreFunc,
 	},
 	systemschema.SpanCountTable.GetName(): {
 		shouldIncludeInClusterBackup: optOutOfClusterBackup,

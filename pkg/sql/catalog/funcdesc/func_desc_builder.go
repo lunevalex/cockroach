@@ -1,12 +1,7 @@
 // Copyright 2022 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package funcdesc
 
@@ -147,6 +142,25 @@ func (fdb *functionDescriptorBuilder) StripDanglingBackReferences(
 	if sliceIdx < len(fdb.maybeModified.DependedOnBy) {
 		fdb.maybeModified.DependedOnBy = fdb.maybeModified.DependedOnBy[:sliceIdx]
 		fdb.changes.Add(catalog.StrippedDanglingBackReferences)
+	}
+	return nil
+}
+
+// StripNonExistentRoles implements the catalog.DescriptorBuilder
+// interface.
+func (fdb *functionDescriptorBuilder) StripNonExistentRoles(
+	roleExists func(role username.SQLUsername) bool,
+) error {
+	newPrivs := make([]catpb.UserPrivileges, 0, len(fdb.maybeModified.Privileges.Users))
+	for _, priv := range fdb.maybeModified.Privileges.Users {
+		exists := roleExists(priv.UserProto.Decode())
+		if exists {
+			newPrivs = append(newPrivs, priv)
+		}
+	}
+	if len(newPrivs) != len(fdb.maybeModified.Privileges.Users) {
+		fdb.maybeModified.Privileges.Users = newPrivs
+		fdb.changes.Add(catalog.StrippedNonExistentRoles)
 	}
 	return nil
 }

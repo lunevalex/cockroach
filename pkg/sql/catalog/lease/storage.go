@@ -1,12 +1,7 @@
 // Copyright 2021 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package lease
 
@@ -32,7 +27,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/pgcode"
 	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/pgerror"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
-	"github.com/cockroachdb/cockroach/pkg/sql/sqlliveness"
 	"github.com/cockroachdb/cockroach/pkg/util/grpcutil"
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
@@ -49,14 +43,13 @@ import (
 // the manager. Some of these fields belong on the manager, in any case, since
 // they're only used by the manager and not by the store itself.
 type storage struct {
-	nodeIDContainer         *base.SQLIDContainer
-	db                      isql.DB
-	clock                   *hlc.Clock
-	settings                *cluster.Settings
-	codec                   keys.SQLCodec
-	regionPrefix            *atomic.Value
-	sessionBasedLeasingMode sessionBasedLeasingModeReader
-	sysDBCache              *catkv.SystemDatabaseCache
+	nodeIDContainer *base.SQLIDContainer
+	db              isql.DB
+	clock           *hlc.Clock
+	settings        *cluster.Settings
+	codec           keys.SQLCodec
+	regionPrefix    *atomic.Value
+	sysDBCache      *catkv.SystemDatabaseCache
 
 	// group is used for all calls made to acquireNodeLease to prevent
 	// concurrent lease acquisitions from the store.
@@ -73,17 +66,11 @@ type leaseFields struct {
 	version      descpb.DescriptorVersion
 	instanceID   base.SQLInstanceID
 	expiration   tree.DTimestamp
-	sessionID    []byte
 }
 
 type writer interface {
 	deleteLease(context.Context, *kv.Txn, leaseFields) error
 	insertLease(context.Context, *kv.Txn, leaseFields) error
-}
-
-type sessionBasedLeasingModeReader interface {
-	sessionBasedLeasingModeAtLeast(minimumMode SessionBasedLeasingMode) bool
-	getSessionBasedLeasingMode() SessionBasedLeasingMode
 }
 
 // LeaseRenewalDuration controls the default time before a lease expires when
@@ -122,19 +109,12 @@ func (s storage) crossValidateDuringRenewal() bool {
 // acquire a lease on the most recent version of a descriptor. If the lease
 // cannot be obtained because the descriptor is in the process of being dropped
 // or offline (currently only applicable to tables), the error will be of type
-// inactiveTableError. The expiration time set for the lease > minExpiration. A
-// non-nil session should be provided when session based leasing is enabled,
-// which will cause stored leases to populated sessionIDs.
+// inactiveTableError. The expiration time set for the lease > minExpiration.
 func (s storage) acquire(
-	ctx context.Context,
-	minExpiration hlc.Timestamp,
-	session sqlliveness.Session,
-	id descpb.ID,
-	lastLease *storedLease,
+	ctx context.Context, minExpiration hlc.Timestamp, id descpb.ID,
 ) (desc catalog.Descriptor, expiration hlc.Timestamp, prefix []byte, _ error) {
 	ctx = multitenant.WithTenantCostControlExemption(ctx)
 	prefix = s.getRegionPrefix()
-	var sessionID []byte
 	acquireInTxn := func(ctx context.Context, txn *kv.Txn) (err error) {
 
 		// Run the descriptor read as high-priority, thereby pushing any intents out
@@ -155,7 +135,7 @@ func (s storage) acquire(
 		// written a value to the database, which we'd leak if we did not delete it.
 		// Note that the expiration is part of the primary key in the table, so we
 		// would not overwrite the old entry if we just were to do another insert.
-		if (!expiration.IsEmpty() || sessionID != nil) && desc != nil {
+		if !expiration.IsEmpty() && desc != nil {
 			prevExpirationTS := storedLeaseExpiration(expiration)
 			if err := s.writer.deleteLease(ctx, txn, leaseFields{
 				regionPrefix: prefix,
@@ -163,7 +143,6 @@ func (s storage) acquire(
 				version:      desc.GetVersion(),
 				instanceID:   instanceID,
 				expiration:   prevExpirationTS,
-				sessionID:    sessionID,
 			}); err != nil {
 				return errors.Wrap(err, "deleting ambiguously created lease")
 			}
@@ -189,35 +168,12 @@ func (s storage) acquire(
 		log.VEventf(ctx, 2, "storage attempting to acquire lease %v@%v", desc, expiration)
 
 		ts := storedLeaseExpiration(expiration)
-
-		var isLeaseRenewal bool
-		var lastLeaseWasWrittenWithSessionID bool
-		// If there was a previous lease then determine if this a renewal and
-		// if it was written with a session ID.
-		if lastLease != nil {
-			isLeaseRenewal = descpb.DescriptorVersion(lastLease.version) == desc.GetVersion()
-			lastLeaseWasWrittenWithSessionID = lastLease.sessionID != nil
-		}
-		// Populate the session the ID for the lease if it has been provided (i.e.
-		// session based leasing is enabled), since the KV writer below will use it
-		// for generating session based leases.
-		// In dual write mode if we know there is lease renewal happening and the
-		// previous lease was written with a session ID, we will intentionally not
-		// set the session ID. This will cause the KV writer to only generate an expiry
-		// based lease row, since we already have a valid session based lease from earlier.
-		// We do not expect lease renewals to happen at all once session based leasing
-		// is fully adopted.
-		if !(isLeaseRenewal && lastLeaseWasWrittenWithSessionID) &&
-			session != nil {
-			sessionID = session.ID().UnsafeBytes()
-		}
 		lf := leaseFields{
 			regionPrefix: prefix,
 			descID:       desc.GetID(),
 			version:      desc.GetVersion(),
 			instanceID:   s.nodeIDContainer.SQLInstanceID(),
 			expiration:   ts,
-			sessionID:    sessionID,
 		}
 		return s.writer.insertLease(ctx, txn, lf)
 	}
@@ -271,7 +227,6 @@ func (s storage) release(ctx context.Context, stopper *stop.Stopper, lease *stor
 			version:      descpb.DescriptorVersion(lease.version),
 			instanceID:   instanceID,
 			expiration:   lease.expiration,
-			sessionID:    lease.sessionID,
 		}
 		err := s.writer.deleteLease(ctx, nil /* txn */, lf)
 		if err != nil {

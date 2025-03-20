@@ -1,12 +1,7 @@
 // Copyright 2020 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package team
 
@@ -26,6 +21,7 @@ sql:
   email: otan@cockroachlabs.com
   slack: otan
   triage_column_id: 1
+  silence_mentions: true
 test-infra-team:
   email: jlinder@cockroachlabs.com
   slack: jlinder
@@ -39,9 +35,10 @@ test-infra-team:
 			"sql-alias":     PurposeOther,
 			"sql-roachtest": PurposeRoachtest,
 		},
-		Email:          "otan@cockroachlabs.com",
-		Slack:          "otan",
-		TriageColumnID: 1,
+		Email:           "otan@cockroachlabs.com",
+		Slack:           "otan",
+		TriageColumnID:  1,
+		SilenceMentions: true,
 	}
 	require.Equal(t, sqlTeam.TeamName, sqlTeam.Name())
 

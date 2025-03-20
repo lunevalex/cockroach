@@ -1,12 +1,7 @@
 // Copyright 2020 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 // Package slinstance provides functionality for acquiring sqlliveness leases
 // via sessions that have a unique id and expiration. The creation and
@@ -19,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/cockroachdb/cockroach/pkg/kv/kvpb"
 	"github.com/cockroachdb/cockroach/pkg/settings"
 	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
 	"github.com/cockroachdb/cockroach/pkg/sql/enum"
@@ -215,18 +211,6 @@ func (l *Instance) createSession(ctx context.Context) (*session, error) {
 	if l.currentRegion != nil {
 		region = l.currentRegion
 	}
-	id, err := slstorage.MakeSessionID(region, uuid.MakeV4())
-	if err != nil {
-		return nil, err
-	}
-
-	start := l.clock.Now()
-	exp := start.Add(l.ttl().Nanoseconds(), 0)
-	s := &session{
-		id:    id,
-		start: start,
-	}
-	s.mu.exp = exp
 
 	opts := retry.Options{
 		InitialBackoff: 10 * time.Millisecond,
@@ -234,7 +218,25 @@ func (l *Instance) createSession(ctx context.Context) (*session, error) {
 		Multiplier:     1.5,
 	}
 	everySecond := log.Every(time.Second)
+	var err error
+	s := &session{}
 	for i, r := 0, retry.StartWithCtx(ctx, opts); r.Next(); {
+		// Allocate a new session ID initially or if we hit
+		// an ambiguous result error.
+		if len(s.id) == 0 {
+			s.id, err = slstorage.MakeSessionID(region, uuid.MakeV4())
+			if err != nil {
+				return nil, err
+			}
+		}
+		// If we fail to insert the session, then reset the start time
+		// and expiration, since otherwise there is a danger of inserting
+		// an expired session.
+		s.start = l.clock.Now()
+		// Note: Concurrent access is not possible at this point because
+		// the session has not been returned, so we have no need to acquire
+		// the lock.
+		s.mu.exp = s.start.Add(l.ttl().Nanoseconds(), 0)
 		i++
 		if err = l.storage.Insert(ctx, s.id, s.Expiration()); err != nil {
 			if ctx.Err() != nil {
@@ -247,6 +249,14 @@ func (l *Instance) createSession(ctx context.Context) (*session, error) {
 			// of retrying.
 			if grpcutil.IsAuthError(err) {
 				break
+			}
+			// Previous insert was ambiguous, so select a new session ID,
+			// since there may be a row that exists.
+			if errors.HasType(err, (*kvpb.AmbiguousResultError)(nil)) {
+				log.Infof(ctx,
+					"failed to create a session due to an ambiguous result error: %s",
+					s.ID().String())
+				s.id = ""
 			}
 			continue
 		}
@@ -457,7 +467,7 @@ func (l *Instance) Release(ctx context.Context) (sqlliveness.SessionID, error) {
 	}()
 
 	if session == nil {
-		return "", nil
+		return sqlliveness.SessionID(""), errors.New("no session to release")
 	}
 
 	if err := l.storage.Delete(ctx, session.ID()); err != nil {

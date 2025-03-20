@@ -1,12 +1,7 @@
 // Copyright 2021 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 import React from "react";
 import { Link, RouteComponentProps } from "react-router-dom";
@@ -56,10 +51,11 @@ import {
   SqlExecutionErrorMessage,
   TableHeuristicDetailsRow,
   TableIndexUsageStats,
+  TableNameParts,
   TableSchemaDetailsRow,
   TableSpanStatsRow,
 } from "../api";
-import { checkInfoAvailable } from "../databases";
+import { LoadingCell } from "../databases";
 import { InlineAlert } from "@cockroachlabs/ui-components";
 
 const cx = classNames.bind(styles);
@@ -126,7 +122,9 @@ export interface DatabaseDetailsPageData {
 }
 
 export interface DatabaseDetailsPageDataTable {
-  name: string;
+  name: TableNameParts;
+  // Display name containing unquoted, unescaped schema and table name parts.
+  qualifiedDisplayName: string;
   loading: boolean;
   loaded: boolean;
   // Request error when getting table details.
@@ -170,6 +168,7 @@ export interface DatabaseDetailsPageActions {
   onSortingTablesChange?: (columnTitle: string, ascending: boolean) => void;
   onSortingGrantsChange?: (columnTitle: string, ascending: boolean) => void;
   onViewModeChange?: (viewMode: ViewMode) => void;
+  refreshNodes: () => void;
 }
 
 export type DatabaseDetailsPageProps = DatabaseDetailsPageData &
@@ -197,7 +196,7 @@ function filterBySearchQuery(
   table: DatabaseDetailsPageDataTable,
   search: string,
 ): boolean {
-  const matchString = table.name.toLowerCase();
+  const matchString = table.qualifiedDisplayName.toLowerCase();
 
   if (search.startsWith('"') && search.endsWith('"')) {
     search = search.substring(1, search.length - 1);
@@ -264,6 +263,7 @@ export class DatabaseDetailsPage extends React.Component<
   }
 
   componentDidMount(): void {
+    this.props.refreshNodes();
     if (!this.props.loaded && !this.props.loading && !this.props.requestError) {
       this.props.refreshDatabaseDetails(
         this.props.name,
@@ -351,7 +351,7 @@ export class DatabaseDetailsPage extends React.Component<
       if (!table.loaded && !table.loading && table.requestError === undefined) {
         this.props.refreshTableDetails(
           this.props.name,
-          table.name,
+          table.name.qualifiedNameWithSchemaAndTable,
           this.props.csIndexUnusedDuration,
         );
       }
@@ -561,12 +561,16 @@ export class DatabaseDetailsPage extends React.Component<
               Ranges
             </Tooltip>
           ),
-          cell: table =>
-            checkInfoAvailable(
-              table.requestError,
-              table.details.spanStats?.error,
-              table.details.spanStats?.range_count,
-            ),
+          cell: table => (
+            <LoadingCell
+              requestError={table.requestError}
+              queryError={table.details.spanStats?.error}
+              loading={table.loading}
+              errorClassName={cx("database-table__cell-error")}
+            >
+              {table.details.spanStats?.range_count}
+            </LoadingCell>
+          ),
           sort: table => table.details.spanStats?.range_count,
           className: cx("database-table__col-range-count"),
           name: "rangeCount",
@@ -580,12 +584,16 @@ export class DatabaseDetailsPage extends React.Component<
               Columns
             </Tooltip>
           ),
-          cell: table =>
-            checkInfoAvailable(
-              table.requestError,
-              table.details.schemaDetails?.error,
-              table.details.schemaDetails?.columns?.length,
-            ),
+          cell: table => (
+            <LoadingCell
+              requestError={table.requestError}
+              queryError={table.details.schemaDetails?.error}
+              loading={table.loading}
+              errorClassName={cx("database-table__cell-error")}
+            >
+              {table.details.schemaDetails?.columns?.length}
+            </LoadingCell>
+          ),
           sort: table => table.details.schemaDetails?.columns?.length,
           className: cx("database-table__col-column-count"),
           name: "columnCount",
@@ -618,15 +626,19 @@ export class DatabaseDetailsPage extends React.Component<
               Regions
             </Tooltip>
           ),
-          cell: table =>
-            checkInfoAvailable(
-              table.requestError,
-              null,
-              table.details.nodesByRegionString &&
-                table.details.nodesByRegionString.length > 0
+          cell: table => (
+            <LoadingCell
+              requestError={table.requestError}
+              queryError={null}
+              loading={table.loading}
+              errorClassName={cx("database-table__cell-error")}
+            >
+              {table.details.nodesByRegionString &&
+              table.details.nodesByRegionString.length > 0
                 ? table.details.nodesByRegionString
-                : null,
-            ),
+                : null}
+            </LoadingCell>
+          ),
           sort: table => table.details.nodesByRegionString,
           className: cx("database-table__col--regions"),
           name: "regions",
@@ -651,16 +663,19 @@ export class DatabaseDetailsPage extends React.Component<
               % of Live Data
             </Tooltip>
           ),
-          cell: table =>
-            checkInfoAvailable(
-              table.requestError,
-              table.details.spanStats?.error,
-              table.details.spanStats ? (
+          cell: table => (
+            <LoadingCell
+              requestError={table.requestError}
+              queryError={table.details.spanStats?.error}
+              loading={table.loading}
+              errorClassName={cx("database-table__cell-error")}
+            >
+              {table.details.spanStats ? (
                 <MVCCInfoCell details={table.details} />
-              ) : null,
-            ),
+              ) : null}
+            </LoadingCell>
+          ),
           sort: table => table.details.spanStats?.live_percentage,
-          className: cx("database-table__col-column-count"),
           name: "livePercentage",
         },
         {
@@ -672,16 +687,20 @@ export class DatabaseDetailsPage extends React.Component<
               Table Stats Last Updated <Timezone />
             </Tooltip>
           ),
-          cell: table =>
-            checkInfoAvailable(
-              table.requestError,
-              table.details.statsLastUpdated?.error,
+          cell: table => (
+            <LoadingCell
+              requestError={table.requestError}
+              queryError={table.details.statsLastUpdated?.error}
+              loading={table.loading}
+              errorClassName={cx("database-table__cell-error")}
+            >
               <Timestamp
                 time={table.details.statsLastUpdated?.stats_last_created_at}
                 format={DATE_FORMAT}
                 fallback={"No table statistics found"}
-              />,
-            ),
+              />
+            </LoadingCell>
+          ),
           sort: table => table.details.statsLastUpdated,
           className: cx("database-table__col--table-stats"),
           name: "tableStatsUpdated",
@@ -701,16 +720,19 @@ export class DatabaseDetailsPage extends React.Component<
         cell: table => (
           <Link
             to={
-              EncodeDatabaseTableUri(this.props.name, table.name) +
-              `?tab=grants`
+              EncodeDatabaseTableUri(
+                this.props.name,
+                table.name.qualifiedNameWithSchemaAndTable,
+              ) + `?tab=grants`
             }
             className={cx("icon__container")}
           >
             <DatabaseIcon className={cx("icon--s")} />
-            {table.name}
+            <span className={cx("schema-name")}>{table.name.schema}.</span>
+            <span>{table.name.table}</span>
           </Link>
         ),
-        sort: table => table.name,
+        sort: table => table.qualifiedDisplayName,
         className: cx("database-table__col-name"),
         name: "name",
       },
@@ -720,12 +742,16 @@ export class DatabaseDetailsPage extends React.Component<
             Users
           </Tooltip>
         ),
-        cell: table =>
-          checkInfoAvailable(
-            table.requestError,
-            table.details.grants?.error,
-            table.details.grants?.roles.length,
-          ),
+        cell: table => (
+          <LoadingCell
+            requestError={table.requestError}
+            queryError={table.details.grants?.error}
+            loading={table.loading}
+            errorClassName={cx("database-table__cell-error")}
+          >
+            {table.details.grants?.roles.length}
+          </LoadingCell>
+        ),
         sort: table => table.details.grants?.roles.length,
         className: cx("database-table__col-user-count"),
         name: "userCount",
@@ -736,12 +762,16 @@ export class DatabaseDetailsPage extends React.Component<
             Roles
           </Tooltip>
         ),
-        cell: table =>
-          checkInfoAvailable(
-            table.requestError,
-            table.details.grants?.error,
-            table.details.grants?.roles.join(", "),
-          ),
+        cell: table => (
+          <LoadingCell
+            requestError={table.requestError}
+            queryError={table.details.grants?.error}
+            loading={table.loading}
+            errorClassName={cx("database-table__cell-error")}
+          >
+            {table.details.grants?.roles.join(", ")}
+          </LoadingCell>
+        ),
         sort: table => table.details.grants?.roles.join(", "),
         className: cx("database-table__col-roles"),
         name: "roles",
@@ -752,12 +782,16 @@ export class DatabaseDetailsPage extends React.Component<
             Grants
           </Tooltip>
         ),
-        cell: table =>
-          checkInfoAvailable(
-            table.requestError,
-            table.details.grants?.error,
-            table.details.grants?.privileges.join(", "),
-          ),
+        cell: table => (
+          <LoadingCell
+            requestError={table.requestError}
+            queryError={table.details.grants?.error}
+            loading={table.loading}
+            errorClassName={cx("database-table__cell-error")}
+          >
+            {table.details.grants?.privileges.join(", ")}
+          </LoadingCell>
+        ),
         sort: table => table.details.grants?.privileges?.join(", "),
         className: cx("database-table__col-grants"),
         name: "grants",

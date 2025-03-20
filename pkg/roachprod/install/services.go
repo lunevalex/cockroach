@@ -1,12 +1,7 @@
 // Copyright 2023 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package install
 
@@ -21,6 +16,7 @@ import (
 
 	"github.com/alessio/shellescape"
 	"github.com/cockroachdb/cockroach/pkg/roachprod/config"
+	rperrors "github.com/cockroachdb/cockroach/pkg/roachprod/errors"
 	"github.com/cockroachdb/cockroach/pkg/roachprod/logger"
 	"github.com/cockroachdb/cockroach/pkg/roachprod/vm"
 	"github.com/cockroachdb/cockroach/pkg/util/syncutil"
@@ -80,6 +76,9 @@ type ServiceDescriptors []ServiceDesc
 
 // ServicePredicate is a predicate function definition for filtering services.
 type ServicePredicate func(ServiceDesc) bool
+
+// FindOpenPortsFunc is a function signature for finding open ports on a node.
+type FindOpenPortsFunc func(ctx context.Context, l *logger.Logger, node Node, startPort, count int) ([]int, error)
 
 // localClusterPortCache is a workaround for local clusters to prevent multiple
 // nodes from using the same port when searching for open ports.
@@ -215,9 +214,14 @@ func (c *SyncedCluster) DiscoverService(
 	}
 
 	// Finally, fall back to the default ports if no services are found. This is
-	// useful for backwards compatibility with clusters that were created before
-	// the introduction of service discovery, or without a DNS provider.
-	// TODO(Herko): Remove this once DNS support is fully functional.
+	// required for scenarios where the services were not registered with a DNS
+	// provider (Google DNS). Currently, services will not be registered with DNS
+	// for clusters not on GCP, and it will also not be registered for GCP
+	// clusters that specify a custom project. The fall back is also useful for
+	// backwards compatibility with clusters that were created before the
+	// introduction of service discovery, or without a DNS provider.
+	// TODO(Herko): Remove this once DNS support is fully
+	// functional.
 	if len(services) == 0 {
 		var port int
 		switch serviceType {
@@ -394,16 +398,20 @@ func (c *SyncedCluster) FindOpenPorts(
 		return nil, err
 	}
 
+	transientFailure := func(err error) error {
+		return rperrors.TransientFailure(err, "open_ports")
+	}
+
 	res, err := c.runCmdOnSingleNode(ctx, l, node, buf.String(), defaultCmdOpts("find-ports"))
-	if err != nil {
-		return nil, err
+	if findPortsErr := errors.CombineErrors(err, res.Err); findPortsErr != nil {
+		return nil, transientFailure(errors.Wrapf(findPortsErr, "output:\n%s", res.CombinedOut))
 	}
 	ports, err = stringToIntegers(strings.TrimSpace(res.CombinedOut))
 	if err != nil {
 		return nil, err
 	}
 	if len(ports) != count {
-		return nil, errors.Errorf("expected %d ports, got %d", count, len(ports))
+		return nil, transientFailure(errors.Errorf("expected %d ports, got %d", count, len(ports)))
 	}
 	return ports, nil
 }

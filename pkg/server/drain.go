@@ -1,12 +1,7 @@
 // Copyright 2020 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package server
 
@@ -87,8 +82,7 @@ var (
 			"to notice drain request and to perform orderly shutdown",
 		10*time.Second,
 		settings.NonNegativeDurationWithMaximum(10*time.Minute),
-		settings.WithName("server.shutdown.jobs.timeout"),
-		settings.WithPublic)
+		settings.WithName("server.shutdown.jobs.timeout"))
 )
 
 // Drain puts the node into the specified drain mode(s) and optionally
@@ -442,10 +436,7 @@ func (s *drainServer) drainClients(
 
 	// Flush in-memory SQL stats into the statement stats system table.
 	statsProvider := s.sqlServer.pgServer.SQLServer.GetSQLStatsProvider().(*persistedsqlstats.PersistedSQLStats)
-	// If the SQL server is disabled there is nothing to drain here.
-	if !s.sqlServer.cfg.DisableSQLServer {
-		statsProvider.Flush(ctx)
-	}
+	statsProvider.Flush(ctx)
 	statsProvider.Stop(ctx)
 
 	// Inform the async tasks for table stats that the node is draining
@@ -465,13 +456,11 @@ func (s *drainServer) drainClients(
 	if err != nil {
 		return err
 	}
-	// If we started a sql session on this node.
-	if session != "" {
-		instanceID := s.sqlServer.sqlIDContainer.SQLInstanceID()
-		err = s.sqlServer.sqlInstanceStorage.ReleaseInstance(ctx, session, instanceID)
-		if err != nil {
-			return err
-		}
+
+	instanceID := s.sqlServer.sqlIDContainer.SQLInstanceID()
+	err = s.sqlServer.sqlInstanceStorage.ReleaseInstance(ctx, session, instanceID)
+	if err != nil {
+		return err
 	}
 
 	// Mark the node as fully drained.

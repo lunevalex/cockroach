@@ -1,12 +1,7 @@
 // Copyright 2022 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package tests
 
@@ -16,7 +11,6 @@ import (
 	gosql "database/sql"
 	"encoding/json"
 	"fmt"
-	t "log"
 	"math"
 	"os"
 	"path/filepath"
@@ -79,7 +73,7 @@ type decommissionBenchSpec struct {
 	drainFirst bool
 
 	// When true, the test will add a node to the cluster prior to decommission,
-	// so that the upreplication will overlap with the the decommission.
+	// so that the upreplication will overlap with the decommission.
 	whileUpreplicating bool
 
 	// When true, attempts to simulate decommissioning a node with high read
@@ -377,7 +371,7 @@ func setupDecommissionBench(
 	c.Put(ctx, t.DeprecatedWorkload(), "./workload", c.Node(workloadNode))
 	for i := 1; i <= benchSpec.nodes; i++ {
 		// Don't start a scheduled backup as this roachtest reports to roachperf.
-		startOpts := option.DefaultStartOptsNoBackups()
+		startOpts := option.NewStartOpts(option.NoBackupSchedule)
 		startOpts.RoachprodOpts.ExtraArgs = append(startOpts.RoachprodOpts.ExtraArgs,
 			fmt.Sprintf("--attrs=node%d", i),
 			"--vmodule=store_rebalancer=5,allocator=5,allocator_scorer=5,replicate_queue=5")
@@ -401,12 +395,9 @@ func setupDecommissionBench(
 
 		t.Status(fmt.Sprintf("initializing cluster with %d warehouses", benchSpec.warehouses))
 		// Add the connection string here as the port is not decided until c.Start() is called.
-		pgurl, err := roachtestutil.DefaultPGUrl(ctx, c, t.L(), c.Nodes(1))
-		if err != nil {
-			t.Fatal(err)
-		}
-		importCmd = fmt.Sprintf("%s '%s'", importCmd, pgurl)
-		c.Run(ctx, option.WithNodes(c.Node(pinnedNode)), importCmd)
+
+		importCmd = fmt.Sprintf("%s {pgurl:1}", importCmd)
+		c.Run(ctx, c.Node(pinnedNode), importCmd)
 
 		if benchSpec.snapshotRate != 0 {
 			for _, stmt := range []string{
@@ -437,7 +428,7 @@ func setupDecommissionBench(
 		}
 
 		// Wait for initial up-replication.
-		err = WaitFor3XReplication(ctx, t, db)
+		err := WaitFor3XReplication(ctx, t, db)
 		require.NoError(t, err)
 	}
 }
@@ -495,7 +486,7 @@ func uploadPerfArtifacts(
 	// Store the perf artifacts on the pinned node so that the test
 	// runner copies it into an appropriate directory path.
 	dest := filepath.Join(t.PerfArtifactsDir(), "stats.json")
-	if err := c.RunE(ctx, option.WithNodes(c.Node(pinnedNode)), "mkdir -p "+filepath.Dir(dest)); err != nil {
+	if err := c.RunE(ctx, c.Node(pinnedNode), "mkdir -p "+filepath.Dir(dest)); err != nil {
 		t.L().Errorf("failed to create perf dir: %+v", err)
 	}
 	if err := c.PutString(ctx, perfBuf.String(), dest, 0755, c.Node(pinnedNode)); err != nil {
@@ -521,14 +512,14 @@ func uploadPerfArtifacts(
 			t.L().Errorf("failed to upload workload perf artifacts to node: %s", err.Error())
 		}
 
-		if err := c.RunE(ctx, option.WithNodes(c.Node(pinnedNode)),
+		if err := c.RunE(ctx, c.Node(pinnedNode),
 			fmt.Sprintf("cat %s >> %s", workloadStatsDest, dest)); err != nil {
 			t.L().Errorf("failed to concatenate workload perf artifacts with "+
 				"decommission perf artifacts: %s", err.Error())
 		}
 
 		if err := c.RunE(
-			ctx, option.WithNodes(c.Node(pinnedNode)), fmt.Sprintf("rm %s", workloadStatsDest),
+			ctx, c.Node(pinnedNode), fmt.Sprintf("rm %s", workloadStatsDest),
 		); err != nil {
 			t.L().Errorf("failed to cleanup workload perf artifacts: %s", err.Error())
 		}
@@ -636,7 +627,7 @@ func runDecommissionBench(
 
 				// Run workload effectively indefinitely, to be later killed by context
 				// cancellation once decommission has completed.
-				err := c.RunE(ctx, option.WithNodes(c.Node(workloadNode)), workloadCmd)
+				err := c.RunE(ctx, c.Node(workloadNode), workloadCmd)
 				if errors.Is(ctx.Err(), context.Canceled) {
 					// Workload intentionally cancelled via context, so don't return error.
 					return nil
@@ -771,7 +762,7 @@ func runDecommissionBenchLong(
 
 				// Run workload indefinitely, to be later killed by context
 				// cancellation once decommission has completed.
-				err := c.RunE(ctx, option.WithNodes(c.Node(workloadNode)), workloadCmd)
+				err := c.RunE(ctx, c.Node(workloadNode), workloadCmd)
 				if errors.Is(ctx.Err(), context.Canceled) {
 					// Workload intentionally cancelled via context, so don't return error.
 					return nil
@@ -881,6 +872,9 @@ func runSingleDecommission(
 	// TODO(sarkesian): Consider adding a future test for decommissions that get
 	// stuck with replicas in purgatory, by pinning them to a node.
 
+	// We stop nodes gracefully when needed.
+	stopOpts := option.NewStopOpts(option.Graceful(shutdownGracePeriod))
+
 	// Gather metadata for logging purposes and wait for balance.
 	var bytesUsed, rangeCount, totalRanges int64
 	var candidateStores, avgBytesPerReplica int64
@@ -929,19 +923,15 @@ func runSingleDecommission(
 
 	if drainFirst {
 		h.t.Status(fmt.Sprintf("draining node%d", target))
-		pgurl, err := roachtestutil.DefaultPGUrl(ctx, c, h.t.L(), c.Node(target))
-		if err != nil {
-			t.Fatal(err)
-		}
-		cmd := fmt.Sprintf("./cockroach node drain --url=%s --self --insecure", pgurl)
-		if err := h.c.RunE(ctx, option.WithNodes(h.c.Node(target)), cmd); err != nil {
+		cmd := fmt.Sprintf("./cockroach node drain --certs-dir=%s --port={pgport%s} --self", install.CockroachNodeCertsDir, c.Node(target))
+		if err := h.c.RunE(ctx, h.c.Node(target), cmd); err != nil {
 			return err
 		}
 	}
 
 	if stopFirst {
 		h.t.Status(fmt.Sprintf("gracefully stopping node%d", target))
-		if err := h.c.StopCockroachGracefullyOnNode(ctx, h.t.L(), target); err != nil {
+		if err := h.c.StopE(ctx, h.t.L(), stopOpts, c.Node(target)); err != nil {
 			return err
 		}
 		// Wait after stopping the node to distinguish the impact of the node being
@@ -953,7 +943,7 @@ func runSingleDecommission(
 		h.t.Status(fmt.Sprintf("limiting write bandwith to 100MiBps and awaiting "+
 			"increased read amplification on node%d", target))
 		if err := h.c.RunE(
-			ctx, option.WithNodes(h.c.Node(target)),
+			ctx, h.c.Node(target),
 			fmt.Sprintf("sudo bash -c 'echo \"259:0  %d\" > "+
 				"/sys/fs/cgroup/blkio/system.slice/%s.service/blkio.throttle.write_bps_device'",
 				100*(1<<20), roachtestutil.SystemInterfaceSystemdUnitName())); err != nil {
@@ -999,13 +989,13 @@ func runSingleDecommission(
 	if reuse {
 		if !stopFirst {
 			h.t.Status(fmt.Sprintf("gracefully stopping node%d", target))
-			if err := h.c.StopCockroachGracefullyOnNode(ctx, h.t.L(), target); err != nil {
+			if err := h.c.StopE(ctx, h.t.L(), stopOpts, c.Node(target)); err != nil {
 				return err
 			}
 		}
 
 		// Wipe the node and re-add to cluster with a new node ID.
-		if err := h.c.RunE(ctx, option.WithNodes(h.c.Node(target)), "rm -rf {store-dir}"); err != nil {
+		if err := h.c.RunE(ctx, h.c.Node(target), "rm -rf {store-dir}"); err != nil {
 			return err
 		}
 
@@ -1107,7 +1097,7 @@ func logLSMHealth(ctx context.Context, l *logger.Logger, c cluster.Cluster, targ
 	if err != nil {
 		return err
 	}
-	result, err := c.RunWithDetailsSingleNode(ctx, l, option.WithNodes(c.Node(target)),
+	result, err := c.RunWithDetailsSingleNode(ctx, l, c.Node(target),
 		"curl", "-s", fmt.Sprintf("http://%s/debug/lsm",
 			adminAddrs[0]))
 	if err == nil {

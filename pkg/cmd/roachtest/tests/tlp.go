@@ -1,12 +1,7 @@
 // Copyright 2021 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package tests
 
@@ -43,6 +38,7 @@ func registerTLP(r registry.Registry) {
 		Suites:           registry.Suites(registry.Nightly),
 		Leases:           registry.MetamorphicLeases,
 		NativeLibs:       registry.LibGEOS,
+		Randomized:       true,
 		Run:              runTLP,
 		ExtraLabels:      []string{"O-rsg"},
 	})
@@ -80,7 +76,7 @@ func runTLP(ctx context.Context, t test.Test, c cluster.Cluster) {
 			return
 		}
 		c.Stop(ctx, t.L(), option.DefaultStopOpts())
-		c.Wipe(ctx, false /* preserveCerts */)
+		c.Wipe(ctx)
 	}
 }
 
@@ -136,7 +132,7 @@ func runOneTLP(
 	// statements with the MutationsOnly option. Smither.GenerateTLP always
 	// returns SELECT queries, so the MutationsOnly option is used only for
 	// randomly mutating the database.
-	mutSmither, err := sqlsmith.NewSmither(conn, rnd, sqlsmith.MutationsOnly())
+	mutSmither, err := sqlsmith.NewSmither(conn, rnd, sqlsmith.MutationsOnly(), sqlsmith.SimpleNames())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -144,7 +140,8 @@ func runOneTLP(
 
 	// Initialize a smither that will never generate mutations.
 	tlpSmither, err := sqlsmith.NewSmither(conn, rnd,
-		sqlsmith.DisableMutations(), sqlsmith.DisableNondeterministicFns())
+		sqlsmith.DisableMutations(), sqlsmith.DisableNondeterministicFns(), sqlsmith.SimpleNames(),
+	)
 	if err != nil {
 		t.Fatal(err)
 	}

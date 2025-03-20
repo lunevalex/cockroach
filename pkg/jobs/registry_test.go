@@ -1,12 +1,7 @@
 // Copyright 2017 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package jobs
 
@@ -205,7 +200,7 @@ INSERT INTO t."%s" VALUES('a', 'foo');
 
 		var id jobspb.JobID
 		db.QueryRow(t,
-			`INSERT INTO system.jobs (status, created, job_type) VALUES ($1, $2, 'SCHEMA CHANGE') RETURNING id`, status, created).Scan(&id)
+			`INSERT INTO system.jobs (status, created) VALUES ($1, $2) RETURNING id`, status, created).Scan(&id)
 		db.Exec(t, `INSERT INTO system.job_info (job_id, info_key, value) VALUES ($1, $2, $3)`, id, GetLegacyPayloadKey(), payload)
 		db.Exec(t, `INSERT INTO system.job_info (job_id, info_key, value) VALUES ($1, $2, $3)`, id, GetLegacyProgressKey(), progress)
 		return strconv.Itoa(int(id))
@@ -239,9 +234,9 @@ INSERT INTO t."%s" VALUES('a', 'foo');
 			newCanceledJob := writeJob("new_canceled", earlier, earlier.Add(time.Minute),
 				StatusCanceled, mutOptions)
 
-			selectJobsQuery := `SELECT id FROM system.jobs WHERE job_type = 'SCHEMA CHANGE' ORDER BY id`
-			db.CheckQueryResults(t, selectJobsQuery, [][]string{
-				{oldRunningJob}, {oldSucceededJob}, {oldFailedJob}, {oldRevertFailedJob}, {oldCanceledJob},
+			sqlActivityJob := fmt.Sprintf("%d", SqlActivityUpdaterJobID)
+			db.CheckQueryResults(t, `SELECT id FROM system.jobs ORDER BY id`, [][]string{
+				{sqlActivityJob}, {oldRunningJob}, {oldSucceededJob}, {oldFailedJob}, {oldRevertFailedJob}, {oldCanceledJob},
 				{newRunningJob}, {newSucceededJob}, {newFailedJob}, {newRevertFailedJob}, {newCanceledJob}})
 
 			testutils.SucceedsSoon(t, func() error {
@@ -251,19 +246,19 @@ INSERT INTO t."%s" VALUES('a', 'foo');
 				return nil
 			})
 
-			db.CheckQueryResults(t, selectJobsQuery, [][]string{
-				{oldRunningJob}, {oldRevertFailedJob}, {newRunningJob},
+			db.CheckQueryResults(t, `SELECT id FROM system.jobs ORDER BY id`, [][]string{
+				{sqlActivityJob}, {oldRunningJob}, {oldRevertFailedJob}, {newRunningJob},
 				{newSucceededJob}, {newFailedJob}, {newRevertFailedJob}, {newCanceledJob}})
 
 			if err := s.JobRegistry().(*Registry).cleanupOldJobs(ctx, ts.Add(time.Minute*-10)); err != nil {
 				t.Fatal(err)
 			}
-			db.CheckQueryResults(t, selectJobsQuery, [][]string{
-				{oldRunningJob}, {oldRevertFailedJob}, {newRunningJob}, {newRevertFailedJob}})
+			db.CheckQueryResults(t, `SELECT id FROM system.jobs ORDER BY id`, [][]string{
+				{sqlActivityJob}, {oldRunningJob}, {oldRevertFailedJob}, {newRunningJob}, {newRevertFailedJob}})
 
 			// Delete the revert failed, and running jobs for the next run of the
 			// test.
-			_, err := sqlDB.Exec(`DELETE FROM system.jobs WHERE id IN ($1, $2, $3, $4)`,
+			_, err := sqlDB.Exec(`DELETE FROM system.jobs WHERE id = $1 OR id = $2 OR id = $3 OR id = $4`,
 				oldRevertFailedJob, newRevertFailedJob, oldRunningJob, newRunningJob)
 			require.NoError(t, err)
 		}
@@ -315,7 +310,7 @@ func TestRegistryGCPagination(t *testing.T) {
 	ts := timeutil.Now()
 	require.NoError(t, s.JobRegistry().(*Registry).cleanupOldJobs(ctx, ts.Add(-10*time.Minute)))
 	var count int
-	db.QueryRow(t, `SELECT count(1) FROM system.jobs WHERE status = $1`, StatusCanceled).Scan(&count)
+	db.QueryRow(t, `SELECT count(1) FROM system.jobs`).Scan(&count)
 	require.Zero(t, count)
 }
 
@@ -410,6 +405,16 @@ func TestCreateJobWritesToJobInfo(t *testing.T) {
 				}
 				jobInfoCount := tree.MustBeDInt(row[0])
 				require.Equal(t, jobsCount*2, jobInfoCount)
+
+				// Ensure no progress and payload is written to system.jobs.
+				nullPayloadAndProgress := `SELECT count(*) FROM system.jobs WHERE progress IS NOT NULL OR payload IS NOT NULL;`
+				row, err = txn.QueryRowEx(ctx, "verify-job-query", txn.KV(),
+					sessiondata.NodeUserSessionDataOverride, nullPayloadAndProgress)
+				if err != nil {
+					return err
+				}
+				nullProgressAndPayload := tree.MustBeDInt(row[0])
+				require.Equal(t, 0, int(nullProgressAndPayload))
 
 				return nil
 			}))
@@ -936,7 +941,6 @@ func TestRetriesWithExponentialBackoff(t *testing.T) {
 		bti.clock.AdvanceTo(lastRun)
 		<-bti.resumeCh
 		pauseOrCancelJob(t, ctx, bti.idb, bti.registry, jobID, cancel)
-		bti.errCh <- nil
 		<-bti.failOrCancelCh
 		bti.errCh <- MarkAsRetryJobError(errors.New("injecting error in reverting state"))
 		expectedResumed := bti.resumed.Count()
@@ -1179,16 +1183,21 @@ func TestJitterCalculation(t *testing.T) {
 	}
 }
 
-// BenchmarkRunEmptyJob benchmarks how quickly we can create and wait
-// for a job that does no work.
-func BenchmarkRunEmptyJob(b *testing.B) {
-	defer leaktest.AfterTest(b)()
-	defer log.Scope(b).Close(b)
+func TestDeleteTerminalJobByID(t *testing.T) {
+	defer leaktest.AfterTest(t)()
+	defer log.Scope(t).Close(t)
 	defer ResetConstructors()
+
+	errCh := make(chan error)
 	RegisterConstructor(jobspb.TypeImport, func(job *Job, cs *cluster.Settings) Resumer {
 		return jobstest.FakeResumer{
 			OnResume: func(ctx context.Context) error {
-				return nil
+				select {
+				case <-ctx.Done():
+					return ctx.Err()
+				case err := <-errCh:
+					return err
+				}
 			},
 			FailOrCancel: func(ctx context.Context) error {
 				return nil
@@ -1197,27 +1206,85 @@ func BenchmarkRunEmptyJob(b *testing.B) {
 	}, UsesTenantCostControl)
 
 	ctx := context.Background()
+	s, sqlDB, _ := serverutils.StartServer(t, base.TestServerArgs{
+		Knobs: base.TestingKnobs{
+			JobsTestingKnobs: NewTestingKnobsWithShortIntervals(),
+		},
+	})
+	defer s.Stopper().Stop(ctx)
 
-	b.Run("run empty job", func(b *testing.B) {
-		s := serverutils.StartServerOnly(b, base.TestServerArgs{})
-		defer s.Stopper().Stop(ctx)
-		r := s.ApplicationLayer().JobRegistry().(*Registry)
-		idb := s.ApplicationLayer().InternalDB().(isql.DB)
+	var (
+		r   = s.ApplicationLayer().JobRegistry().(*Registry)
+		idb = s.ApplicationLayer().InternalDB().(isql.DB)
+	)
 
-		for n := 0; n < b.N; n++ {
-			jobID := r.MakeJobID()
-			require.NoError(b, idb.Txn(ctx, func(ctx context.Context, txn isql.Txn) (err error) {
-				_, err = r.CreateJobWithTxn(ctx, Record{
-					JobID:       jobID,
-					Description: "testing",
-					Username:    username.RootUserName(),
-					Details:     jobspb.ImportDetails{},
-					Progress:    jobspb.ImportProgress{},
-				}, jobID, txn)
-				return err
-			}))
-			require.NoError(b, r.Run(ctx, []jobspb.JobID{jobID}))
-		}
+	createStartableJob := func() *StartableJob {
+		jobID := r.MakeJobID()
+		var j *StartableJob
+		err := idb.Txn(ctx, func(ctx context.Context, txn isql.Txn) error {
+			return r.CreateStartableJobWithTxn(ctx, &j, jobID, txn, Record{
+				JobID:       jobID,
+				Description: "testing",
+				Username:    username.RootUserName(),
+				Details:     jobspb.ImportDetails{},
+				Progress:    jobspb.ImportProgress{},
+			})
+		})
+		require.NoError(t, err)
+		return j
+	}
+
+	assertValidDeletion := func(id jobspb.JobID) {
+		var count int
+		require.NoError(t, sqlDB.QueryRow("SELECT count(*) FROM system.jobs WHERE id = $1", id).Scan(&count))
+		require.Equal(t, 0, count, "expected no job rows")
+		sqlDB.QueryRow("SELECT count(*) FROM system.job_info WHERE job_id = $1", id)
+		require.Equal(t, 0, count, "expected no job_info rows")
+	}
+
+	t.Run("running job is not deleted", func(t *testing.T) {
+		j := createStartableJob()
+		require.NoError(t, j.Start(ctx))
+		require.Error(t, r.DeleteTerminalJobByID(ctx, j.ID()))
+		errCh <- nil
+		require.NoError(t, j.AwaitCompletion(ctx))
+	})
+	t.Run("paused job is not deleted", func(t *testing.T) {
+		j := createStartableJob()
+		require.NoError(t, j.Start(ctx))
+		require.NoError(t, idb.Txn(ctx, func(ctx context.Context, txn isql.Txn) error {
+			return r.PauseRequested(ctx, txn, j.ID(), "test paused")
+		}))
+		require.Error(t, j.AwaitCompletion(ctx))
+		_ = r.WaitForJobs(ctx, []jobspb.JobID{j.ID()})
+		require.Error(t, r.DeleteTerminalJobByID(ctx, j.ID()))
+	})
+	t.Run("successful job is deleted", func(t *testing.T) {
+		j := createStartableJob()
+		require.NoError(t, j.Start(ctx))
+		errCh <- nil
+		require.NoError(t, j.AwaitCompletion(ctx))
+		_ = r.WaitForJobs(ctx, []jobspb.JobID{j.ID()})
+		require.NoError(t, r.DeleteTerminalJobByID(ctx, j.ID()))
+		assertValidDeletion(j.ID())
+	})
+	t.Run("failed job is deleted", func(t *testing.T) {
+		j := createStartableJob()
+		require.NoError(t, j.Start(ctx))
+		errCh <- errors.New("test error")
+		require.Error(t, j.AwaitCompletion(ctx))
+		_ = r.WaitForJobs(ctx, []jobspb.JobID{j.ID()})
+		require.NoError(t, r.DeleteTerminalJobByID(ctx, j.ID()))
+		assertValidDeletion(j.ID())
+	})
+	t.Run("canceled job is deleted", func(t *testing.T) {
+		j := createStartableJob()
+		require.NoError(t, j.Start(ctx))
+		require.NoError(t, j.Cancel(ctx))
+		require.Error(t, j.AwaitCompletion(ctx))
+		_ = r.WaitForJobs(ctx, []jobspb.JobID{j.ID()})
+		require.NoError(t, r.DeleteTerminalJobByID(ctx, j.ID()))
+		assertValidDeletion(j.ID())
 	})
 }
 

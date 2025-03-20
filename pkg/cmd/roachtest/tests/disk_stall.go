@@ -1,12 +1,7 @@
 // Copyright 2018 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package tests
 
@@ -14,7 +9,6 @@ import (
 	"context"
 	"fmt"
 	"math/rand"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -26,37 +20,39 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/spec"
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/test"
 	"github.com/cockroachdb/cockroach/pkg/roachprod/install"
+	"github.com/cockroachdb/cockroach/pkg/roachprod/vm"
 	"github.com/cockroachdb/cockroach/pkg/util/timeutil"
 	"github.com/stretchr/testify/require"
 )
 
 const maxSyncDur = 10 * time.Second
 
-// registerDiskStalledDetection registers the disk stall detection tests. These
-// tests assert that a disk stall is detected and the process crashes
-// appropriately.
+// registerDiskStalledDetection registers the disk stall test.
 func registerDiskStalledDetection(r registry.Registry) {
 	stallers := map[string]func(test.Test, cluster.Cluster) diskStaller{
 		"dmsetup": func(t test.Test, c cluster.Cluster) diskStaller { return &dmsetupDiskStaller{t: t, c: c} },
 		"cgroup/read-write/logs-too=false": func(t test.Test, c cluster.Cluster) diskStaller {
-			return &cgroupDiskStaller{t: t, c: c, readOrWrite: []bandwidthReadWrite{writeBandwidth, readBandwidth}}
+			return &cgroupDiskStaller{t: t, c: c, readOrWrite: []string{"write", "read"}}
 		},
 		"cgroup/read-write/logs-too=true": func(t test.Test, c cluster.Cluster) diskStaller {
-			return &cgroupDiskStaller{t: t, c: c, readOrWrite: []bandwidthReadWrite{writeBandwidth, readBandwidth}, logsToo: true}
+			return &cgroupDiskStaller{t: t, c: c, readOrWrite: []string{"write", "read"}, logsToo: true}
 		},
 		"cgroup/write-only/logs-too=true": func(t test.Test, c cluster.Cluster) diskStaller {
-			return &cgroupDiskStaller{t: t, c: c, readOrWrite: []bandwidthReadWrite{writeBandwidth}, logsToo: true}
+			return &cgroupDiskStaller{t: t, c: c, readOrWrite: []string{"write"}, logsToo: true}
 		},
 	}
 
 	for name, makeStaller := range stallers {
 		name, makeStaller := name, makeStaller
 		r.Add(registry.TestSpec{
-			Name:  fmt.Sprintf("disk-stalled/detection/%s", name),
+			Name:  fmt.Sprintf("disk-stalled/%s", name),
 			Owner: registry.OwnerStorage,
 			// Use PDs in an attempt to work around flakes encountered when using SSDs.
 			// See #97968.
-			Cluster:             r.MakeClusterSpec(4, spec.ReuseNone(), spec.DisableLocalSSD()),
+			// TODO(DarrylWong): This test currently fails on Ubuntu 22.04 so we run it on 20.04.
+			// See: https://github.com/cockroachdb/cockroach/issues/112111.
+			// Once this issue is fixed we should remove this Ubuntu Version override.
+			Cluster:             r.MakeClusterSpec(4, spec.ReuseNone(), spec.DisableLocalSSD(), spec.UbuntuVersion(vm.FocalFossa)),
 			CompatibleClouds:    registry.AllExceptAWS,
 			Suites:              registry.Suites(registry.Nightly),
 			Timeout:             30 * time.Minute,
@@ -122,7 +118,7 @@ func runDiskStalledDetection(
 	// Wait for upreplication.
 	require.NoError(t, WaitFor3XReplication(ctx, t, n2conn))
 
-	c.Run(ctx, option.WithNodes(c.Node(4)), `./cockroach workload init kv --splits 1000 {pgurl:1}`)
+	c.Run(ctx, c.Node(4), `./cockroach workload init kv --splits 1000 {pgurl:1}`)
 
 	_, err = n2conn.ExecContext(ctx, `USE kv;`)
 	require.NoError(t, err)
@@ -134,7 +130,7 @@ func runDiskStalledDetection(
 		// NB: Since we stall node 1, we run the workload only on nodes 2-3 so
 		// the post-stall QPS isn't affected by the fact that 1/3rd of workload
 		// workers just can't connect to a working node.
-		c.Run(ctx, option.WithNodes(c.Node(4)), `./cockroach workload run kv --read-percent 50 `+
+		c.Run(ctx, c.Node(4), `./cockroach workload run kv --read-percent 50 `+
 			`--duration 10m --concurrency 256 --max-rate 2048 --tolerate-errors `+
 			` --min-block-bytes=512 --max-block-bytes=512 `+
 			`{pgurl:2-3}`)
@@ -153,12 +149,12 @@ func runDiskStalledDetection(
 	}
 
 	stallAt := timeutil.Now()
-	response := mustGetMetrics(ctx, t, adminURL, workloadStartAt, stallAt, []tsQuery{
-		{name: "cr.node.sql.query.count", queryType: total},
+	response := mustGetMetrics(ctx, c, t, adminURL, workloadStartAt, stallAt, []tsQuery{
+		{name: "cr.node.txn.commits", queryType: total},
 	})
 	cum := response.Results[0].Datapoints
-	totalQueriesPreStall := cum[len(cum)-1].Value - cum[0].Value
-	t.L().PrintfCtx(ctx, "%.2f queries completed before stall", totalQueriesPreStall)
+	totalTxnsPreStall := cum[len(cum)-1].Value - cum[0].Value
+	t.L().PrintfCtx(ctx, "%.2f transactions completed before stall", totalTxnsPreStall)
 
 	t.Status("inducing write stall")
 	if doStall {
@@ -205,17 +201,17 @@ func runDiskStalledDetection(
 
 	{
 		now := timeutil.Now()
-		response := mustGetMetrics(ctx, t, adminURL, workloadStartAt, now, []tsQuery{
-			{name: "cr.node.sql.query.count", queryType: total},
+		response := mustGetMetrics(ctx, c, t, adminURL, workloadStartAt, now, []tsQuery{
+			{name: "cr.node.txn.commits", queryType: total},
 		})
 		cum := response.Results[0].Datapoints
-		totalQueriesPostStall := cum[len(cum)-1].Value - totalQueriesPreStall
-		preStallQPS := totalQueriesPreStall / stallAt.Sub(workloadStartAt).Seconds()
-		postStallQPS := totalQueriesPostStall / workloadAfterDur.Seconds()
-		t.L().PrintfCtx(ctx, "%.2f total queries committed after stall\n", totalQueriesPostStall)
-		t.L().PrintfCtx(ctx, "pre-stall qps: %.2f, post-stall qps: %.2f\n", preStallQPS, postStallQPS)
-		if postStallQPS < preStallQPS/2 {
-			t.Fatalf("post-stall QPS %.2f is less than 50%% of pre-stall QPS %.2f", postStallQPS, preStallQPS)
+		totalTxnsPostStall := cum[len(cum)-1].Value - totalTxnsPreStall
+		preStallTPS := totalTxnsPreStall / stallAt.Sub(workloadStartAt).Seconds()
+		postStallTPS := totalTxnsPostStall / workloadAfterDur.Seconds()
+		t.L().PrintfCtx(ctx, "%.2f total transactions committed after stall\n", totalTxnsPostStall)
+		t.L().PrintfCtx(ctx, "pre-stall tps: %.2f, post-stall tps: %.2f\n", preStallTPS, postStallTPS)
+		if postStallTPS < preStallTPS/2 {
+			t.Fatalf("post-stall TPS %.2f is less than 50%% of pre-stall TPS %.2f", postStallTPS, preStallTPS)
 		}
 	}
 
@@ -258,7 +254,7 @@ func getProcessExitMonotonic(
 func getProcessMonotonicTimestamp(
 	ctx context.Context, t test.Test, c cluster.Cluster, nodeID int, prop string,
 ) (time.Duration, bool) {
-	details, err := c.RunWithDetailsSingleNode(ctx, t.L(), option.WithNodes(c.Node(nodeID)), fmt.Sprintf(
+	details, err := c.RunWithDetailsSingleNode(ctx, t.L(), c.Node(nodeID), fmt.Sprintf(
 		"systemctl show %s --property=%s", roachtestutil.SystemInterfaceSystemdUnitName(), prop))
 	require.NoError(t, err)
 	require.NoError(t, details.Err)
@@ -292,46 +288,47 @@ type diskStaller interface {
 type dmsetupDiskStaller struct {
 	t test.Test
 	c cluster.Cluster
+
+	dev string // set in Setup; s.device() doesn't work when volume is not set up
 }
 
 var _ diskStaller = (*dmsetupDiskStaller)(nil)
 
-func (s *dmsetupDiskStaller) device() string { return getDevice(s.t, s.c) }
+func (s *dmsetupDiskStaller) device(nodes option.NodeListOption) string {
+	return getDevice(s.t, s.c, nodes)
+}
 
 func (s *dmsetupDiskStaller) Setup(ctx context.Context) {
-	dev := s.device()
-	// snapd will run "snapd auto-import /dev/dm-0" via udev triggers when
-	// /dev/dm-0 is created. This possibly interferes with the dmsetup create
-	// reload, so uninstall snapd.
-	s.c.Run(ctx, option.WithNodes(s.c.All()), `sudo apt-get purge -y snapd`)
-	s.c.Run(ctx, option.WithNodes(s.c.All()), `sudo umount -f /mnt/data1 || true`)
-	s.c.Run(ctx, option.WithNodes(s.c.All()), `sudo dmsetup remove_all`)
-	err := s.c.RunE(ctx, option.WithNodes(s.c.All()), `echo "0 $(sudo blockdev --getsz `+dev+`) linear `+dev+` 0" | `+
+	s.dev = s.device(s.c.All())
+	s.c.Run(ctx, s.c.All(), `sudo umount -f /mnt/data1 || true`)
+	s.c.Run(ctx, s.c.All(), `sudo dmsetup remove_all`)
+	// See https://github.com/cockroachdb/cockroach/issues/129619#issuecomment-2316147244.
+	s.c.Run(ctx, s.c.All(), `sudo tune2fs -O ^has_journal `+s.dev)
+	err := s.c.RunE(ctx, s.c.All(), `echo "0 $(sudo blockdev --getsz `+s.dev+`) linear `+s.dev+` 0" | `+
 		`sudo dmsetup create data1`)
 	if err != nil {
 		// This has occasionally been seen to fail with "Device or resource busy",
 		// with no clear explanation. Try to find out who it is.
-		s.c.Run(ctx, option.WithNodes(s.c.All()), "sudo bash -c 'ps aux; dmsetup status; mount; lsof'")
+		s.c.Run(ctx, s.c.All(), "sudo bash -c 'ps aux; dmsetup status; mount; lsof'")
 		s.t.Fatal(err)
 	}
-	s.c.Run(ctx, option.WithNodes(s.c.All()), `sudo mount /dev/mapper/data1 /mnt/data1`)
+	s.c.Run(ctx, s.c.All(), `sudo mount /dev/mapper/data1 /mnt/data1`)
 }
 
 func (s *dmsetupDiskStaller) Cleanup(ctx context.Context) {
-	s.c.Run(ctx, option.WithNodes(s.c.All()), `sudo dmsetup resume data1`)
-	s.c.Run(ctx, option.WithNodes(s.c.All()), `sudo umount /mnt/data1`)
-	s.c.Run(ctx, option.WithNodes(s.c.All()), `sudo dmsetup remove_all`)
-	s.c.Run(ctx, option.WithNodes(s.c.All()), `sudo mount /mnt/data1`)
-	// Reinstall snapd in case subsequent tests need it.
-	s.c.Run(ctx, option.WithNodes(s.c.All()), `sudo apt-get install -y snapd`)
+	s.c.Run(ctx, s.c.All(), `sudo dmsetup resume data1`)
+	s.c.Run(ctx, s.c.All(), `sudo umount /mnt/data1`)
+	s.c.Run(ctx, s.c.All(), `sudo dmsetup remove_all`)
+	s.c.Run(ctx, s.c.All(), `sudo tune2fs -O has_journal `+s.dev)
+	s.c.Run(ctx, s.c.All(), `sudo mount /mnt/data1`)
 }
 
 func (s *dmsetupDiskStaller) Stall(ctx context.Context, nodes option.NodeListOption) {
-	s.c.Run(ctx, option.WithNodes(nodes), `sudo dmsetup suspend --noflush --nolockfs data1`)
+	s.c.Run(ctx, nodes, `sudo dmsetup suspend --noflush --nolockfs data1`)
 }
 
 func (s *dmsetupDiskStaller) Unstall(ctx context.Context, nodes option.NodeListOption) {
-	s.c.Run(ctx, option.WithNodes(nodes), `sudo dmsetup resume data1`)
+	s.c.Run(ctx, nodes, `sudo dmsetup resume data1`)
 }
 
 func (s *dmsetupDiskStaller) DataDir() string { return "{store-dir}" }
@@ -340,7 +337,7 @@ func (s *dmsetupDiskStaller) LogDir() string  { return "logs" }
 type cgroupDiskStaller struct {
 	t           test.Test
 	c           cluster.Cluster
-	readOrWrite []bandwidthReadWrite
+	readOrWrite []string
 	logsToo     bool
 }
 
@@ -352,8 +349,8 @@ func (s *cgroupDiskStaller) LogDir() string {
 }
 func (s *cgroupDiskStaller) Setup(ctx context.Context) {
 	if s.logsToo {
-		s.c.Run(ctx, option.WithNodes(s.c.All()), "mkdir -p {store-dir}/logs")
-		s.c.Run(ctx, option.WithNodes(s.c.All()), "rm -f logs && ln -s {store-dir}/logs logs || true")
+		s.c.Run(ctx, s.c.All(), "mkdir -p {store-dir}/logs")
+		s.c.Run(ctx, s.c.All(), "rm -f logs && ln -s {store-dir}/logs logs || true")
 	}
 }
 func (s *cgroupDiskStaller) Cleanup(ctx context.Context) {}
@@ -364,91 +361,58 @@ func (s *cgroupDiskStaller) Stall(ctx context.Context, nodes option.NodeListOpti
 		s.readOrWrite[i], s.readOrWrite[j] = s.readOrWrite[j], s.readOrWrite[i]
 	})
 	for _, rw := range s.readOrWrite {
-		// NB: I don't understand why, but attempting to set a
-		// bytesPerSecond={0,1} results in Invalid argument from the io.max
-		// cgroupv2 API.
-		if err := s.setThroughput(ctx, nodes, rw, throughput{limited: true, bytesPerSecond: 4}); err != nil {
-			s.t.Fatal(err)
-		}
+		s.setThroughput(ctx, nodes, rw, 1)
 	}
 }
 
 func (s *cgroupDiskStaller) Unstall(ctx context.Context, nodes option.NodeListOption) {
 	for _, rw := range s.readOrWrite {
-		err := s.setThroughput(ctx, nodes, rw, throughput{limited: false})
-		s.t.L().PrintfCtx(ctx, "error unstalling the disk; stumbling on: %v", err)
-		// NB: We log the error and continue on because unstalling may not
-		// succeed if the process has successfully exited.
+		s.setThroughput(ctx, nodes, rw, 0)
 	}
 }
 
-func (s *cgroupDiskStaller) device() (major, minor int) {
-	// TODO(jackson): Programmatically determine the device major,minor numbers.
-	// eg,:
-	//    deviceName := getDevice(s.t, s.c)
-	//    `cat /proc/partitions` and find `deviceName`
-	switch s.c.Cloud() {
-	case spec.GCE:
-		// ls -l /dev/sdb
-		// brw-rw---- 1 root disk 8, 16 Mar 27 22:08 /dev/sdb
-		return 8, 16
-	default:
-		s.t.Fatalf("unsupported cloud %q", s.c.Cloud())
+func (s *cgroupDiskStaller) device(nodes option.NodeListOption) (major, minor int) {
+	res, err := s.c.RunWithDetailsSingleNode(context.TODO(), s.t.L(), nodes[:1], "lsblk | grep /mnt/data1 | awk '{print $2}'")
+	if err != nil {
+		s.t.Fatalf("error when determining block device: %s", err)
 		return 0, 0
 	}
-}
-
-type throughput struct {
-	limited        bool
-	bytesPerSecond int
-}
-
-type bandwidthReadWrite int8
-
-const (
-	readBandwidth bandwidthReadWrite = iota
-	writeBandwidth
-)
-
-func (rw bandwidthReadWrite) cgroupV2BandwidthProp() string {
-	switch rw {
-	case readBandwidth:
-		return "rbps"
-	case writeBandwidth:
-		return "wbps"
-	default:
-		panic("unreachable")
+	parts := strings.Split(strings.TrimSpace(res.Stdout), ":")
+	if len(parts) != 2 {
+		s.t.Fatalf("unexpected output from lsblk: %s", res.Stdout)
+		return 0, 0
 	}
+	major, err = strconv.Atoi(parts[0])
+	if err != nil {
+		s.t.Fatalf("error when determining block device: %s", err)
+		return 0, 0
+	}
+	minor, err = strconv.Atoi(parts[1])
+	if err != nil {
+		s.t.Fatalf("error when determining block device: %s", err)
+		return 0, 0
+	}
+	return major, minor
 }
 
 func (s *cgroupDiskStaller) setThroughput(
-	ctx context.Context, nodes option.NodeListOption, rw bandwidthReadWrite, bw throughput,
-) error {
-	maj, min := s.device()
-	cockroachIOController := filepath.Join("/sys/fs/cgroup/system.slice", roachtestutil.SystemInterfaceSystemdUnitName()+".service", "io.max")
-
-	bytesPerSecondStr := "max"
-	if bw.limited {
-		bytesPerSecondStr = fmt.Sprintf("%d", bw.bytesPerSecond)
-	}
-	return s.c.RunE(ctx, option.WithNodes(nodes), "sudo", "/bin/bash", "-c", fmt.Sprintf(
-		`'echo %d:%d %s=%s > %s'`,
-		maj,
-		min,
-		rw.cgroupV2BandwidthProp(),
-		bytesPerSecondStr,
-		cockroachIOController,
+	ctx context.Context, nodes option.NodeListOption, readOrWrite string, bytesPerSecond int,
+) {
+	major, minor := s.device(nodes)
+	s.c.Run(ctx, nodes, "sudo", "/bin/bash", "-c", fmt.Sprintf(
+		"'echo %d:%d %d > /sys/fs/cgroup/blkio/blkio.throttle.%s_bps_device'",
+		major,
+		minor,
+		bytesPerSecond,
+		readOrWrite,
 	))
 }
 
-func getDevice(t test.Test, c cluster.Cluster) string {
-	switch c.Cloud() {
-	case spec.GCE:
-		return "/dev/sdb"
-	case spec.AWS:
-		return "/dev/nvme1n1"
-	default:
-		t.Fatalf("unsupported cloud %q", c.Cloud())
+func getDevice(t test.Test, c cluster.Cluster, nodes option.NodeListOption) string {
+	res, err := c.RunWithDetailsSingleNode(context.TODO(), t.L(), nodes[:1], "lsblk | grep /mnt/data1 | awk '{print $1}'")
+	if err != nil {
+		t.Fatalf("error when determining block device: %s", err)
 		return ""
 	}
+	return "/dev/" + strings.TrimSpace(res.Stdout)
 }

@@ -15,11 +15,8 @@ go_test(
         "cancel_test.go",
         "main_test.go",
     ],
+    args = ["-test.timeout=295s"],
     embed = [":pgwirecancel"],
-    exec_properties = select({
-        "//build/toolchains:is_heavy": {"Pool": "heavy"},
-        "//conditions:default": {"Pool": "default"},
-    }),
     deps = [
         "//pkg/base",
         "//pkg/security/securityassets",

@@ -29,11 +29,8 @@ go_test(
         "net_test.go",
         "srv_test.go",
     ],
+    args = ["-test.timeout=295s"],
     embed = [":netutil"],
-    exec_properties = select({
-        "//build/toolchains:is_heavy": {"Pool": "heavy"},
-        "//conditions:default": {"Pool": "default"},
-    }),
     deps = [
         "//pkg/util/timeutil",
         "@com_github_cockroachdb_cmux//:cmux",

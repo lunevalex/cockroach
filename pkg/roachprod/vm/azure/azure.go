@@ -1,12 +1,7 @@
 // Copyright 2019 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package azure
 
@@ -17,6 +12,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -27,6 +23,7 @@ import (
 	"github.com/Azure/azure-sdk-for-go/profiles/latest/resources/mgmt/subscriptions"
 	"github.com/Azure/go-autorest/autorest"
 	"github.com/Azure/go-autorest/autorest/to"
+	"github.com/cockroachdb/cockroach/pkg/roachprod/config"
 	"github.com/cockroachdb/cockroach/pkg/roachprod/logger"
 	"github.com/cockroachdb/cockroach/pkg/roachprod/vm"
 	"github.com/cockroachdb/cockroach/pkg/roachprod/vm/flagstub"
@@ -37,6 +34,7 @@ import (
 )
 
 const (
+	defaultSubscription = "e2e-infra"
 	// ProviderName is "azure".
 	ProviderName = "azure"
 	remoteUser   = "ubuntu"
@@ -92,16 +90,6 @@ type Provider struct {
 		subnets        map[string]network.Subnet
 		securityGroups map[string]network.SecurityGroup
 	}
-}
-
-func (p *Provider) SupportsSpotVMs() bool {
-	return false
-}
-
-func (p *Provider) GetPreemptedSpotVMs(
-	l *logger.Logger, vms vm.List, since time.Time,
-) ([]vm.PreemptedVM, error) {
-	return nil, nil
 }
 
 func (p *Provider) CreateVolumeSnapshot(
@@ -189,16 +177,9 @@ func (p *Provider) Create(
 ) error {
 	providerOpts := vmProviderOpts.(*ProviderOpts)
 	// Load the user's SSH public key to configure the resulting VMs.
-	var sshKey string
-	sshFile := os.ExpandEnv("${HOME}/.ssh/id_rsa.pub")
-	if _, err := os.Stat(sshFile); err == nil {
-		if bytes, err := os.ReadFile(sshFile); err == nil {
-			sshKey = string(bytes)
-		} else {
-			return errors.Wrapf(err, "could not read SSH public key file")
-		}
-	} else {
-		return errors.Wrapf(err, "could not find SSH public key file")
+	sshKey, err := config.SSHPublicKey()
+	if err != nil {
+		return err
 	}
 
 	m := getAzureDefaultLabelMap(opts)
@@ -513,6 +494,7 @@ func (p *Provider) List(l *logger.Logger, opts vm.ListOptions) (vm.List, error) 
 			RemoteUser:  remoteUser,
 			VPC:         "global",
 			MachineType: string(found.HardwareProfile.VMSize),
+			CPUArch:     CpuArchFromAzureMachineType(string(found.HardwareProfile.VMSize)),
 			// We add a fake availability-zone suffix since other roachprod
 			// code assumes particular formats. For example, "eastus2z".
 			Zone: *found.Location + "z",
@@ -644,8 +626,11 @@ func (p *Provider) createVM(
 	name, sshKey string,
 	opts vm.CreateOpts,
 	providerOpts ProviderOpts,
-) (vm compute.VirtualMachine, err error) {
-	startupArgs := azureStartupArgs{RemoteUser: remoteUser}
+) (machine compute.VirtualMachine, err error) {
+	startupArgs := azureStartupArgs{
+		RemoteUser:           remoteUser,
+		DisksInitializedFile: vm.DisksInitializedFile,
+	}
 	if !opts.SSDOpts.UseLocalSSD {
 		// We define lun42 explicitly in the data disk request below.
 		lun := 42
@@ -658,7 +643,7 @@ func (p *Provider) createVM(
 
 	startupScript, err := evalStartupTemplate(startupArgs)
 	if err != nil {
-		return vm, err
+		return machine, err
 	}
 	sub, err := p.getSubscription(ctx)
 	if err != nil {
@@ -694,9 +679,23 @@ func (p *Provider) createVM(
 		l.Printf("WARNING: increasing the OS volume size to minimally allowed 32GB")
 		osVolumeSize = 32
 	}
+	imageSKU := func(arch string, machineType string) string {
+		if arch == string(vm.ArchARM64) {
+			return "22_04-lts-arm64"
+		}
+		version := MachineFamilyVersionFromMachineType(machineType)
+		// N.B. We make a simplifying assumption that anything above v5 is gen2.
+		// roachtest's SelectAzureMachineType prefers v5 machine types, some of which do not support gen1.
+		// (Matrix of machine types supporting gen2: https://learn.microsoft.com/en-us/azure/virtual-machines/generation-2)
+		if version >= 5 {
+			return "22_04-lts-gen2"
+		}
+		return "22_04-lts"
+	}
+
 	// Derived from
 	// https://github.com/Azure-Samples/azure-sdk-for-go-samples/blob/79e3f3af791c3873d810efe094f9d61e93a6ccaa/compute/vm.go#L41
-	vm = compute.VirtualMachine{
+	machine = compute.VirtualMachine{
 		Location: group.Location,
 		Zones:    to.StringSlicePtr([]string{providerOpts.Zone}),
 		Tags:     tags,
@@ -707,15 +706,15 @@ func (p *Provider) createVM(
 			StorageProfile: &compute.StorageProfile{
 				// From https://discourse.ubuntu.com/t/find-ubuntu-images-on-microsoft-azure/18918
 				// You can find available versions by running the following command:
-				// az vm image list --all --publisher Canonical
+				// az machine image list --all --publisher Canonical
 				// To get the latest 22.04 version:
 				// az vm image list --all --publisher Canonical | \
 				// jq '[.[] | select(.sku=="22_04-lts")] | max_by(.version)'
 				ImageReference: &compute.ImageReference{
 					Publisher: to.StringPtr("Canonical"),
 					Offer:     to.StringPtr("0001-com-ubuntu-server-jammy"),
-					Sku:       to.StringPtr("22_04-lts"),
-					Version:   to.StringPtr("22.04.202309190"),
+					Sku:       to.StringPtr(imageSKU(opts.Arch, providerOpts.MachineType)),
+					Version:   to.StringPtr("22.04.202312060"),
 				},
 				OsDisk: &compute.OSDisk{
 					CreateOption: compute.DiskCreateOptionTypesFromImage,
@@ -753,20 +752,6 @@ func (p *Provider) createVM(
 				},
 			},
 		},
-	}
-	if opts.UbuntuVersion.IsOverridden() {
-		var image []string
-		image, err = getUbuntuImage(opts.UbuntuVersion)
-		if err != nil {
-			return compute.VirtualMachine{}, err
-		}
-		vm.VirtualMachineProperties.StorageProfile.ImageReference = &compute.ImageReference{
-			Publisher: to.StringPtr("Canonical"),
-			Offer:     to.StringPtr(image[0]),
-			Sku:       to.StringPtr(image[1]),
-			Version:   to.StringPtr(image[2]),
-		}
-		l.Printf("Overriding default Ubuntu image with %s", image)
 	}
 	if !opts.SSDOpts.UseLocalSSD {
 		caching := compute.CachingTypesNone
@@ -806,7 +791,7 @@ func (p *Provider) createVM(
 			}
 
 			// UltraSSDs must be enabled separately.
-			vm.AdditionalCapabilities = &compute.AdditionalCapabilities{
+			machine.AdditionalCapabilities = &compute.AdditionalCapabilities{
 				UltraSSDEnabled: to.BoolPtr(true),
 			}
 		case "premium-disk":
@@ -820,9 +805,9 @@ func (p *Provider) createVM(
 			return compute.VirtualMachine{}, err
 		}
 
-		vm.StorageProfile.DataDisks = &dataDisks
+		machine.StorageProfile.DataDisks = &dataDisks
 	}
-	future, err := client.CreateOrUpdate(ctx, *group.Name, name, vm)
+	future, err := client.CreateOrUpdate(ctx, *group.Name, name, machine)
 	if err != nil {
 		return
 	}
@@ -1457,7 +1442,7 @@ func (p *Provider) createUltraDisk(
 }
 
 // getSubscription returns env.AZURE_SUBSCRIPTION_ID if it exists
-// or the first subscription when listing all available via an API call.
+// or the ID of the defaultSubscription.
 // The value is memoized in the Provider instance.
 func (p *Provider) getSubscription(ctx context.Context) (string, error) {
 	subscriptionId := func() string {
@@ -1472,7 +1457,7 @@ func (p *Provider) getSubscription(ctx context.Context) (string, error) {
 
 	subscriptionId = os.Getenv("AZURE_SUBSCRIPTION_ID")
 
-	// Fallback to retrieving the first subscription
+	// Fallback to retrieving the defaultSubscription.
 	if subscriptionId == "" {
 		authorizer, err := p.getAuthorizer()
 		if err != nil {
@@ -1481,16 +1466,28 @@ func (p *Provider) getSubscription(ctx context.Context) (string, error) {
 		sc := subscriptions.NewClient()
 		sc.Authorizer = authorizer
 
-		page, err := sc.List(ctx)
-		if err == nil {
-			if len(page.Values()) == 0 {
-				err = errors.New("did not find Azure subscription")
+		it, err := sc.ListComplete(ctx)
+		if err != nil {
+			return "", errors.Wrapf(err, "error listing Azure subscriptions")
+		}
+
+		// Iterate through all subscriptions to find the defaultSubscription.
+		// We have to do this as Azure requires the ID not just the name.
+		for it.NotDone() {
+			s := it.Value().SubscriptionID
+			name := it.Value().DisplayName
+			if s != nil && name != nil {
+				if *name == defaultSubscription {
+					subscriptionId = *s
+					break
+				}
+			}
+			if err = it.NextWithContext(ctx); err != nil {
 				return "", err
 			}
-			s := page.Values()[0].SubscriptionID
-			if s != nil {
-				subscriptionId = *s
-			}
+		}
+		if subscriptionId == "" {
+			return "", errors.Newf("Could not find default subscription: %s", defaultSubscription)
 		}
 	}
 
@@ -1518,23 +1515,40 @@ func (p *Provider) getResourcesAndSecurityGroupByName(
 	return rGroup, sGroup
 }
 
-var (
-	// We define the actual image here because it's different for every provider.
-	focalFossa = vm.UbuntuImages{
-		DefaultImage: "0001-com-ubuntu-server-focal;20_04-lts;20.04.202109080",
-	}
+var azureMachineTypes = regexp.MustCompile(`^(Standard_[DE])(\d+)([a-z]*)_v(?P<version>\d+)$`)
 
-	azUbuntuImages = map[vm.UbuntuVersion]vm.UbuntuImages{
-		vm.FocalFossa: focalFossa,
-	}
-)
+// CpuArchFromAzureMachineType attempts to determine the CPU architecture from the corresponding Azure
+// machine type. In case the machine type is not recognized, it defaults to AMD64.
+// TODO(srosenberg): remove when the Azure SDK finally exposes the CPU architecture for a given VM.
+func CpuArchFromAzureMachineType(machineType string) vm.CPUArch {
+	matches := azureMachineTypes.FindStringSubmatch(machineType)
 
-// getUbuntuImage returns the correct Ubuntu image for the specified Ubuntu version.
-func getUbuntuImage(version vm.UbuntuVersion) ([]string, error) {
-	image, ok := azUbuntuImages[version]
-	if ok {
-		return strings.Split(image.DefaultImage, ";"), nil
+	if len(matches) >= 4 {
+		series := matches[1] + matches[3]
+		if series == "Standard_Dps" || series == "Standard_Dpds" ||
+			series == "Standard_Dplds" || series == "Standard_Dpls" ||
+			series == "Standard_Eps" || series == "Standard_Epds" {
+			return vm.ArchARM64
+		}
 	}
+	return vm.ArchAMD64
+}
 
-	return nil, errors.Errorf("Unknown Ubuntu version specified.")
+// MachineFamilyVersionFromMachineType attempts to determine the machine family version from the machine type.
+// If the version cannot be determined, it returns -1.
+func MachineFamilyVersionFromMachineType(machineType string) int {
+	matches := azureMachineTypes.FindStringSubmatch(machineType)
+	for i, name := range azureMachineTypes.SubexpNames() {
+		if i >= len(matches) {
+			break
+		}
+		if i != 0 && name == "version" {
+			res, err := strconv.Atoi(matches[i])
+			if err != nil {
+				return -1
+			}
+			return res
+		}
+	}
+	return -1
 }

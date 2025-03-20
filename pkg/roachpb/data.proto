@@ -1,12 +1,7 @@
 // Copyright 2014 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 syntax = "proto3";
 package cockroach.roachpb;
@@ -194,8 +189,8 @@ message MergeTrigger {
   //    through a range merge, to make the merge less disruptive to writes on
   //    the post-merge range because the timestamp cache won't be bumped as
   //    high.
-  // 2. it can transfer information about reads with future-time timestamps,
-  //    which are not otherwise captured by the FreezeStart clock timestamp.
+  // 2. it can transfer information about reads with synthetic timestamps, which
+  //    are not otherwise captured by the FreezeStart clock timestamp.
   //
   // When a RightReadSummary is set in ReplicatedEvalResult.Merge.Trigger, there
   // is always also a write to the RangePriorReadSummaryKey in the corresponding
@@ -616,8 +611,6 @@ message LockStateInfo {
   // The readers and writers currently waiting on the lock.  Stable ordering
   // is not guaranteed.
   repeated kv.kvserver.concurrency.lock.Waiter waiters = 6 [(gogoproto.nullable) = false];
-  // The strength of the lock is being held at.
-  kv.kvserver.concurrency.lock.Strength lock_strength = 7;
 }
 
 // A SequencedWrite is a point write to a key with a certain sequence number.

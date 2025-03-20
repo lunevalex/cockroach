@@ -1,12 +1,7 @@
 // Copyright 2014 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package batcheval
 
@@ -17,6 +12,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/kv/kvpb"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/batcheval/result"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/lockspanset"
+	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/readsummary/rspb"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/spanset"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/storage"
@@ -115,7 +111,24 @@ func TransferLease(
 	// previous lease was revoked).
 	newLease.Start.Forward(cArgs.EvalCtx.Clock().NowAsClockTimestamp())
 
+	// Collect a read summary from the outgoing leaseholder to ship to the
+	// incoming leaseholder. This is used to instruct the new leaseholder on how
+	// to update its timestamp cache to ensure that no future writes are allowed
+	// to invalidate prior reads.
+	priorReadSum := cArgs.EvalCtx.GetCurrentReadSummary(ctx)
+	// For now, forward this summary to the proposed lease's start time. This
+	// may appear to undermine the benefit of the read summary, but it doesn't
+	// entirely. Until we ship higher-resolution read summaries, the read
+	// summary doesn't provide much value in avoiding transaction retries, but
+	// it is necessary for correctness if the outgoing leaseholder has served
+	// reads at future times above the proposed lease start time.
+	//
+	// We can remove this in the future when we increase the resolution of read
+	// summaries and have a per-range closed timestamp system that is easier to
+	// think about.
+	priorReadSum.Merge(rspb.FromTimestamp(newLease.Start.ToTimestamp()))
+
 	log.VEventf(ctx, 2, "lease transfer: prev lease: %+v, new lease: %+v", prevLease, newLease)
 	return evalNewLease(ctx, cArgs.EvalCtx, readWriter, cArgs.Stats,
-		newLease, prevLease, false /* isExtension */, true /* isTransfer */)
+		newLease, prevLease, &priorReadSum, false /* isExtension */, true /* isTransfer */)
 }

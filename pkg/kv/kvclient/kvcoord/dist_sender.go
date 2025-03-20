@@ -1,12 +1,7 @@
 // Copyright 2014 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package kvcoord
 
@@ -19,6 +14,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unsafe"
 
 	"github.com/cockroachdb/cockroach/pkg/base"
 	"github.com/cockroachdb/cockroach/pkg/gossip"
@@ -31,6 +27,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/multitenant/tenantcostmodel"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/rpc"
+	"github.com/cockroachdb/cockroach/pkg/rpc/nodedialer"
 	"github.com/cockroachdb/cockroach/pkg/settings"
 	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
 	"github.com/cockroachdb/cockroach/pkg/util"
@@ -44,6 +41,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/stop"
 	"github.com/cockroachdb/cockroach/pkg/util/timeutil"
 	"github.com/cockroachdb/cockroach/pkg/util/tracing"
+	"github.com/cockroachdb/cockroach/pkg/util/uuid"
 	"github.com/cockroachdb/errors"
 	"github.com/cockroachdb/redact"
 )
@@ -112,6 +110,12 @@ var (
 	metaDistSenderAsyncSentCount = metric.Metadata{
 		Name:        "distsender.batches.async.sent",
 		Help:        "Number of partial batches sent asynchronously",
+		Measurement: "Partial Batches",
+		Unit:        metric.Unit_COUNT,
+	}
+	metaDistSenderAsyncInProgress = metric.Metadata{
+		Name:        "distsender.batches.async.in_progress",
+		Help:        "Number of partial batches currently being executed asynchronously",
 		Measurement: "Partial Batches",
 		Unit:        metric.Unit_COUNT,
 	}
@@ -207,9 +211,9 @@ This counts the number of ranges with an active rangefeed that are performing ca
 		Measurement: "Ranges",
 		Unit:        metric.Unit_COUNT,
 	}
-	metaDistSenderRangefeedLocalRanges = metric.Metadata{
-		Name:        "distsender.rangefeed.local_ranges",
-		Help:        `Number of ranges connected to local node.`,
+	metaDistSenderRangefeedCatchupRangesWaitingClientSide = metric.Metadata{
+		Name:        "distsender.rangefeed.catchup_ranges_waiting_client_side",
+		Help:        `Number of ranges waiting on the client-side limiter to perform catchup scans`,
 		Measurement: "Ranges",
 		Unit:        metric.Unit_COUNT,
 	}
@@ -232,6 +236,7 @@ This counts the number of ranges with an active rangefeed that are performing ca
 // followerreadsccl code to inject logic to check if follower reads are enabled.
 // By default, without CCL code, this function returns false.
 var CanSendToFollower = func(
+	_ uuid.UUID,
 	_ *cluster.Settings,
 	_ *hlc.Clock,
 	_ roachpb.RangeClosedTimestampPolicy,
@@ -280,16 +285,12 @@ var FollowerReadsUnhealthy = settings.RegisterBoolSetting(
 	true,
 )
 
-// sortByLocalityFirst controls whether we sort by locality before sorting by
-// latency. If it is set to false we will only look at the latency values.
-// TODO(baptist): Remove this in 25.1 once we have validated that we don't need
-// to fall back to the previous behavior of only sorting by latency.
-var sortByLocalityFirst = settings.RegisterBoolSetting(
-	settings.ApplicationLevel,
-	"kv.dist_sender.sort_locality_first.enabled",
-	"sort followers by locality before sorting by latency",
-	true,
-)
+func max(a, b int64) int64 {
+	if a > b {
+		return a
+	}
+	return b
+}
 
 // DistSenderMetrics is the set of metrics for a given distributed sender.
 type DistSenderMetrics struct {
@@ -302,6 +303,7 @@ type DistSenderMetrics struct {
 	CrossZoneBatchRequestBytes         *metric.Counter
 	CrossZoneBatchResponseBytes        *metric.Counter
 	AsyncSentCount                     *metric.Counter
+	AsyncInProgress                    *metric.Gauge
 	AsyncThrottledCount                *metric.Counter
 	SentCount                          *metric.Counter
 	LocalSentCount                     *metric.Counter
@@ -317,10 +319,10 @@ type DistSenderMetrics struct {
 
 // DistSenderRangeFeedMetrics is a set of rangefeed specific metrics.
 type DistSenderRangeFeedMetrics struct {
-	RangefeedRanges        *metric.Gauge
-	RangefeedCatchupRanges *metric.Gauge
-	RangefeedLocalRanges   *metric.Gauge
-	Errors                 rangeFeedErrorCounters
+	RangefeedRanges                         *metric.Gauge
+	RangefeedCatchupRanges                  *metric.Gauge
+	RangefeedCatchupRangesWaitingClientSide *metric.Gauge
+	Errors                                  rangeFeedErrorCounters
 }
 
 func makeDistSenderMetrics() DistSenderMetrics {
@@ -328,6 +330,7 @@ func makeDistSenderMetrics() DistSenderMetrics {
 		BatchCount:                         metric.NewCounter(metaDistSenderBatchCount),
 		PartialBatchCount:                  metric.NewCounter(metaDistSenderPartialBatchCount),
 		AsyncSentCount:                     metric.NewCounter(metaDistSenderAsyncSentCount),
+		AsyncInProgress:                    metric.NewGauge(metaDistSenderAsyncInProgress),
 		AsyncThrottledCount:                metric.NewCounter(metaDistSenderAsyncThrottledCount),
 		SentCount:                          metric.NewCounter(metaTransportSentCount),
 		LocalSentCount:                     metric.NewCounter(metaTransportLocalSentCount),
@@ -439,10 +442,10 @@ func (rangeFeedErrorCounters) MetricStruct() {}
 
 func makeDistSenderRangeFeedMetrics() DistSenderRangeFeedMetrics {
 	return DistSenderRangeFeedMetrics{
-		RangefeedRanges:        metric.NewGauge(metaDistSenderRangefeedTotalRanges),
-		RangefeedCatchupRanges: metric.NewGauge(metaDistSenderRangefeedCatchupRanges),
-		RangefeedLocalRanges:   metric.NewGauge(metaDistSenderRangefeedLocalRanges),
-		Errors:                 makeRangeFeedErrorCounters(),
+		RangefeedRanges:                         metric.NewGauge(metaDistSenderRangefeedTotalRanges),
+		RangefeedCatchupRanges:                  metric.NewGauge(metaDistSenderRangefeedCatchupRanges),
+		RangefeedCatchupRangesWaitingClientSide: metric.NewGauge(metaDistSenderRangefeedCatchupRangesWaitingClientSide),
+		Errors:                                  makeRangeFeedErrorCounters(),
 	}
 }
 
@@ -508,8 +511,12 @@ type FirstRangeProvider interface {
 type DistSender struct {
 	log.AmbientContext
 
-	st      *cluster.Settings
-	stopper *stop.Stopper
+	st *cluster.Settings
+	// nodeDescriptor, if set, holds the descriptor of the node the
+	// DistSender lives on. It should be accessed via getNodeDescriptor(),
+	// which tries to obtain the value from the Gossip network if the
+	// descriptor is unknown.
+	nodeDescriptor unsafe.Pointer
 	// clock is used to set time for some calls. E.g. read-only ops
 	// which span ranges and don't require read consistency.
 	clock *hlc.Clock
@@ -529,8 +536,15 @@ type DistSender struct {
 	// This is not required if a RangeDescriptorDB is supplied.
 	firstRangeProvider FirstRangeProvider
 	transportFactory   TransportFactory
-	rpcRetryOptions    retry.Options
-	asyncSenderSem     *quotapool.IntPool
+	rpcContext         *rpc.Context
+	// nodeDialer allows RPC calls from the SQL layer to the KV layer.
+	nodeDialer      *nodedialer.Dialer
+	rpcRetryOptions retry.Options
+	asyncSenderSem  *quotapool.IntPool
+	// clusterID is the logical cluster ID used to verify access to enterprise features.
+	// It is copied out of the rpcContext at construction time and used in
+	// testing.
+	logicalClusterID *base.ClusterIDContainer
 
 	// batchInterceptor is set for tenants; when set, information about all
 	// BatchRequests and BatchResponses are passed through this interceptor, which
@@ -550,7 +564,7 @@ type DistSender struct {
 	latencyFunc LatencyFunc
 
 	// HealthFunc returns true if the node is alive and not draining.
-	healthFunc HealthFunc
+	healthFunc atomic.Pointer[HealthFunc]
 
 	onRangeSpanningNonTxnalBatch func(ba *kvpb.BatchRequest) *kvpb.Error
 
@@ -581,15 +595,20 @@ type DistSenderConfig struct {
 	AmbientCtx log.AmbientContext
 
 	Settings  *cluster.Settings
-	Stopper   *stop.Stopper
 	Clock     *hlc.Clock
 	NodeDescs NodeDescStore
 	// NodeIDGetter, if set, provides non-gossip based implementation for
 	// obtaining the local KV node ID. The DistSender uses the node ID to
 	// preferentially route requests to a local replica (if one exists).
-	NodeIDGetter     func() roachpb.NodeID
-	RPCRetryOptions  *retry.Options
-	TransportFactory TransportFactory
+	NodeIDGetter func() roachpb.NodeID
+	// nodeDescriptor, if provided, is used to describe which node the
+	// DistSender lives on, for instance when deciding where to send RPCs.
+	// Usually it is filled in from the Gossip network on demand.
+	nodeDescriptor  *roachpb.NodeDescriptor
+	RPCRetryOptions *retry.Options
+	RPCContext      *rpc.Context
+	// NodeDialer is the dialer from the SQL layer to the KV layer.
+	NodeDialer *nodedialer.Dialer
 
 	// One of the following two must be provided, but not both.
 	//
@@ -618,10 +637,6 @@ type DistSenderConfig struct {
 	KVInterceptor multitenant.TenantSideKVInterceptor
 
 	TestingKnobs ClientTestingKnobs
-
-	HealthFunc HealthFunc
-
-	LatencyFunc LatencyFunc
 }
 
 // NewDistSender returns a batch.Sender instance which connects to the
@@ -642,15 +657,12 @@ func NewDistSender(cfg DistSenderConfig) *DistSender {
 	}
 	ds := &DistSender{
 		st:            cfg.Settings,
-		stopper:       cfg.Stopper,
 		clock:         cfg.Clock,
 		nodeDescs:     cfg.NodeDescs,
 		nodeIDGetter:  nodeIDGetter,
 		metrics:       makeDistSenderMetrics(),
 		kvInterceptor: cfg.KVInterceptor,
 		locality:      cfg.Locality,
-		healthFunc:    cfg.HealthFunc,
-		latencyFunc:   cfg.LatencyFunc,
 	}
 	if ds.st == nil {
 		ds.st = cluster.MakeTestingClusterSettings()
@@ -661,6 +673,9 @@ func NewDistSender(cfg DistSenderConfig) *DistSender {
 		panic("no tracer set in AmbientCtx")
 	}
 
+	if cfg.nodeDescriptor != nil {
+		atomic.StorePointer(&ds.nodeDescriptor, unsafe.Pointer(cfg.nodeDescriptor))
+	}
 	var rdb rangecache.RangeDescriptorDB
 	if cfg.FirstRangeProvider != nil {
 		ds.firstRangeProvider = cfg.FirstRangeProvider
@@ -675,13 +690,11 @@ func NewDistSender(cfg DistSenderConfig) *DistSender {
 	getRangeDescCacheSize := func() int64 {
 		return rangeDescriptorCacheSize.Get(&ds.st.SV)
 	}
-	ds.rangeCache = rangecache.NewRangeCache(ds.st, rdb, getRangeDescCacheSize, cfg.Stopper)
-	if cfg.TransportFactory == nil {
-		panic("no TransportFactory set")
-	}
-	ds.transportFactory = cfg.TransportFactory
+	ds.rangeCache = rangecache.NewRangeCache(ds.st, rdb, getRangeDescCacheSize, cfg.RPCContext.Stopper)
 	if tf := cfg.TestingKnobs.TransportFactory; tf != nil {
-		ds.transportFactory = tf(ds.transportFactory)
+		ds.transportFactory = tf
+	} else {
+		ds.transportFactory = GRPCTransportFactory
 	}
 	ds.dontReorderReplicas = cfg.TestingKnobs.DontReorderReplicas
 	ds.dontConsiderConnHealth = cfg.TestingKnobs.DontConsiderConnHealth
@@ -691,15 +704,21 @@ func NewDistSender(cfg DistSenderConfig) *DistSender {
 	if cfg.RPCRetryOptions != nil {
 		ds.rpcRetryOptions = *cfg.RPCRetryOptions
 	}
-	if ds.rpcRetryOptions.Closer == nil {
-		ds.rpcRetryOptions.Closer = cfg.Stopper.ShouldQuiesce()
+	if cfg.RPCContext == nil {
+		panic("no RPCContext set in DistSenderConfig")
 	}
+	ds.rpcContext = cfg.RPCContext
+	ds.nodeDialer = cfg.NodeDialer
+	if ds.rpcRetryOptions.Closer == nil {
+		ds.rpcRetryOptions.Closer = ds.rpcContext.Stopper.ShouldQuiesce()
+	}
+	ds.logicalClusterID = cfg.RPCContext.LogicalClusterID
 	ds.asyncSenderSem = quotapool.NewIntPool("DistSender async concurrency",
 		uint64(senderConcurrencyLimit.Get(&ds.st.SV)))
 	senderConcurrencyLimit.SetOnChange(&ds.st.SV, func(ctx context.Context) {
 		ds.asyncSenderSem.UpdateCapacity(uint64(senderConcurrencyLimit.Get(&ds.st.SV)))
 	})
-	cfg.Stopper.AddCloser(ds.asyncSenderSem.Closer("stopper"))
+	ds.rpcContext.Stopper.AddCloser(ds.asyncSenderSem.Closer("stopper"))
 
 	if ds.firstRangeProvider != nil {
 		ctx := ds.AnnotateCtx(context.Background())
@@ -714,26 +733,30 @@ func NewDistSender(cfg DistSenderConfig) *DistSender {
 
 	if cfg.TestingKnobs.LatencyFunc != nil {
 		ds.latencyFunc = cfg.TestingKnobs.LatencyFunc
-	}
-	// Some tests don't set the latencyFunc.
-	if ds.latencyFunc == nil {
-		ds.latencyFunc = func(roachpb.NodeID) (time.Duration, bool) {
-			return time.Millisecond, true
-		}
+	} else {
+		ds.latencyFunc = ds.rpcContext.RemoteClocks.Latency
 	}
 
 	if cfg.TestingKnobs.OnRangeSpanningNonTxnalBatch != nil {
 		ds.onRangeSpanningNonTxnalBatch = cfg.TestingKnobs.OnRangeSpanningNonTxnalBatch
 	}
 
-	// Some tests don't set the healthFunc.
-	if ds.healthFunc == nil {
-		ds.healthFunc = func(id roachpb.NodeID) bool {
-			return true
-		}
-	}
+	// Placeholder function until we inject the real health function in using
+	// SetHealthFunc.
+	// TODO(baptist): Restructure the code to allow injecting the correct
+	// HealthFunc at construction time.
+	healthFunc := HealthFunc(func(id roachpb.NodeID) bool {
+		return true
+	})
+	ds.healthFunc.Store(&healthFunc)
 
 	return ds
+}
+
+// SetHealthFunc is called after construction due to the circular dependency
+// between DistSender and NodeLiveness.
+func (ds *DistSender) SetHealthFunc(healthFn HealthFunc) {
+	ds.healthFunc.Store(&healthFn)
 }
 
 // LatencyFunc returns the LatencyFunc of the DistSender.
@@ -743,7 +766,7 @@ func (ds *DistSender) LatencyFunc() LatencyFunc {
 
 // HealthFunc returns the HealthFunc of the DistSender.
 func (ds *DistSender) HealthFunc() HealthFunc {
-	return ds.healthFunc
+	return *ds.healthFunc.Load()
 }
 
 // DisableFirstRangeUpdates disables updates of the first range via
@@ -794,18 +817,6 @@ func (ds *DistSender) RangeDescriptorCache() *rangecache.RangeCache {
 func (ds *DistSender) RangeLookup(
 	ctx context.Context, key roachpb.RKey, rc rangecache.RangeLookupConsistency, useReverseScan bool,
 ) ([]roachpb.RangeDescriptor, []roachpb.RangeDescriptor, error) {
-
-	// In this case, the requested key is stored in the cluster's first
-	// range. Return the first range, which is always gossiped and not
-	// queried from the datastore.
-	if keys.RangeMetaKey(key).Equal(roachpb.RKeyMin) {
-		desc, err := ds.firstRangeProvider.GetFirstRangeDescriptor()
-		if err != nil {
-			return nil, nil, err
-		}
-		return []roachpb.RangeDescriptor{*desc}, nil, nil
-	}
-
 	ds.metrics.RangeLookups.Inc(1)
 	switch rc {
 	case kvpb.INCONSISTENT, kvpb.READ_UNCOMMITTED:
@@ -818,6 +829,18 @@ func (ds *DistSender) RangeLookup(
 	// still find it when we scan to the next range. This addresses the issue
 	// described in #18032 and #16266, allowing us to support meta2 splits.
 	return kv.RangeLookup(ctx, ds, key.AsRawKey(), rc, RangeLookupPrefetchCount, useReverseScan)
+}
+
+// FirstRange implements the RangeDescriptorDB interface.
+//
+// It returns the RangeDescriptor for the first range in the cluster using the
+// FirstRangeProvider, which is typically implemented using the gossip protocol
+// instead of the datastore.
+func (ds *DistSender) FirstRange() (*roachpb.RangeDescriptor, error) {
+	if ds.firstRangeProvider == nil {
+		panic("with `nil` firstRangeProvider, DistSender must not use itself as RangeDescriptorDB")
+	}
+	return ds.firstRangeProvider.GetFirstRangeDescriptor()
 }
 
 // CountRanges returns the number of ranges that encompass the given key span.
@@ -1229,9 +1252,9 @@ func (ds *DistSender) divideAndSendParallelCommit(
 	qiBatchIdx := batchIdx + 1
 	qiResponseCh := make(chan response, 1)
 
-	runTask := ds.stopper.RunAsyncTask
+	runTask := ds.rpcContext.Stopper.RunAsyncTask
 	if ds.disableParallelBatches {
-		runTask = ds.stopper.RunTask
+		runTask = ds.rpcContext.Stopper.RunTask
 	}
 	if err := runTask(ctx, "kv.DistSender: sending pre-commit query intents", func(ctx context.Context) {
 		// Map response index to the original un-swapped batch index.
@@ -1772,7 +1795,7 @@ func (ds *DistSender) sendPartialBatchAsync(
 	responseCh chan response,
 	positions []int,
 ) bool {
-	if err := ds.stopper.RunAsyncTaskEx(
+	if err := ds.rpcContext.Stopper.RunAsyncTaskEx(
 		ctx,
 		stop.TaskOpts{
 			TaskName:   "kv.DistSender: sending partial batch",
@@ -1782,6 +1805,8 @@ func (ds *DistSender) sendPartialBatchAsync(
 		},
 		func(ctx context.Context) {
 			ds.metrics.AsyncSentCount.Inc(1)
+			ds.metrics.AsyncInProgress.Inc(1)
+			defer ds.metrics.AsyncInProgress.Dec(1)
 			resp := ds.sendPartialBatch(ctx, ba, rs, isReverse, withCommit, batchIdx, routing)
 			resp.positions = positions
 			responseCh <- resp
@@ -1930,7 +1955,7 @@ func (ds *DistSender) sendPartialBatch(
 
 		if err != nil {
 			// Set pErr so that, if we don't perform any more retries, the
-			// deduceRetryEarlyExitError() call below the loop is inhibited.
+			// deduceRetryEarlyExitError() call below the loop includes this error.
 			pErr = kvpb.NewError(err)
 			switch {
 			case IsSendError(err):
@@ -2006,27 +2031,31 @@ func (ds *DistSender) sendPartialBatch(
 		break
 	}
 
-	// Propagate error if either the retry closer or context done
-	// channels were closed.
+	// Propagate error if either the retry closer or context done channels were
+	// closed. This replaces the return error since when the context is closed
+	// the underlying error is unpredictable and might have been retried.
+	if err := ds.deduceRetryEarlyExitError(ctx, pErr.GoError()); err != nil {
+		log.VErrEventf(ctx, 2, "replace error %s with %s", pErr, err)
+		pErr = kvpb.NewError(err)
+	}
+
 	if pErr == nil {
-		if err := ds.deduceRetryEarlyExitError(ctx); err == nil {
-			log.Fatal(ctx, "exited retry loop without an error")
-		} else {
-			pErr = kvpb.NewError(err)
-		}
+		log.Fatal(ctx, "exited retry loop without an error or early exit")
 	}
 
 	return response{pErr: pErr}
 }
 
-func (ds *DistSender) deduceRetryEarlyExitError(ctx context.Context) error {
+func (ds *DistSender) deduceRetryEarlyExitError(ctx context.Context, err error) error {
+	// We don't need to rewrap Ambiguous errors.
+	if errors.HasType(err, (*kvpb.AmbiguousResultError)(nil)) {
+		return nil
+	}
 	select {
 	case <-ds.rpcRetryOptions.Closer:
-		// Typically happens during shutdown.
-		return &kvpb.NodeUnavailableError{}
+		return errors.Wrapf(kvpb.NewAmbiguousResultError(errors.CombineErrors(&kvpb.NodeUnavailableError{}, err)), "aborted in DistSender")
 	case <-ctx.Done():
-		// Happens when the client request is canceled.
-		return errors.Wrap(ctx.Err(), "aborted in DistSender")
+		return errors.Wrapf(kvpb.NewAmbiguousResultError(errors.CombineErrors(ctx.Err(), err)), "aborted in DistSender")
 	default:
 	}
 	return nil
@@ -2229,7 +2258,7 @@ func (ds *DistSender) sendToReplicas(
 	// otherwise, we may send a request to a remote region unnecessarily.
 	if ba.RoutingPolicy == kvpb.RoutingPolicy_LEASEHOLDER &&
 		CanSendToFollower(
-			ds.st, ds.clock,
+			ds.logicalClusterID.Get(), ds.st, ds.clock,
 			routing.ClosedTimestampPolicy(defaultSendClosedTimestampPolicy), ba,
 		) {
 		ba = ba.ShallowCopy()
@@ -2262,7 +2291,7 @@ func (ds *DistSender) sendToReplicas(
 		// First order by latency, then move the leaseholder to the front of the
 		// list, if it is known.
 		if !ds.dontReorderReplicas {
-			replicas.OptimizeReplicaOrder(ds.st, ds.nodeIDGetter(), ds.healthFunc, ds.latencyFunc, ds.locality)
+			replicas.OptimizeReplicaOrder(ds.st, ds.nodeIDGetter(), ds.HealthFunc(), ds.latencyFunc, ds.locality)
 		}
 
 		idx := -1
@@ -2281,21 +2310,18 @@ func (ds *DistSender) sendToReplicas(
 	case kvpb.RoutingPolicy_NEAREST:
 		// Order by latency.
 		log.VEvent(ctx, 2, "routing to nearest replica; leaseholder not required")
-		replicas.OptimizeReplicaOrder(ds.st, ds.nodeIDGetter(), ds.healthFunc, ds.latencyFunc, ds.locality)
+		replicas.OptimizeReplicaOrder(ds.st, ds.nodeIDGetter(), ds.HealthFunc(), ds.latencyFunc, ds.locality)
 
 	default:
 		log.Fatalf(ctx, "unknown routing policy: %s", ba.RoutingPolicy)
 	}
 
-	// NB: upgrade the connection class to SYSTEM, for critical ranges. Set it to
-	// DEFAULT if the class is unknown, to handle mixed-version states gracefully.
-	// Other kinds of overrides are possible, see rpc.ConnectionClassForKey().
 	opts := SendOptions{
-		class:                  rpc.ConnectionClassForKey(desc.RSpan().Key, ba.ConnectionClass),
+		class:                  rpc.ConnectionClassForKey(desc.RSpan().Key),
 		metrics:                &ds.metrics,
 		dontConsiderConnHealth: ds.dontConsiderConnHealth,
 	}
-	transport, err := ds.transportFactory(opts, replicas)
+	transport, err := ds.transportFactory(opts, ds.nodeDialer, replicas)
 	if err != nil {
 		return nil, err
 	}
@@ -2555,7 +2581,7 @@ func (ds *DistSender) sendToReplicas(
 				ds.metrics.NotLeaseHolderErrCount.Inc(1)
 				// If we got some lease information, we use it. If not, we loop around
 				// and try the next replica.
-				if tErr.Lease != nil {
+				if tErr.Lease != nil || tErr.DeprecatedLeaseHolder != nil {
 					// Update the leaseholder in the range cache. Naively this would also
 					// happen when the next RPC comes back, but we don't want to wait out
 					// the additional RPC latency.
@@ -2563,6 +2589,10 @@ func (ds *DistSender) sendToReplicas(
 					var updatedLeaseholder bool
 					if tErr.Lease != nil {
 						updatedLeaseholder = routing.SyncTokenAndMaybeUpdateCache(ctx, tErr.Lease, &tErr.RangeDesc)
+					} else if tErr.DeprecatedLeaseHolder != nil {
+						updatedLeaseholder = routing.SyncTokenAndMaybeUpdateCacheWithSpeculativeLease(
+							ctx, *tErr.DeprecatedLeaseHolder, &tErr.RangeDesc,
+						)
 					}
 					// Move the new leaseholder to the head of the queue for the next
 					// retry. Note that the leaseholder might not be the one indicated by

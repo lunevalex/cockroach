@@ -1,12 +1,7 @@
 // Copyright 2015 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package systemschema
 
@@ -156,17 +151,6 @@ const (
   FAMILY       "primary" ("descID", version, "nodeID", expiration, crdb_region)
 );`
 
-	// LeaseTableSchema_V24_1 is the future session based leasing table format.
-	LeaseTableSchema_V24_1 = `CREATE TABLE system.lease (
-  desc_id          INT8,
-  version          INT8,
-  sql_instance_id  INT8,
-  session_id       BYTES NOT NULL,
-  crdb_region      BYTES NOT NULL,
-  CONSTRAINT       "primary" PRIMARY KEY (crdb_region, desc_id, version, session_id),
-  FAMILY           "primary" (desc_id, version, sql_instance_id, session_id, crdb_region)
-);`
-
 	// system.eventlog contains notable events from the cluster.
 	//
 	// This data is also exported to the Observability Service. This table might
@@ -224,6 +208,8 @@ CREATE TABLE system.jobs (
 	id                INT8      DEFAULT unique_rowid(),
 	status            STRING    NOT NULL,
 	created           TIMESTAMP NOT NULL DEFAULT now(),
+	payload           BYTES,
+	progress          BYTES,
 	created_by_type   STRING,
 	created_by_id     INT,
 	claim_session_id  BYTES,
@@ -241,7 +227,8 @@ CREATE TABLE system.jobs (
   ) STORING(last_run, num_runs, claim_instance_id)
     WHERE ` + JobsRunStatsIdxPredicate + `,
   INDEX jobs_job_type_idx (job_type),
-	FAMILY fam_0_id_status_created_payload (id, status, created, created_by_type, created_by_id, job_type),
+	FAMILY fam_0_id_status_created_payload (id, status, created, payload, created_by_type, created_by_id, job_type),
+	FAMILY progress (progress),
 	FAMILY claim (claim_session_id, claim_instance_id, num_runs, last_run)
 );`
 
@@ -1205,7 +1192,7 @@ const SystemDatabaseName = catconstants.SystemDatabaseName
 // SystemDatabaseSchemaBootstrapVersion is the system database schema version
 // that should be used during bootstrap. It should be bumped up alongside any
 // upgrade that creates or modifies the schema of a system table.
-var SystemDatabaseSchemaBootstrapVersion = clusterversion.V24_1_DropPayloadAndProgressFromSystemJobsTable.Version()
+var SystemDatabaseSchemaBootstrapVersion = clusterversion.ByKey(clusterversion.V23_2_AddSystemExecInsightsTable)
 
 // MakeSystemDatabaseDesc constructs a copy of the system database
 // descriptor.
@@ -1721,42 +1708,6 @@ var (
 // `TestSystemTableLiterals` which checks that they do indeed match, and has
 // suggestions on writing and maintaining them.
 var (
-	// LeaseTable_V24_1 is the descriptor for the leases table with the future
-	// session based leasing tables format.
-	LeaseTable_V24_1 = func() SystemTable {
-		return makeSystemTable(
-			LeaseTableSchema_V24_1,
-			systemTable(
-				catconstants.LeaseTableName,
-				keys.LeaseTableID,
-				[]descpb.ColumnDescriptor{
-					{Name: "desc_id", ID: 1, Type: types.Int},
-					{Name: "version", ID: 2, Type: types.Int},
-					{Name: "sql_instance_id", ID: 3, Type: types.Int},
-					{Name: "session_id", ID: 4, Type: types.Bytes},
-					{Name: "crdb_region", ID: 5, Type: types.Bytes},
-				},
-				[]descpb.ColumnFamilyDescriptor{
-					{
-						Name:        "primary",
-						ID:          0,
-						ColumnNames: []string{"desc_id", "version", "sql_instance_id", "session_id", "crdb_region"},
-						ColumnIDs:   []descpb.ColumnID{1, 2, 3, 4, 5},
-					},
-				},
-				descpb.IndexDescriptor{
-					Name:           "primary",
-					ID:             3,
-					Unique:         true,
-					KeyColumnNames: []string{"crdb_region", "desc_id", "version", "session_id"},
-					KeyColumnDirections: []catenumpb.IndexColumn_Direction{
-						catenumpb.IndexColumn_ASC, catenumpb.IndexColumn_ASC, catenumpb.IndexColumn_ASC, catenumpb.IndexColumn_ASC,
-					},
-					KeyColumnIDs: []descpb.ColumnID{5, 1, 2, 4},
-				},
-			))
-	}
-
 	// LeaseTable is the descriptor for the leases table.
 	LeaseTable = func() SystemTable {
 		return makeSystemTable(
@@ -1920,13 +1871,15 @@ var (
 				{Name: "id", ID: 1, Type: types.Int, DefaultExpr: &uniqueRowIDString},
 				{Name: "status", ID: 2, Type: types.String},
 				{Name: "created", ID: 3, Type: types.Timestamp, DefaultExpr: &nowString},
-				{Name: "created_by_type", ID: 4, Type: types.String, Nullable: true},
-				{Name: "created_by_id", ID: 5, Type: types.Int, Nullable: true},
-				{Name: "claim_session_id", ID: 6, Type: types.Bytes, Nullable: true},
-				{Name: "claim_instance_id", ID: 7, Type: types.Int, Nullable: true},
-				{Name: "num_runs", ID: 8, Type: types.Int, Nullable: true},
-				{Name: "last_run", ID: 9, Type: types.Timestamp, Nullable: true},
-				{Name: "job_type", ID: 10, Type: types.String, Nullable: true},
+				{Name: "payload", ID: 4, Type: types.Bytes, Nullable: true},
+				{Name: "progress", ID: 5, Type: types.Bytes, Nullable: true},
+				{Name: "created_by_type", ID: 6, Type: types.String, Nullable: true},
+				{Name: "created_by_id", ID: 7, Type: types.Int, Nullable: true},
+				{Name: "claim_session_id", ID: 8, Type: types.Bytes, Nullable: true},
+				{Name: "claim_instance_id", ID: 9, Type: types.Int, Nullable: true},
+				{Name: "num_runs", ID: 10, Type: types.Int, Nullable: true},
+				{Name: "last_run", ID: 11, Type: types.Timestamp, Nullable: true},
+				{Name: "job_type", ID: 12, Type: types.String, Nullable: true},
 			},
 			[]descpb.ColumnFamilyDescriptor{
 				{
@@ -1935,14 +1888,21 @@ var (
 					// that needed to be done.
 					Name:        "fam_0_id_status_created_payload",
 					ID:          0,
-					ColumnNames: []string{"id", "status", "created", "created_by_type", "created_by_id", "job_type"},
-					ColumnIDs:   []descpb.ColumnID{1, 2, 3, 4, 5, 10},
+					ColumnNames: []string{"id", "status", "created", "payload", "created_by_type", "created_by_id", "job_type"},
+					ColumnIDs:   []descpb.ColumnID{1, 2, 3, 4, 6, 7, 12},
+				},
+				{
+					Name:            "progress",
+					ID:              1,
+					ColumnNames:     []string{"progress"},
+					ColumnIDs:       []descpb.ColumnID{5},
+					DefaultColumnID: 5,
 				},
 				{
 					Name:        "claim",
-					ID:          1,
+					ID:          2,
 					ColumnNames: []string{"claim_session_id", "claim_instance_id", "num_runs", "last_run"},
-					ColumnIDs:   []descpb.ColumnID{6, 7, 8, 9},
+					ColumnIDs:   []descpb.ColumnID{8, 9, 10, 11},
 				},
 			},
 			pk("id"),
@@ -1962,7 +1922,7 @@ var (
 				Unique:              false,
 				KeyColumnNames:      []string{"created_by_type", "created_by_id"},
 				KeyColumnDirections: []catenumpb.IndexColumn_Direction{catenumpb.IndexColumn_ASC, catenumpb.IndexColumn_ASC},
-				KeyColumnIDs:        []descpb.ColumnID{4, 5},
+				KeyColumnIDs:        []descpb.ColumnID{6, 7},
 				StoreColumnIDs:      []descpb.ColumnID{2},
 				StoreColumnNames:    []string{"status"},
 				KeySuffixColumnIDs:  []descpb.ColumnID{1},
@@ -1974,9 +1934,9 @@ var (
 				Unique:              false,
 				KeyColumnNames:      []string{"claim_session_id", "status", "created"},
 				KeyColumnDirections: []catenumpb.IndexColumn_Direction{catenumpb.IndexColumn_ASC, catenumpb.IndexColumn_ASC, catenumpb.IndexColumn_ASC},
-				KeyColumnIDs:        []descpb.ColumnID{6, 2, 3},
+				KeyColumnIDs:        []descpb.ColumnID{8, 2, 3},
 				StoreColumnNames:    []string{"last_run", "num_runs", "claim_instance_id"},
-				StoreColumnIDs:      []descpb.ColumnID{9, 8, 7},
+				StoreColumnIDs:      []descpb.ColumnID{11, 10, 9},
 				KeySuffixColumnIDs:  []descpb.ColumnID{1},
 				Version:             descpb.StrictIndexColumnIDGuaranteesVersion,
 				Predicate:           JobsRunStatsIdxPredicate,
@@ -1987,7 +1947,7 @@ var (
 				Unique:              false,
 				KeyColumnNames:      []string{"job_type"},
 				KeyColumnDirections: []catenumpb.IndexColumn_Direction{catenumpb.IndexColumn_ASC},
-				KeyColumnIDs:        []descpb.ColumnID{10},
+				KeyColumnIDs:        []descpb.ColumnID{12},
 				KeySuffixColumnIDs:  []descpb.ColumnID{1},
 				Version:             descpb.StrictIndexColumnIDGuaranteesVersion,
 			},

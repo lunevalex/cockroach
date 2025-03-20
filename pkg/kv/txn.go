@@ -1,12 +1,7 @@
 // Copyright 2015 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package kv
 
@@ -1025,7 +1020,7 @@ func (e *AutoCommitError) Error() string {
 func (txn *Txn) exec(ctx context.Context, fn func(context.Context, *Txn) error) (err error) {
 	// Run fn in a retry loop until we encounter a success or
 	// error condition this loop isn't capable of handling.
-	for {
+	for attempt := 1; ; attempt++ {
 		if err := ctx.Err(); err != nil {
 			return errors.Wrap(err, "txn exec")
 		}
@@ -1084,6 +1079,12 @@ func (txn *Txn) exec(ctx context.Context, fn func(context.Context, *Txn) error) 
 
 		if !retryable {
 			break
+		}
+
+		const warnEvery = 10
+		if attempt%warnEvery == 0 {
+			log.Warningf(ctx, "have retried transaction: %s %d times, most recently because of the "+
+				"retryable error: %s. Is the transaction stuck in a retry loop?", txn.DebugName(), attempt, err)
 		}
 
 		if err := txn.PrepareForRetry(ctx); err != nil {

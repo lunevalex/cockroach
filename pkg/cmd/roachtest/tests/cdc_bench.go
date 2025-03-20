@@ -1,12 +1,7 @@
 // Copyright 2023 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package tests
 
@@ -39,6 +34,8 @@ import (
 )
 
 type cdcBenchScanType string
+type cdcBenchServer string
+type cdcBenchProtocol string
 
 const (
 	// cdcBenchInitialScan runs an initial scan across a table, i.e. it scans and
@@ -59,11 +56,21 @@ const (
 	// do so efficiently. Ideally, this wouldn't take any time at all, but in
 	// practice it can.
 	cdcBenchColdCatchupScan cdcBenchScanType = "catchup-cold"
+
+	cdcBenchNoServer        cdcBenchServer = ""
+	cdcBenchProcessorServer cdcBenchServer = "processor" // legacy processor
+	cdcBenchSchedulerServer cdcBenchServer = "scheduler" // new scheduler
+
+	cdcBenchNoProtocol        cdcBenchProtocol = ""
+	cdcBenchRangefeedProtocol cdcBenchProtocol = "rangefeed" // basic rangefeed protocol
+	cdcBenchMuxProtocol       cdcBenchProtocol = "mux"       // multiplexing rangefeed protocol
 )
 
 var (
 	cdcBenchScanTypes = []cdcBenchScanType{
 		cdcBenchInitialScan, cdcBenchCatchupScan, cdcBenchColdCatchupScan}
+	cdcBenchServers   = []cdcBenchServer{cdcBenchProcessorServer, cdcBenchSchedulerServer}
+	cdcBenchProtocols = []cdcBenchProtocol{cdcBenchRangefeedProtocol, cdcBenchMuxProtocol}
 )
 
 func registerCDCBench(r registry.Registry) {
@@ -71,33 +78,38 @@ func registerCDCBench(r registry.Registry) {
 	// Initial/catchup scan benchmarks.
 	for _, scanType := range cdcBenchScanTypes {
 		for _, ranges := range []int64{100, 100000} {
-			scanType, ranges := scanType, ranges // pin loop variables
-			const (
-				nodes  = 5 // excluding coordinator/workload node
-				cpus   = 16
-				rows   = 1_000_000_000 // 19 GB
-				format = "json"
-			)
-			r.Add(registry.TestSpec{
-				Name: fmt.Sprintf(
-					"cdc/scan/%s/nodes=%d/cpu=%d/rows=%s/ranges=%s/protocol=mux/format=%s/sink=null",
-					scanType, nodes, cpus, formatSI(rows), formatSI(ranges), format),
-				Owner:            registry.OwnerCDC,
-				Benchmark:        true,
-				Cluster:          r.MakeClusterSpec(nodes+1, spec.CPU(cpus)),
-				CompatibleClouds: registry.AllExceptAWS,
-				Suites:           registry.Suites(registry.Nightly),
-				RequiresLicense:  true,
-				Timeout:          4 * time.Hour, // Allow for the initial import and catchup scans with 100k ranges.
-				Run: func(ctx context.Context, t test.Test, c cluster.Cluster) {
-					runCDCBenchScan(ctx, t, c, scanType, rows, ranges, format)
-				},
-			})
+			for _, protocol := range cdcBenchProtocols {
+				scanType, ranges, protocol := scanType, ranges, protocol // pin loop variables
+				const (
+					nodes  = 5 // excluding coordinator/workload node
+					cpus   = 16
+					rows   = 1_000_000_000 // 19 GB
+					format = "json"
+				)
+				r.Add(registry.TestSpec{
+					Name: fmt.Sprintf(
+						"cdc/scan/%s/nodes=%d/cpu=%d/rows=%s/ranges=%s/protocol=%s/format=%s/sink=null",
+						scanType, nodes, cpus, formatSI(rows), formatSI(ranges), protocol, format),
+					Owner:            registry.OwnerCDC,
+					Benchmark:        true,
+					Cluster:          r.MakeClusterSpec(nodes+1, spec.CPU(cpus)),
+					CompatibleClouds: registry.AllExceptAWS,
+					Suites:           registry.Suites(registry.Nightly),
+					RequiresLicense:  true,
+					Timeout:          2 * time.Hour, // catchup scans with 100k ranges can take >1 hour
+					Run: func(ctx context.Context, t test.Test, c cluster.Cluster) {
+						runCDCBenchScan(ctx, t, c, scanType, rows, ranges, protocol, format)
+					},
+				})
+			}
 		}
 	}
 
 	// Workload impact benchmarks.
-	for _, readPercent := range []int{0, 100} {
+	// TODO(#135952): Reenable readPercent 100. This benchmark historically tested
+	// kv100, but it was disabled because cdc bench can be flaky and kv100 does
+	// not provide enough value for the noise.
+	for _, readPercent := range []int{0} {
 		for _, ranges := range []int64{100, 100000} {
 			readPercent, ranges := readPercent, ranges // pin loop variables
 			const (
@@ -119,26 +131,31 @@ func registerCDCBench(r registry.Registry) {
 				RequiresLicense:  true,
 				Timeout:          time.Hour,
 				Run: func(ctx context.Context, t test.Test, c cluster.Cluster) {
-					runCDCBenchWorkload(ctx, t, c, ranges, readPercent, "")
+					runCDCBenchWorkload(ctx, t, c, ranges, readPercent, "", "", "")
 				},
 			})
 
 			// Workloads with a concurrent changefeed running.
-			r.Add(registry.TestSpec{
-				Name: fmt.Sprintf(
-					"cdc/workload/kv%d/nodes=%d/cpu=%d/ranges=%s/server=scheduler/protocol=mux/format=%s/sink=null",
-					readPercent, nodes, cpus, formatSI(ranges), format),
-				Owner:            registry.OwnerCDC,
-				Benchmark:        true,
-				Cluster:          r.MakeClusterSpec(nodes+2, spec.CPU(cpus)),
-				CompatibleClouds: registry.AllExceptAWS,
-				Suites:           registry.Suites(registry.Nightly),
-				RequiresLicense:  true,
-				Timeout:          time.Hour,
-				Run: func(ctx context.Context, t test.Test, c cluster.Cluster) {
-					runCDCBenchWorkload(ctx, t, c, ranges, readPercent, format)
-				},
-			})
+			for _, server := range cdcBenchServers {
+				for _, protocol := range cdcBenchProtocols {
+					server, protocol := server, protocol // pin loop variables
+					r.Add(registry.TestSpec{
+						Name: fmt.Sprintf(
+							"cdc/workload/kv%d/nodes=%d/cpu=%d/ranges=%s/server=%s/protocol=%s/format=%s/sink=null",
+							readPercent, nodes, cpus, formatSI(ranges), server, protocol, format),
+						Owner:            registry.OwnerCDC,
+						Benchmark:        true,
+						Cluster:          r.MakeClusterSpec(nodes+2, spec.CPU(cpus)),
+						CompatibleClouds: registry.AllExceptAWS,
+						Suites:           registry.Suites(registry.Nightly),
+						RequiresLicense:  true,
+						Timeout:          time.Hour,
+						Run: func(ctx context.Context, t test.Test, c cluster.Cluster) {
+							runCDCBenchWorkload(ctx, t, c, ranges, readPercent, server, protocol, format)
+						},
+					})
+				}
+			}
 		}
 	}
 }
@@ -221,6 +238,7 @@ func runCDCBenchScan(
 	c cluster.Cluster,
 	scanType cdcBenchScanType,
 	numRows, numRanges int64,
+	protocol cdcBenchProtocol,
 	format string,
 ) {
 	const sink = "null://"
@@ -233,6 +251,16 @@ func runCDCBenchScan(
 	// Start data nodes first to place data on them. We'll start the changefeed
 	// coordinator later, since we don't want any data on it.
 	opts, settings := makeCDCBenchOptions(c)
+
+	switch protocol {
+	case cdcBenchMuxProtocol:
+		settings.ClusterSettings["changefeed.mux_rangefeed.enabled"] = "true"
+	case cdcBenchRangefeedProtocol:
+		settings.ClusterSettings["changefeed.mux_rangefeed.enabled"] = "false"
+	case cdcBenchNoProtocol:
+	default:
+		t.Fatalf("unknown protocol %q", protocol)
+	}
 
 	c.Start(ctx, t.L(), opts, settings, nData)
 	m := c.NewMonitor(ctx, nData.Merge(nCoord))
@@ -257,10 +285,11 @@ func runCDCBenchScan(
 	// NB: don't scatter -- the ranges end up fairly well-distributed anyway, and
 	// the scatter can often fail with 100k ranges.
 	t.L().Printf("creating table with %s ranges", humanize.Comma(numRanges))
-	c.Run(ctx, option.WithNodes(nCoord), fmt.Sprintf(
+	c.Run(ctx, nCoord, fmt.Sprintf(
 		`./cockroach workload init kv --splits %d {pgurl:%d}`, numRanges, nData[0]))
 	require.NoError(t, WaitFor3XReplication(ctx, t, conn))
 
+	time.Sleep(1 * time.Second)
 	cursor := timeutil.Now() // before data is ingested
 
 	// Ingest data. init allows us to import into the existing table. However,
@@ -270,7 +299,7 @@ func runCDCBenchScan(
 		loader = "insert"
 	}
 	t.L().Printf("ingesting %s rows using %s", humanize.Comma(numRows), loader)
-	c.Run(ctx, option.WithNodes(nCoord), fmt.Sprintf(
+	c.Run(ctx, nCoord, fmt.Sprintf(
 		`./cockroach workload init kv --insert-count %d --data-loader %s {pgurl:%d}`,
 		numRows, loader, nData[0]))
 
@@ -290,7 +319,7 @@ func runCDCBenchScan(
 	// finish time.
 	t.L().Printf("running changefeed %s scan", scanType)
 	with := fmt.Sprintf(`format = '%s', end_time = '%s'`,
-		format, timeutil.Now().Add(5*time.Second).Format(time.RFC3339))
+		format, timeutil.Now().Add(30*time.Second).Format(time.RFC3339))
 	switch scanType {
 	case cdcBenchInitialScan:
 		with += ", initial_scan = 'yes'"
@@ -352,6 +381,8 @@ func runCDCBenchWorkload(
 	c cluster.Cluster,
 	numRanges int64,
 	readPercent int,
+	server cdcBenchServer,
+	protocol cdcBenchProtocol,
 	format string,
 ) {
 	const sink = "null://"
@@ -365,16 +396,43 @@ func runCDCBenchWorkload(
 		concurrency  = len(nData) * 64
 		duration     = 20 * time.Minute
 		insertCount  = int64(0)
-		cdcEnabled   = format != ""
+		cdcEnabled   = true
 	)
 	if readPercent == 100 {
 		insertCount = 1_000_000 // ingest some data to read
+	}
+	// Either of these will disable changefeeds. Make sure they're all disabled.
+	if server == "" || protocol == "" || format == "" {
+		require.Empty(t, server)
+		require.Empty(t, protocol)
+		require.Empty(t, format)
+		cdcEnabled = false
 	}
 
 	// Start data nodes first to place data on them. We'll start the changefeed
 	// coordinator later, since we don't want any data on it.
 	opts, settings := makeCDCBenchOptions(c)
 	settings.ClusterSettings["kv.rangefeed.enabled"] = strconv.FormatBool(cdcEnabled)
+
+	switch protocol {
+	case cdcBenchMuxProtocol:
+		settings.ClusterSettings["changefeed.mux_rangefeed.enabled"] = "true"
+	case cdcBenchRangefeedProtocol:
+		settings.ClusterSettings["changefeed.mux_rangefeed.enabled"] = "false"
+	case cdcBenchNoProtocol:
+	default:
+		t.Fatalf("unknown protocol %q", protocol)
+	}
+
+	switch server {
+	case cdcBenchProcessorServer:
+		settings.ClusterSettings["kv.rangefeed.scheduler.enabled"] = "false"
+	case cdcBenchSchedulerServer:
+		settings.ClusterSettings["kv.rangefeed.scheduler.enabled"] = "true"
+	case cdcBenchNoServer:
+	default:
+		t.Fatalf("unknown server type %q", server)
+	}
 
 	c.Start(ctx, t.L(), opts, settings, nData)
 	m := c.NewMonitor(ctx, nData.Merge(nCoord))
@@ -398,7 +456,7 @@ func runCDCBenchWorkload(
 	// NB: don't scatter -- the ranges end up fairly well-distributed anyway, and
 	// the scatter can often fail with 100k ranges.
 	t.L().Printf("creating table with %s ranges", humanize.Comma(numRanges))
-	c.Run(ctx, option.WithNodes(nWorkload), fmt.Sprintf(
+	c.Run(ctx, nWorkload, fmt.Sprintf(
 		`./cockroach workload init kv --splits %d {pgurl:%d}`, numRanges, nData[0]))
 	require.NoError(t, WaitFor3XReplication(ctx, t, conn))
 
@@ -410,7 +468,7 @@ func runCDCBenchWorkload(
 		const batchSize = 1000
 		batches := (insertCount-1)/batchSize + 1 // ceiling division
 		t.L().Printf("ingesting %s rows", humanize.Comma(insertCount))
-		c.Run(ctx, option.WithNodes(nWorkload), fmt.Sprintf(
+		c.Run(ctx, nWorkload, fmt.Sprintf(
 			`./cockroach workload run kv --seed %d --read-percent 0 --batch %d --max-ops %d {pgurl:%d}`,
 			workloadSeed, batchSize, batches, nData[0]))
 	}
@@ -498,7 +556,7 @@ func runCDCBenchWorkload(
 			extra += ` --tolerate-errors`
 		}
 		t.L().Printf("running workload")
-		err := c.RunE(ctx, option.WithNodes(nWorkload), fmt.Sprintf(
+		err := c.RunE(ctx, nWorkload, fmt.Sprintf(
 			`./cockroach workload run kv --seed %d --histograms=%s/stats.json `+
 				`--concurrency %d --duration %s --write-seq R%d --read-percent %d %s {pgurl:%d-%d}`,
 			workloadSeed, t.PerfArtifactsDir(), concurrency, duration, insertCount, readPercent, extra,
@@ -606,7 +664,7 @@ func writeCDCBenchStats(
 
 	// Upload the perf artifacts to the given node.
 	path := filepath.Join(t.PerfArtifactsDir(), "stats.json")
-	if err := c.RunE(ctx, option.WithNodes(node), "mkdir -p "+filepath.Dir(path)); err != nil {
+	if err := c.RunE(ctx, node, "mkdir -p "+filepath.Dir(path)); err != nil {
 		return err
 	}
 	if err := c.PutString(ctx, bytesBuf.String(), path, 0755, node); err != nil {

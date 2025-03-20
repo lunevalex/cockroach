@@ -1,12 +1,7 @@
 // Copyright 2018 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package cli
 
@@ -149,8 +144,8 @@ func runSyncer(
 	}
 
 	fmt.Fprintf(stderr, "verifying existing sequence numbers...")
-	err = db.MVCCIterate(ctx, roachpb.KeyMin, roachpb.KeyMax, storage.MVCCKeyAndIntentsIterKind,
-		storage.IterKeyTypePointsOnly, storage.UnknownReadCategory, check)
+	err = db.MVCCIterate(roachpb.KeyMin, roachpb.KeyMax, storage.MVCCKeyAndIntentsIterKind,
+		storage.IterKeyTypePointsOnly, check)
 	if err != nil {
 		return 0, err
 	}

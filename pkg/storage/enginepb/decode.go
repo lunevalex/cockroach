@@ -1,12 +1,7 @@
 // Copyright 2018 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package enginepb
 
@@ -59,11 +54,13 @@ func DecodeKey(encodedKey []byte) ([]byte, hlc.Timestamp, error) {
 		// No-op.
 	case 8:
 		timestamp.WallTime = int64(binary.BigEndian.Uint64(encodedTS[0:8]))
-	case 12, 13:
+	case 12:
 		timestamp.WallTime = int64(binary.BigEndian.Uint64(encodedTS[0:8]))
 		timestamp.Logical = int32(binary.BigEndian.Uint32(encodedTS[8:12]))
-		// NOTE: byte 13 used to store the timestamp's synthetic bit, but this is no
-		// longer consulted and can be ignored during decoding.
+	case 13:
+		timestamp.WallTime = int64(binary.BigEndian.Uint64(encodedTS[0:8]))
+		timestamp.Logical = int32(binary.BigEndian.Uint32(encodedTS[8:12]))
+		timestamp.Synthetic = encodedTS[12] != 0
 	default:
 		return nil, hlc.Timestamp{}, errors.Errorf(
 			"invalid encoded mvcc key: %x bad timestamp %x", encodedKey, encodedTS)

@@ -1,12 +1,7 @@
 // Copyright 2019 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 import React from "react";
 
@@ -66,16 +61,19 @@ export default function (props: GraphDashboardProps) {
           name="cr.node.changefeed.commit_latency-p99"
           title="99th Percentile"
           downsampleMax
+          aggregateMax
         />
         <Metric
           name="cr.node.changefeed.commit_latency-p90"
           title="90th Percentile"
           downsampleMax
+          aggregateMax
         />
         <Metric
           name="cr.node.changefeed.commit_latency-p50"
           title="50th Percentile"
           downsampleMax
+          aggregateMax
         />
       </Axis>
     </LineGraph>,

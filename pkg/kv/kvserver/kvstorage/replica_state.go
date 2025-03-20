@@ -1,12 +1,7 @@
 // Copyright 2023 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package kvstorage
 
@@ -137,6 +132,20 @@ func CreateUninitializedReplica(
 	//   the Term and Vote values for that older replica in the context of
 	//   this newer replica is harmless since it just limits the votes for
 	//   this replica.
+	//
+	// Compatibility:
+	// - v21.2 and v22.1: v22.1 unilaterally introduces RaftReplicaID (an
+	//   unreplicated range-id local key). If a v22.1 binary is rolled back at
+	//   a node, the fact that RaftReplicaID was written is harmless to a
+	//   v21.2 node since it does not read it. When a v21.2 drops an
+	//   initialized range, the RaftReplicaID will also be deleted because the
+	//   whole range-ID local key space is deleted.
+	// - v22.2: no changes: RaftReplicaID is written, but old Replicas may not
+	//   have it yet.
+	// - v23.1: at startup, we remove any uninitialized replicas that have a
+	//   HardState but no RaftReplicaID, see kvstorage.LoadAndReconcileReplicas.
+	//   So after first call to this method we have the invariant that all replicas
+	//   have a RaftReplicaID persisted.
 	sl := stateloader.Make(rangeID)
 	if err := sl.SetRaftReplicaID(ctx, eng, replicaID); err != nil {
 		return err

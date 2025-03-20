@@ -1,12 +1,7 @@
 // Copyright 2018 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package testcat
 
@@ -17,7 +12,7 @@ import (
 	"time"
 
 	"github.com/cockroachdb/cockroach/pkg/config/zonepb"
-	"github.com/cockroachdb/cockroach/pkg/geo/geopb"
+	"github.com/cockroachdb/cockroach/pkg/geo/geoindex"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/security/username"
 	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
@@ -25,7 +20,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/typedesc"
 	"github.com/cockroachdb/cockroach/pkg/sql/opt/cat"
 	"github.com/cockroachdb/cockroach/pkg/sql/parser"
-	"github.com/cockroachdb/cockroach/pkg/sql/parser/statements"
 	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/pgcode"
 	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/pgerror"
 	"github.com/cockroachdb/cockroach/pkg/sql/privilege"
@@ -481,21 +475,6 @@ func (tc *Catalog) ExecuteDDLWithIndexVersion(
 	if err != nil {
 		return "", err
 	}
-	return tc.executeDDLStmtWithIndexVersion(stmt, indexVersion)
-}
-
-// ExecuteDDLStmtWithIndexVersion statement and creates objects in the test
-// catalog from the given statement. This is used to test without spinning up a
-// cluster.
-func (tc *Catalog) ExecuteDDLStmt(stmt statements.Statement[tree.Statement]) (string, error) {
-	return tc.executeDDLStmtWithIndexVersion(stmt, descpb.LatestIndexDescriptorVersion)
-}
-
-// executeDDLStmtWithIndexVersion statement and creates objects in the test
-// catalog from the given statement.
-func (tc *Catalog) executeDDLStmtWithIndexVersion(
-	stmt statements.Statement[tree.Statement], indexVersion descpb.IndexDescriptorVersion,
-) (string, error) {
 
 	switch stmt := stmt.AST.(type) {
 	case *tree.CreateTable:
@@ -1078,7 +1057,7 @@ type Index struct {
 
 	// geoConfig is the geospatial index configuration, if this is a geospatial
 	// inverted index.
-	geoConfig geopb.Config
+	geoConfig geoindex.Config
 
 	// version is the index descriptor version of the index.
 	version descpb.IndexDescriptorVersion
@@ -1192,7 +1171,7 @@ func (ti *Index) ImplicitPartitioningColumnCount() int {
 }
 
 // GeoConfig is part of the cat.Index interface.
-func (ti *Index) GeoConfig() geopb.Config {
+func (ti *Index) GeoConfig() geoindex.Config {
 	return ti.geoConfig
 }
 

@@ -1,12 +1,7 @@
 // Copyright 2016 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package builtins
 
@@ -265,7 +260,7 @@ func makeTypeIOBuiltin(paramTypes tree.TypeList, returnType *types.T) builtinDef
 				return nil, errUnimplemented
 			},
 			Info:       notUsableInfo,
-			Volatility: volatility.Stable,
+			Volatility: volatility.Volatile,
 			// Ignore validity checks for typeio builtins. We don't
 			// implement these anyway, and they are very hard to special
 			// case.
@@ -406,6 +401,7 @@ func makePGPrivilegeInquiryDef(
 				if withUser {
 					arg := eval.UnwrapDatum(ctx, evalCtx, args[0])
 					userS, err := getNameForArg(ctx, evalCtx, arg, "pg_roles", "rolname")
+
 					if err != nil {
 						return nil, err
 					}
@@ -468,8 +464,19 @@ func getNameForArg(
 	var query string
 	switch t := arg.(type) {
 	case *tree.DString:
+		u, err := username.MakeSQLUsernameFromUserInput(string(*t), username.PurposeValidation)
+		if err != nil {
+			return "", err
+		}
+		if u == username.PublicRoleName() {
+			return username.PublicRole, nil
+		}
+		arg = tree.NewDString(u.Normalized())
 		query = fmt.Sprintf("SELECT %s FROM pg_catalog.%s WHERE %s = $1 LIMIT 1", pgCol, pgTable, pgCol)
 	case *tree.DOid:
+		if t.Oid == username.PublicRoleID {
+			return username.PublicRole, nil
+		}
 		query = fmt.Sprintf("SELECT %s FROM pg_catalog.%s WHERE oid = $1 LIMIT 1", pgCol, pgTable)
 	default:
 		return "", errors.AssertionFailedf("unexpected arg type %T", t)
@@ -1370,27 +1377,6 @@ var pgBuiltins = map[string]builtinDefinition{
 	// Note that this function was removed from Postgres in version 10.
 	"pg_is_xlog_replay_paused": makeNotUsableFalseBuiltin(),
 
-	// pg_encoding_max_length returns the maximum length of a given encoding. For CRDB's use case,
-	// we only support UTF8; so, this will return the max_length of UTF8 - which is 4.
-	// https://github.com/postgres/postgres/blob/master/src/common/wchar.c
-	"pg_encoding_max_length": makeBuiltin(
-		tree.FunctionProperties{},
-		tree.Overload{
-			Types:      tree.ParamTypes{{Name: "encoding", Typ: types.Int}},
-			ReturnType: tree.FixedReturnType(types.Int),
-			Fn: func(ctx context.Context, evalCtx *eval.Context, args tree.Datums) (tree.Datum, error) {
-				if cmp, err := args[0].CompareError(evalCtx, DatEncodingUTFId); err != nil {
-					return tree.DNull, err
-				} else if cmp == 0 {
-					return tree.NewDInt(4), nil
-				}
-				return tree.DNull, nil
-			},
-			Info:       notUsableInfo,
-			Volatility: volatility.Immutable,
-		},
-	),
-
 	// Access Privilege Inquiry Functions allow users to query object access
 	// privileges programmatically. Each function has a number of variants,
 	// which differ based on their function signatures. These signatures have
@@ -2136,7 +2122,7 @@ var pgBuiltins = map[string]builtinDefinition{
 					return tree.NewDInt(64), nil
 				case oid.T_numeric:
 					if typmod != -1 {
-						// This logic matches the postgres implementation
+						// This logics matches the postgres implementation
 						// of how to calculate the precision based on the typmod
 						// https://github.com/postgres/postgres/blob/d84ffffe582b8e036a14c6bc2378df29167f3a00/src/backend/catalog/information_schema.sql#L109
 						return tree.NewDInt(((typmod - 4) >> 16) & 65535), nil
@@ -2201,97 +2187,6 @@ var pgBuiltins = map[string]builtinDefinition{
 			},
 			Info:       "Returns the scale of the given type with type modifier",
 			Volatility: volatility.Immutable,
-		},
-	),
-
-	// https://github.com/postgres/postgres/blob/master/src/backend/catalog/information_schema.sql
-	"information_schema._pg_char_octet_length": makeBuiltin(tree.FunctionProperties{Category: builtinconstants.CategorySystemInfo},
-		tree.Overload{
-			Types: tree.ParamTypes{
-				{Name: "typid", Typ: types.Oid},
-				{Name: "typmod", Typ: types.Int4},
-			},
-			ReturnType: tree.FixedReturnType(types.Int),
-			Body: `SELECT
-						 CASE WHEN $1 IN (25, 1042, 1043) /* text, char, varchar */
-			            THEN CASE WHEN $2 = -1 /* default typmod */
-														THEN CAST(2^30 AS integer)
-			                    	ELSE information_schema._pg_char_max_length($1, $2) *
-			                           pg_catalog.pg_encoding_max_length((SELECT encoding FROM pg_catalog.pg_database WHERE datname = pg_catalog.current_database()))
-			                 END
-			            ELSE null
-			       END`,
-			Info:              notUsableInfo,
-			Volatility:        volatility.Immutable,
-			CalledOnNullInput: true,
-			Language:          tree.RoutineLangSQL,
-		},
-	),
-
-	// NOTE: this could be defined as a user-defined function, like
-	// it is in Postgres:
-	// https://github.com/postgres/postgres/blob/master/src/backend/catalog/information_schema.sql
-	// CREATE FUNCTION _pg_datetime_precision(typid oid, typmod int4) RETURNS integer
-	//     LANGUAGE sql
-	//     IMMUTABLE
-	//     PARALLEL SAFE
-	//     RETURNS NULL ON NULL INPUT
-	// RETURN
-	//   CASE WHEN $1 IN (1082) /* date */
-	// 						THEN 0
-	// 	 			WHEN $1 IN (1083, 1114, 1184, 1266) /* time, timestamp, same + tz */
-	// 						THEN CASE WHEN $2 < 0 THEN 6 ELSE $2 END
-	// 				WHEN $1 IN (1186) /* interval */
-	// 						THEN CASE WHEN $2 < 0 OR $2 & 0xFFFF = 0xFFFF THEN 6 ELSE $2 & 0xFFFF END
-	// 				ELSE null
-	// END;
-	"information_schema._pg_datetime_precision": makeBuiltin(tree.FunctionProperties{Category: builtinconstants.CategorySystemInfo},
-		tree.Overload{
-			Types: tree.ParamTypes{
-				{Name: "typid", Typ: types.Oid},
-				{Name: "typmod", Typ: types.Int4},
-			},
-			ReturnType: tree.FixedReturnType(types.Int),
-			Fn: func(_ context.Context, _ *eval.Context, args tree.Datums) (tree.Datum, error) {
-				typid := args[0].(*tree.DOid).Oid
-				typmod := *args[1].(*tree.DInt)
-				if typid == oid.T_date {
-					return tree.DZero, nil
-				} else if typid == oid.T_time || typid == oid.T_timestamp || typid == oid.T_timestamptz || typid == oid.T_timetz {
-					if typmod < 0 {
-						return tree.NewDInt(6), nil
-					}
-					return tree.NewDInt(typmod), nil
-				} else if typid == oid.T_interval {
-					if typmod < 0 || (typmod&0xFFFF) == 0xFFFF {
-						return tree.NewDInt(6), nil
-					}
-					return tree.NewDInt(typmod & 0xFFFF), nil
-				}
-				return tree.DNull, nil
-			},
-			Info:       notUsableInfo,
-			Volatility: volatility.Immutable,
-		},
-	),
-
-	// https://github.com/postgres/postgres/blob/master/src/backend/catalog/information_schema.sql
-	"information_schema._pg_interval_type": makeBuiltin(tree.FunctionProperties{Category: builtinconstants.CategorySystemInfo},
-		tree.Overload{
-			Types: tree.ParamTypes{
-				{Name: "typid", Typ: types.Oid},
-				{Name: "typmod", Typ: types.Int4},
-			},
-			ReturnType: tree.FixedReturnType(types.String),
-			Body: `SELECT
-						 CASE WHEN $1 IN (1186) /* interval */
-			 								THEN pg_catalog.upper(substring(pg_catalog.format_type($1, $2), 'interval[()0-9]* #"%#"', '#')) 
-			        		ELSE null
-  			     END`,
-			Info:              notUsableInfo,
-			Volatility:        volatility.Immutable,
-			CalledOnNullInput: true,
-			Language:          tree.RoutineLangSQL,
 		},
 	),
 

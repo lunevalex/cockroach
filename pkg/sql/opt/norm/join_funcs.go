@@ -1,12 +1,7 @@
 // Copyright 2018 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package norm
 
@@ -283,7 +278,7 @@ func (c *CustomFuncs) mapJoinOpEquivalenceGroup(
 //
 // If src has a correlated subquery, CanMapJoinOpFilter returns false.
 func (c *CustomFuncs) CanMapJoinOpFilter(
-	src *memo.FiltersItem, dstCols opt.ColSet, equivSet props.EquivSet,
+	src *memo.FiltersItem, dstCols opt.ColSet, equivFD props.FuncDepSet,
 ) bool {
 	// Fast path if src is already bound by dst.
 	if c.IsBoundBy(src, dstCols) {
@@ -295,17 +290,12 @@ func (c *CustomFuncs) CanMapJoinOpFilter(
 		return false
 	}
 
-	allowCompositeEncoding := !memo.CanBeCompositeSensitive(src)
+	allowCompositeEncoding := !memo.CanBeCompositeSensitive(c.mem.Metadata(), src)
 
 	// For CanMapJoinOpFilter to be true, each column in src must map to at
 	// least one column in dst.
 	for i, ok := scalarProps.OuterCols.Next(0); ok; i, ok = scalarProps.OuterCols.Next(i + 1) {
-		if dstCols.Contains(i) {
-			// The column already exists in dstCols, so there is no need to map
-			// it.
-			continue
-		}
-		eqCols := c.GetEquivColsWithEquivTypeWithEquivSet(i, equivSet, allowCompositeEncoding)
+		eqCols := c.GetEquivColsWithEquivType(i, equivFD, allowCompositeEncoding)
 		if !eqCols.Intersects(dstCols) {
 			return false
 		}
@@ -337,35 +327,34 @@ func (c *CustomFuncs) CanMapJoinOpFilter(
 // equality predicate a.x = b.x, because it would just return the tautology
 // b.x = b.x.
 func (c *CustomFuncs) MapJoinOpFilter(
-	src *memo.FiltersItem, dstCols opt.ColSet, equivSet props.EquivSet,
+	src *memo.FiltersItem, dstCols opt.ColSet, equivFD props.FuncDepSet,
 ) opt.ScalarExpr {
 	// Fast path if src is already bound by dst.
 	if c.IsBoundBy(src, dstCols) {
 		return src.Condition
 	}
 
-	allowCompositeEncoding := !memo.CanBeCompositeSensitive(src)
+	allowCompositeEncoding := !memo.CanBeCompositeSensitive(c.mem.Metadata(), src)
 
 	// Map each column in src to one column in dst. We choose an arbitrary column
 	// (the one with the smallest ColumnID) if there are multiple choices.
 	var colMap util.FastIntMap
 	outerCols := src.ScalarProps().OuterCols
 	for srcCol, ok := outerCols.Next(0); ok; srcCol, ok = outerCols.Next(srcCol + 1) {
-		if dstCols.Contains(srcCol) {
-			// The column already exists in dstCols, so there is no need to map
-			// it.
-			continue
-		}
-		eqCols := c.GetEquivColsWithEquivTypeWithEquivSet(srcCol, equivSet, allowCompositeEncoding)
+		eqCols := c.GetEquivColsWithEquivType(srcCol, equivFD, allowCompositeEncoding)
 		eqCols.IntersectionWith(dstCols)
-		dstCol, ok := eqCols.Next(0)
-		if !ok {
-			panic(errors.AssertionFailedf(
-				"MapJoinOpFilter called on src that cannot be mapped to dst. src:\n%s\ndst:\n%s",
-				src, dstCols,
-			))
+		if eqCols.Contains(srcCol) {
+			colMap.Set(int(srcCol), int(srcCol))
+		} else {
+			dstCol, ok := eqCols.Next(0)
+			if !ok {
+				panic(errors.AssertionFailedf(
+					"MapJoinOpFilter called on src that cannot be mapped to dst. src:\n%s\ndst:\n%s",
+					src, dstCols,
+				))
+			}
+			colMap.Set(int(srcCol), int(dstCol))
 		}
-		colMap.Set(int(srcCol), int(dstCol))
 	}
 
 	// Recursively walk the scalar sub-tree looking for references to columns
@@ -374,8 +363,8 @@ func (c *CustomFuncs) MapJoinOpFilter(
 	replace = func(nd opt.Expr) opt.Expr {
 		switch t := nd.(type) {
 		case *memo.VariableExpr:
-			outCol, ok := colMap.Get(int(t.Col))
-			if !ok {
+			outCol, _ := colMap.Get(int(t.Col))
+			if int(t.Col) == outCol {
 				// Avoid constructing a new variable if possible.
 				return nd
 			}
@@ -448,45 +437,17 @@ func (c *CustomFuncs) GetEquivColsWithEquivType(
 	return res
 }
 
-// GetEquivColsWithEquivTypeWithEquivSet is identical to
-// GetEquivColsWithEquivType, but operates on an EquivSet instead of a
-// FuncDepSet.
-func (c *CustomFuncs) GetEquivColsWithEquivTypeWithEquivSet(
-	col opt.ColumnID, equivSet props.EquivSet, allowCompositeEncoding bool,
-) opt.ColSet {
-	var res opt.ColSet
-	colType := c.f.Metadata().ColumnMeta(col).Type
-
-	// Don't bother looking for equivalent columns if colType has a composite
-	// key encoding.
-	if !allowCompositeEncoding && colinfo.CanHaveCompositeKeyEncoding(colType) {
-		res.Add(col)
-		return res
-	}
-
-	// Compute all equivalent columns.
-	eqCols := equivSet.Group(col)
-
-	eqCols.ForEach(func(i opt.ColumnID) {
-		// Only include columns that have the same type as col.
-		eqColType := c.f.Metadata().ColumnMeta(i).Type
-		if colType.Equivalent(eqColType) {
-			res.Add(i)
-		}
-	})
-
-	return res
-}
-
-func (c *CustomFuncs) GetEquivSet(
+// GetEquivFD gets a FuncDepSet with all equivalence dependencies from
+// filters, left and right.
+func (c *CustomFuncs) GetEquivFD(
 	filters memo.FiltersExpr, left, right memo.RelExpr,
-) (equivSet props.EquivSet) {
+) (equivFD props.FuncDepSet) {
 	for i := range filters {
-		equivSet.AddFromFDs(&filters[i].ScalarProps().FuncDeps)
+		equivFD.AddEquivFrom(&filters[i].ScalarProps().FuncDeps)
 	}
-	equivSet.AddFromFDs(&left.Relational().FuncDeps)
-	equivSet.AddFromFDs(&right.Relational().FuncDeps)
-	return equivSet
+	equivFD.AddEquivFrom(&left.Relational().FuncDeps)
+	equivFD.AddEquivFrom(&right.Relational().FuncDeps)
+	return equivFD
 }
 
 // JoinFiltersMatchAllLeftRows returns true when each row in the given join's

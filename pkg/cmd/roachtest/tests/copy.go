@@ -1,12 +1,7 @@
 // Copyright 2018 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package tests
 
@@ -76,7 +71,7 @@ func registerCopy(r registry.Registry) {
 			}
 
 			t.Status("importing Bank fixture")
-			c.Run(ctx, option.WithNodes(c.Node(1)), fmt.Sprintf(
+			c.Run(ctx, c.Node(1), fmt.Sprintf(
 				"./workload fixtures load bank --rows=%d --payload-bytes=%d --seed %d {pgurl:1}",
 				rows, payload, fixturesRandomSeed))
 			if _, err := db.Exec("ALTER TABLE bank.bank RENAME TO bank.bank_orig"); err != nil {
@@ -84,7 +79,7 @@ func registerCopy(r registry.Registry) {
 			}
 
 			t.Status("create copy of Bank schema")
-			c.Run(ctx, option.WithNodes(c.Node(1)), "./workload init bank --rows=0 --ranges=0 {pgurl:1}")
+			c.Run(ctx, c.Node(1), "./workload init bank --rows=0 --ranges=0 {pgurl:1}")
 
 			rangeCount := func() int {
 				var count int

@@ -1,10 +1,7 @@
 // Copyright 2020 The Cockroach Authors.
 //
-// Licensed as a CockroachDB Enterprise file under the Cockroach Community
-// License (the "License"); you may not use this file except in compliance with
-// the License. You may obtain a copy of the License at
-//
-//     https://github.com/cockroachdb/cockroach/blob/master/licenses/CCL.txt
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package streamingest
 
@@ -159,13 +156,6 @@ func (m *mockStreamClient) Complete(_ context.Context, _ streampb.StreamID, _ bo
 	return nil
 }
 
-// PriorReplicationDetails implements the streamclient.Client interface.
-func (m *mockStreamClient) PriorReplicationDetails(
-	_ context.Context, _ roachpb.TenantName,
-) (string, string, hlc.Timestamp, error) {
-	return "", "", hlc.Timestamp{}, nil
-}
-
 // errorStreamClient always returns an error when consuming a partition.
 type errorStreamClient struct{ mockStreamClient }
 
@@ -194,13 +184,7 @@ func TestStreamIngestionProcessor(t *testing.T) {
 	ctx := context.Background()
 
 	tc := testcluster.StartTestCluster(t, 1 /* nodes */, base.TestClusterArgs{
-		ServerArgs: base.TestServerArgs{
-			// Perhaps it would be possible to make this
-			// run in a secondary tenant, but the test
-			// would need to be completely rewritten to be
-			// even further from real-world operation.
-			DefaultTestTenant: base.TestIsSpecificToStorageLayerAndNeedsASystemTenant,
-		},
+		ServerArgs: base.TestServerArgs{DefaultTestTenant: base.TODOTestTenantDisabled},
 	})
 	defer tc.Stopper().Stop(ctx)
 	db := tc.Server(0).InternalDB().(descs.DB)
@@ -592,7 +576,7 @@ func assertEqualKVs(
 	// Iterate over the store.
 	store, err := srv.StorageLayer().GetStores().(*kvserver.Stores).GetStore(srv.GetFirstStoreID())
 	require.NoError(t, err)
-	it, err := store.TODOEngine().NewMVCCIterator(context.Background(), storage.MVCCKeyAndIntentsIterKind, storage.IterOptions{
+	it, err := store.TODOEngine().NewMVCCIterator(storage.MVCCKeyAndIntentsIterKind, storage.IterOptions{
 		LowerBound: targetSpan.Key,
 		UpperBound: targetSpan.EndKey,
 	})

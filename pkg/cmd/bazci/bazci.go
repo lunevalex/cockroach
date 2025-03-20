@@ -1,12 +1,7 @@
 // Copyright 2021 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 //go:build bazel
 // +build bazel
@@ -480,19 +475,17 @@ func processTestXmls(testXmls []string) error {
 	if doPost() {
 		var postErrors []string
 		for _, testXml := range testXmls {
-			xmlFile, err := os.ReadFile(testXml)
+			xmlFile, err := os.Open(testXml)
 			if err != nil {
-				postErrors = append(postErrors, fmt.Sprintf("Failed to read %s with the following error: %v", testXml, err))
+				postErrors = append(postErrors, fmt.Sprintf("Failed to open %s with the following error: %v", testXml, err))
 				continue
 			}
-			var testSuites bazelutil.TestSuites
-			err = xml.Unmarshal(xmlFile, &testSuites)
-			if err != nil {
-				postErrors = append(postErrors, fmt.Sprintf("Failed to parse test.xml file with the following error: %+v", err))
-				continue
-			}
-			if err := githubpost.PostFromTestXMLWithFormatterName(githubPostFormatterName, testSuites); err != nil {
+			if err := githubpost.PostFromTestXMLWithFormatterName(githubPostFormatterName, xmlFile); err != nil {
 				postErrors = append(postErrors, fmt.Sprintf("Failed to process %s with the following error: %+v", testXml, err))
+				continue
+			}
+			if err := xmlFile.Close(); err != nil {
+				postErrors = append(postErrors, fmt.Sprintf("Failed to close %s with error: %v\n", testXml, err))
 				continue
 			}
 		}

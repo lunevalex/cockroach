@@ -1,12 +1,7 @@
 // Copyright 2020 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 import { stubComponentInModule } from "./test-utils/mockComponent";
 stubComponentInModule("src/views/cluster/containers/nodeGraphs", "default");
@@ -49,6 +44,14 @@ stubComponentInModule("src/views/insights/schemaInsightsPage", "default");
 stubComponentInModule("src/views/schedules/schedulesPage", "default");
 stubComponentInModule("src/views/schedules/scheduleDetails", "default");
 stubComponentInModule("src/views/tracez_v2/snapshotPage", "default");
+stubComponentInModule(
+  "src/views/app/components/tenantDropdown/tenantDropdown",
+  "default",
+);
+stubComponentInModule(
+  "src/views/shared/components/alertBar/alertBar",
+  "ThrottleNotificationBar",
+);
 
 import React from "react";
 import { Action, Store } from "redux";

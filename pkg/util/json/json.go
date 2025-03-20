@@ -1,12 +1,7 @@
 // Copyright 2017 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package json
 
@@ -24,6 +19,8 @@ import (
 	"unsafe"
 
 	"github.com/cockroachdb/apd/v3"
+	"github.com/cockroachdb/cockroach/pkg/geo"
+	"github.com/cockroachdb/cockroach/pkg/geo/geopb"
 	"github.com/cockroachdb/cockroach/pkg/keysbase"
 	"github.com/cockroachdb/cockroach/pkg/sql/inverted"
 	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/pgcode"
@@ -782,6 +779,7 @@ const hexAlphabet = "0123456789abcdef"
 // encodeJSONString writes a string literal to buf as a JSON string.
 // Cribbed from https://github.com/golang/go/blob/7badae85f20f1bce4cc344f9202447618d45d414/src/encoding/json/encode.go.
 func encodeJSONString(buf *bytes.Buffer, s string) {
+	buf.Grow(len(s) + 2)
 	buf.WriteByte('"')
 	start := 0
 	for i := 0; i < len(s); {
@@ -952,7 +950,7 @@ func (j jsonArray) AreKeysSorted() bool {
 func (j jsonObject) AreKeysSorted() bool {
 	keys := make([]string, 0, j.Len())
 	for _, a := range j {
-		keys = append(keys, a.k.String())
+		keys = append(keys, string(a.k))
 	}
 	return sort.StringsAreSorted(keys)
 }
@@ -1800,6 +1798,15 @@ func (j jsonObject) allPaths() ([]JSON, error) {
 		}
 	}
 	return ret, nil
+}
+
+// FromSpatialObject transforms a SpatialObject into the json.JSON type.
+func FromSpatialObject(so geopb.SpatialObject, numDecimalDigits int) (JSON, error) {
+	j, err := geo.SpatialObjectToGeoJSON(so, numDecimalDigits, geo.SpatialObjectToGeoJSONFlagZero)
+	if err != nil {
+		return nil, err
+	}
+	return ParseJSON(string(j))
 }
 
 // FromDecimal returns a JSON value given a apd.Decimal.

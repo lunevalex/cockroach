@@ -1,12 +1,7 @@
 // Copyright 2018 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package pgwire
 
@@ -32,7 +27,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/testutils/datapathutils"
 	"github.com/cockroachdb/cockroach/pkg/util/leaktest"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
-	"github.com/cockroachdb/cockroach/pkg/util/metric"
 	"github.com/lib/pq/oid"
 )
 
@@ -133,7 +127,7 @@ func TestEncodings(t *testing.T) {
 	defer log.Scope(t).Close(t)
 
 	tests := readEncodingTests(t)
-	buf := newWriteBuffer(metric.NewCounter(metric.Metadata{}))
+	buf := newWriteBuffer(nilStat)
 
 	verifyLen := func(t *testing.T) []byte {
 		t.Helper()
@@ -356,7 +350,7 @@ func TestExoticNumericEncodings(t *testing.T) {
 
 func BenchmarkEncodings(b *testing.B) {
 	tests := readEncodingTests(b)
-	buf := newWriteBuffer(metric.NewCounter(metric.Metadata{}))
+	buf := newWriteBuffer(nilStat)
 	conv, loc := makeTestingConvCfg()
 	ctx := context.Background()
 

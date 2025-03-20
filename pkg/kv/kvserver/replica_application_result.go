@@ -1,12 +1,7 @@
 // Copyright 2019 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package kvserver
 
@@ -49,7 +44,6 @@ func clearTrivialReplicatedEvalResultFields(r *kvserverpb.ReplicatedEvalResult) 
 	// they don't trigger an assertion at the end of the application process
 	// (which checks that all fields were handled).
 	r.IsLeaseRequest = false
-	r.IsLeaseRequestWithExpirationToEpochEquivalent = false
 	r.WriteTimestamp = hlc.Timestamp{}
 	r.PrevLeaseProposal = nil
 	// The state fields cleared here were already applied to the in-memory view of

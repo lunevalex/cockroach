@@ -1,19 +1,18 @@
 // Copyright 2018 The Cockroach Authors.
 //
-// Licensed as a CockroachDB Enterprise file under the Cockroach Community
-// License (the "License"); you may not use this file except in compliance with
-// the License. You may obtain a copy of the License at
-//
-//     https://github.com/cockroachdb/cockroach/blob/master/licenses/CCL.txt
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package changefeedccl
 
 import (
 	"context"
+	"fmt"
 	"sort"
 
 	"github.com/cockroachdb/cockroach/pkg/ccl/changefeedccl/cdceval"
 	"github.com/cockroachdb/cockroach/pkg/ccl/changefeedccl/changefeedbase"
+	"github.com/cockroachdb/cockroach/pkg/ccl/kvccl/kvfollowerreadsccl"
 	"github.com/cockroachdb/cockroach/pkg/jobs/jobspb"
 	"github.com/cockroachdb/cockroach/pkg/jobs/jobsprofiler"
 	"github.com/cockroachdb/cockroach/pkg/kv"
@@ -29,7 +28,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/pgcode"
 	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/pgerror"
 	"github.com/cockroachdb/cockroach/pkg/sql/physicalplan"
-	"github.com/cockroachdb/cockroach/pkg/sql/physicalplan/replicaoracle"
 	"github.com/cockroachdb/cockroach/pkg/sql/rowexec"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/catid"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
@@ -37,6 +35,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util"
 	"github.com/cockroachdb/cockroach/pkg/util/ctxgroup"
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
+	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/errors"
 )
 
@@ -240,6 +239,9 @@ func startDistChangefeed(
 	if err != nil {
 		return err
 	}
+	if log.ExpensiveLogEnabled(ctx, 2) {
+		log.Infof(ctx, "tracked spans: %s", trackedSpans)
+	}
 	localState.trackedSpans = trackedSpans
 
 	// Changefeed flows handle transactional consistency themselves.
@@ -304,7 +306,9 @@ func startDistChangefeed(
 			finishedSetupFn = func(flowinfra.Flow) { resultsCh <- tree.Datums(nil) }
 		}
 
-		jobsprofiler.StorePlanDiagram(ctx, execCfg.DistSQLSrv.Stopper, p, execCfg.InternalDB, jobID)
+		if log.V(1) {
+			jobsprofiler.StorePlanDiagram(ctx, execCfg.DistSQLSrv.Stopper, p, execCfg.InternalDB, jobID)
+		}
 
 		// Copy the evalCtx, as dsp.Run() might change it.
 		evalCtxCopy := *evalCtx
@@ -316,39 +320,21 @@ func startDistChangefeed(
 	return ctxgroup.GoAndWait(ctx, execPlan)
 }
 
-// The bin packing choice gives preference to leaseholder replicas if possible.
-var replicaOracleChoice = replicaoracle.BinPackingChoice
-
-type rangeDistributionType int
-
-const (
-	// defaultDistribution employs no load balancing on the changefeed
-	// side. We defer to distsql to select nodes and distribute work.
-	defaultDistribution rangeDistributionType = 0
-	// balancedSimpleDistribution defers to distsql for selecting the
-	// set of nodes to distribute work to. However, changefeeds will try to
-	// distribute work evenly across this set of nodes.
-	balancedSimpleDistribution rangeDistributionType = 1
-	// TODO(jayant): add balancedFullDistribution which takes
-	// full control of node selection and distribution.
-)
-
-// RangeDistributionStrategy is used to determine how the changefeed balances
-// ranges between nodes.
-// TODO: deprecate this setting in favor of a changefeed option.
-var RangeDistributionStrategy = settings.RegisterEnumSetting(
+var enableBalancedRangeDistribution = settings.RegisterBoolSetting(
 	settings.ApplicationLevel,
-	"changefeed.default_range_distribution_strategy",
-	"configures how work is distributed among nodes for a given changefeed. "+
-		"for the most balanced distribution, use `balanced_simple`. changing this setting "+
-		"will not override locality restrictions",
-	util.ConstantWithMetamorphicTestChoice("default_range_distribution_strategy",
-		"default", "balanced_simple").(string),
-	map[int64]string{
-		int64(defaultDistribution):        "default",
-		int64(balancedSimpleDistribution): "balanced_simple",
-	},
+	"changefeed.balance_range_distribution.enable",
+	"if enabled, the ranges are balanced equally among all nodes. "+
+		"Note that this is supported only in export mode with initial_scan=only.",
+	util.ConstantWithMetamorphicTestBool(
+		"changefeed.balance_range_distribution.enabled", false),
+	settings.WithName("changefeed.balance_range_distribution.enabled"),
 	settings.WithPublic)
+
+var useBulkOracle = settings.RegisterBoolSetting(
+	settings.ApplicationLevel,
+	"changefeed.random_replica_selection.enabled",
+	"randomize the selection of which replica backs up each range",
+	false)
 
 func makePlan(
 	execCtx sql.JobExecContext,
@@ -360,8 +346,6 @@ func makePlan(
 	drainingNodes []roachpb.NodeID,
 ) func(context.Context, *sql.DistSQLPlanner) (*sql.PhysicalPlan, *sql.PlanningCtx, error) {
 	return func(ctx context.Context, dsp *sql.DistSQLPlanner) (*sql.PhysicalPlan, *sql.PlanningCtx, error) {
-		sv := &execCtx.ExecCfg().Settings.SV
-		maybeCfKnobs, haveKnobs := execCtx.ExecCfg().DistSQLSrv.TestingKnobs.Changefeed.(*TestingKnobs)
 		var blankTxn *kv.Txn
 
 		distMode := sql.DistributionTypeAlways
@@ -377,39 +361,55 @@ func makePlan(
 			}
 		}
 
-		rangeDistribution := RangeDistributionStrategy.Get(sv)
-		oracle := replicaoracle.NewOracle(replicaOracleChoice, dsp.ReplicaOracleConfig(locFilter))
+		evalCtx := execCtx.ExtendedEvalContext()
+		oracle := physicalplan.DefaultReplicaChooser
+		if useBulkOracle.Get(&evalCtx.Settings.SV) {
+			oracle = kvfollowerreadsccl.NewBulkOracle(dsp.ReplicaOracleConfig(evalCtx.Locality), locFilter)
+		}
 		planCtx := dsp.NewPlanningCtxWithOracle(ctx, execCtx.ExtendedEvalContext(), nil, /* planner */
 			blankTxn, sql.DistributionType(distMode), oracle, locFilter)
 		spanPartitions, err := dsp.PartitionSpans(ctx, planCtx, trackedSpans)
 		if err != nil {
 			return nil, nil, err
 		}
-		switch {
-		case distMode == sql.DistributionTypeNone || rangeDistribution == int64(defaultDistribution):
-		case rangeDistribution == int64(balancedSimpleDistribution):
-			sender := execCtx.ExecCfg().DB.NonTransactionalSender()
-			distSender := sender.(*kv.CrossRangeTxnWrapperSender).Wrapped().(*kvcoord.DistSender)
-
-			spanPartitions, err = rebalanceSpanPartitions(
-				ctx, &distResolver{distSender}, rebalanceThreshold.Get(sv), spanPartitions)
-			if err != nil {
-				return nil, nil, err
-			}
-		default:
-			return nil, nil, errors.AssertionFailedf("unsupported dist strategy %d and dist mode %d",
-				rangeDistribution, distMode)
+		if log.ExpensiveLogEnabled(ctx, 2) {
+			log.Infof(ctx, "spans returned by DistSQL: %s", spanPartitions)
 		}
 
-		if haveKnobs && maybeCfKnobs.FilterDrainingNodes != nil && len(drainingNodes) > 0 {
-			spanPartitions, err = maybeCfKnobs.FilterDrainingNodes(spanPartitions, drainingNodes)
+		cfKnobs := execCtx.ExecCfg().DistSQLSrv.TestingKnobs.Changefeed
+		if knobs, ok := cfKnobs.(*TestingKnobs); ok && knobs != nil &&
+			knobs.FilterDrainingNodes != nil && len(drainingNodes) > 0 {
+			spanPartitions, err = knobs.FilterDrainingNodes(spanPartitions, drainingNodes)
 			if err != nil {
 				return nil, nil, err
 			}
 		}
 
-		if haveKnobs && maybeCfKnobs.SpanPartitionsCallback != nil {
-			maybeCfKnobs.SpanPartitionsCallback(spanPartitions)
+		sv := &execCtx.ExecCfg().Settings.SV
+		if enableBalancedRangeDistribution.Get(sv) {
+			scanType, err := changefeedbase.MakeStatementOptions(details.Opts).GetInitialScanType()
+			if err != nil {
+				return nil, nil, err
+			}
+
+			// Currently, balanced range distribution supported only in export mode.
+			// TODO(yevgeniy): Consider lifting this restriction.
+			if scanType == changefeedbase.OnlyInitialScan {
+				if log.ExpensiveLogEnabled(ctx, 2) {
+					log.Infof(ctx, "rebalancing ranges using balanced simple distribution")
+				}
+				sender := execCtx.ExecCfg().DB.NonTransactionalSender()
+				distSender := sender.(*kv.CrossRangeTxnWrapperSender).Wrapped().(*kvcoord.DistSender)
+
+				spanPartitions, err = rebalanceSpanPartitions(
+					ctx, &distResolver{distSender}, rebalanceThreshold.Get(sv), spanPartitions)
+				if err != nil {
+					return nil, nil, err
+				}
+				if log.ExpensiveLogEnabled(ctx, 2) {
+					log.Infof(ctx, "spans after balanced simple distribution rebalancing: %s", spanPartitions)
+				}
+			}
 		}
 
 		// Use the same checkpoint for all aggregators; each aggregator will only look at
@@ -423,9 +423,15 @@ func makePlan(
 			aggregatorCheckpoint.Spans = checkpoint.Spans
 			aggregatorCheckpoint.Timestamp = checkpoint.Timestamp
 		}
+		if log.V(2) {
+			log.Infof(ctx, "aggregator checkpoint: %s", aggregatorCheckpoint)
+		}
 
 		aggregatorSpecs := make([]*execinfrapb.ChangeAggregatorSpec, len(spanPartitions))
 		for i, sp := range spanPartitions {
+			if log.ExpensiveLogEnabled(ctx, 2) {
+				log.Infof(ctx, "watched spans for node %d: %s", sp.SQLInstanceID, sp)
+			}
 			watches := make([]execinfrapb.ChangeAggregatorSpec_Watch, len(sp.Spans))
 			for watchIdx, nodeSpan := range sp.Spans {
 				initialResolved := initialHighWater
@@ -459,8 +465,8 @@ func makePlan(
 			UserProto:    execCtx.User().EncodeProto(),
 		}
 
-		if haveKnobs && maybeCfKnobs.OnDistflowSpec != nil {
-			maybeCfKnobs.OnDistflowSpec(aggregatorSpecs, &changeFrontierSpec)
+		if knobs, ok := cfKnobs.(*TestingKnobs); ok && knobs != nil && knobs.OnDistflowSpec != nil {
+			knobs.OnDistflowSpec(aggregatorSpecs, &changeFrontierSpec)
 		}
 
 		aggregatorCorePlacement := make([]physicalplan.ProcessorCorePlacement, len(spanPartitions))
@@ -481,6 +487,21 @@ func makePlan(
 
 		p.PlanToStreamColMap = []int{1, 2, 3}
 		sql.FinalizePlan(ctx, planCtx, p)
+
+		// Log the plan diagram URL so that we don't have to rely on it being in system.job_info.
+		const maxLenDiagURL = 1 << 20 // 1 MiB
+		flowSpecs := p.GenerateFlowSpecs()
+		if _, diagURL, err := execinfrapb.GeneratePlanDiagramURL(
+			fmt.Sprintf("changefeed: %d", jobID),
+			flowSpecs,
+			execinfrapb.DiagramFlags{},
+		); err != nil {
+			log.Warningf(ctx, "failed to generate changefeed plan diagram: %s", err)
+		} else if diagURL := diagURL.String(); len(diagURL) > maxLenDiagURL {
+			log.Warningf(ctx, "changefeed plan diagram length is too large to be logged: %d", len(diagURL))
+		} else {
+			log.Infof(ctx, "changefeed plan diagram: %s", diagURL)
+		}
 
 		return p, planCtx, nil
 	}

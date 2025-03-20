@@ -1,12 +1,7 @@
 // Copyright 2022 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package slstorage_test
 
@@ -86,6 +81,12 @@ func TestSessionIDEncoding(t *testing.T) {
 			name:    "empty_session",
 			session: "",
 			err:     "session id is too short",
+		},
+		{
+			name:    "legacy_session",
+			session: sqlliveness.SessionID(id1.GetBytes()),
+			region:  enum.One,
+			id:      id1,
 		},
 		{
 			name:    "session_v1",

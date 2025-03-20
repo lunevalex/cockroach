@@ -30,11 +30,8 @@ go_test(
         "main_test.go",
         "syntax_error_test.go",
     ],
+    args = ["-test.timeout=295s"],
     embed = [":clierror"],
-    exec_properties = select({
-        "//build/toolchains:is_heavy": {"Pool": "heavy"},
-        "//conditions:default": {"Pool": "default"},
-    }),
     deps = [
         "//pkg/build",
         "//pkg/cli",

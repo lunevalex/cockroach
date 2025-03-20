@@ -1,12 +1,7 @@
 // Copyright 2021 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package sql
 
@@ -163,15 +158,7 @@ func (i *rowContainerIterator) Next() (tree.Datums, error) {
 		// All rows have been exhausted.
 		return nil, nil
 	}
-	origRow, err := i.iter.Row()
-	if err != nil {
-		return nil, err
-	}
-	// Shallow-copy the row to ensure that it is safe to hold on to after Next()
-	// and Close() calls - see the RowIterator interface.
-	row := make(tree.Datums, len(origRow))
-	copy(row, origRow)
-	return row, nil
+	return i.iter.Row()
 }
 
 func (i *rowContainerIterator) Close() {

@@ -1,12 +1,7 @@
 // Copyright 2016 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package tree
 
@@ -101,14 +96,19 @@ func (node *Backup) Format(ctx *FmtCtx) {
 	} else {
 		ctx.WriteString("TO ")
 	}
-	ctx.FormatNode(&node.To)
+	ctx.FormatURIs(node.To)
 	if node.AsOf.Expr != nil {
 		ctx.WriteString(" ")
 		ctx.FormatNode(&node.AsOf)
 	}
 	if node.IncrementalFrom != nil {
 		ctx.WriteString(" INCREMENTAL FROM ")
-		ctx.FormatNode(&node.IncrementalFrom)
+		for i, from := range node.IncrementalFrom {
+			if i > 0 {
+				ctx.WriteString(", ")
+			}
+			ctx.FormatURI(from)
+		}
 	}
 
 	if !node.Options.IsDefault() {
@@ -194,16 +194,22 @@ func (node *Restore) Format(ctx *FmtCtx) {
 		if i > 0 {
 			ctx.WriteString(", ")
 		}
-		ctx.FormatNode(&node.From[i])
+		ctx.FormatURIs(node.From[i])
 	}
 	if node.AsOf.Expr != nil {
 		ctx.WriteString(" ")
 		ctx.FormatNode(&node.AsOf)
 	}
 	if !node.Options.IsDefault() {
-		ctx.WriteString(" WITH OPTIONS (")
-		ctx.FormatNode(&node.Options)
-		ctx.WriteString(")")
+		if ctx.HasFlags(FmtHideConstants) {
+			ctx.WriteString(" WITH OPTIONS (")
+			ctx.FormatNode(&node.Options)
+			ctx.WriteString(")")
+		} else {
+			ctx.WriteString(" WITH OPTIONS (")
+			ctx.FormatNode(&node.Options)
+			ctx.WriteString(")")
+		}
 	}
 }
 
@@ -228,6 +234,13 @@ func (o *KVOptions) HasKey(key Name) bool {
 
 // Format implements the NodeFormatter interface.
 func (o *KVOptions) Format(ctx *FmtCtx) {
+	o.formatEach(ctx, func(n *KVOption, ctx *FmtCtx) {
+		ctx.FormatNode(n.Value)
+	})
+}
+
+// formatEach is like Format but allows custom formatting of the value part.
+func (o *KVOptions) formatEach(ctx *FmtCtx, formatValue func(*KVOption, *FmtCtx)) {
 	for i := range *o {
 		n := &(*o)[i]
 		if i > 0 {
@@ -240,7 +253,7 @@ func (o *KVOptions) Format(ctx *FmtCtx) {
 		})
 		if n.Value != nil {
 			ctx.WriteString(` = `)
-			ctx.FormatNode(n.Value)
+			formatValue(n, ctx)
 		}
 	}
 }
@@ -295,13 +308,13 @@ func (o *BackupOptions) Format(ctx *FmtCtx) {
 	if o.EncryptionKMSURI != nil {
 		maybeAddSep()
 		ctx.WriteString("kms = ")
-		ctx.FormatNode(&o.EncryptionKMSURI)
+		ctx.FormatURIs(o.EncryptionKMSURI)
 	}
 
 	if o.IncrementalStorage != nil {
 		maybeAddSep()
 		ctx.WriteString("incremental_location = ")
-		ctx.FormatNode(&o.IncrementalStorage)
+		ctx.FormatURIs(o.IncrementalStorage)
 	}
 
 	if o.ExecutionLocality != nil {
@@ -419,7 +432,7 @@ func (o *RestoreOptions) Format(ctx *FmtCtx) {
 	if o.DecryptionKMSURI != nil {
 		maybeAddSep()
 		ctx.WriteString("kms = ")
-		ctx.FormatNode(&o.DecryptionKMSURI)
+		ctx.FormatURIs(o.DecryptionKMSURI)
 	}
 
 	if o.IntoDB != nil {
@@ -484,7 +497,7 @@ func (o *RestoreOptions) Format(ctx *FmtCtx) {
 	if o.IncrementalStorage != nil {
 		maybeAddSep()
 		ctx.WriteString("incremental_location = ")
-		ctx.FormatNode(&o.IncrementalStorage)
+		ctx.FormatURIs(o.IncrementalStorage)
 	}
 
 	if o.AsTenant != nil {
@@ -514,9 +527,15 @@ func (o *RestoreOptions) Format(ctx *FmtCtx) {
 	}
 
 	if o.ExecutionLocality != nil {
-		maybeAddSep()
-		ctx.WriteString("execution locality = ")
-		ctx.FormatNode(o.ExecutionLocality)
+		if ctx.HasFlags(FmtHideConstants) {
+			maybeAddSep()
+			ctx.WriteString("execution locality = ")
+			ctx.FormatNode(o.ExecutionLocality)
+		} else {
+			maybeAddSep()
+			ctx.WriteString("execution locality = ")
+			ctx.FormatNode(o.ExecutionLocality)
+		}
 	}
 
 	if o.ExperimentalOnline {

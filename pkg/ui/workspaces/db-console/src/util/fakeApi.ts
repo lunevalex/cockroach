@@ -1,14 +1,10 @@
 // Copyright 2021 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 import * as $protobuf from "protobufjs";
+import { SqlTxnResult } from "@cockroachlabs/cluster-ui/dist/types/api";
 
 import { api as clusterUiApi } from "@cockroachlabs/cluster-ui";
 import { cockroach } from "src/js/protos";
@@ -101,31 +97,22 @@ function stubGet(path: string, writer: $protobuf.Writer, prefix: string) {
   fetchMock.get(`${prefix}${path}`, writer.finish());
 }
 
-export function createMockDatabaseRangesForTable(
-  numRangesCreate: number,
-  numNodes: number,
-): clusterUiApi.DatabaseDetailsRow[] {
-  const res = [];
-  const replicas = [];
-  for (let i = 1; i <= numNodes; i++) {
-    replicas.push(i);
-  }
-  for (let i = 0; i < numRangesCreate; i++) {
-    res.push({
-      replicas: replicas,
-      regions: ["gcp-europe-west1", "gcp-europe-west2"],
-      range_size: 10,
-    });
-  }
-  return res;
-}
-
 export function stubSqlApiCall<T>(
   req: clusterUiApi.SqlExecutionRequest,
   mockTxnResults: mockSqlTxnResult<T>[],
   times: number = 1,
 ) {
-  const response = buildSqlExecutionResponse(mockTxnResults);
+  const firstError = mockTxnResults.find(mock => mock.error != null)?.error;
+  let err: clusterUiApi.SqlExecutionErrorMessage;
+  if (firstError != null) {
+    err = {
+      message: firstError.message,
+      code: "123",
+      severity: "ERROR",
+      source: { file: "myfile.go", line: 111, function: "myFn" },
+    };
+  }
+  const response = buildSqlExecutionResponse(mockTxnResults, err);
   fetchMock.mock({
     headers: {
       Accept: "application/json",
@@ -204,3 +191,23 @@ function buildSqlTxnResult<RowType>(
     error: mock.error,
   };
 }
+
+const mockStmtExecErrorResponse = <T>(
+  res: Partial<SqlTxnResult<T>>,
+): SqlTxnResult<T> => ({
+  statement: res?.statement ?? 1,
+  tag: "SELECT",
+  start: "2022-01-01T00:00:00Z",
+  end: "2022-01-01T00:00:01Z",
+  error: new Error("error"),
+  rows_affected: 0,
+  ...res,
+});
+
+export const mockExecSQLErrors = <T>(
+  statements: number,
+): mockSqlTxnResult<T>[] => {
+  return Array.from({ length: statements }, (_, i) =>
+    mockStmtExecErrorResponse<T>({ statement: i + 1 }),
+  );
+};

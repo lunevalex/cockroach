@@ -1,10 +1,7 @@
 // Copyright 2022 The Cockroach Authors.
 //
-// Licensed as a CockroachDB Enterprise file under the Cockroach Community
-// License (the "License"); you may not use this file except in compliance with
-// the License. You may obtain a copy of the License at
-//
-//     https://github.com/cockroachdb/cockroach/blob/master/licenses/CCL.txt
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package streamingest
 
@@ -18,6 +15,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/base"
 	"github.com/cockroachdb/cockroach/pkg/ccl/streamingccl/replicationtestutils"
 	"github.com/cockroachdb/cockroach/pkg/ccl/streamingccl/replicationutils"
+	"github.com/cockroachdb/cockroach/pkg/ccl/streamingccl/streamclient"
 	_ "github.com/cockroachdb/cockroach/pkg/cloud/impl"
 	"github.com/cockroachdb/cockroach/pkg/jobs"
 	"github.com/cockroachdb/cockroach/pkg/jobs/jobspb"
@@ -52,6 +50,7 @@ func TestTenantStreamingProducerJobTimedOut(t *testing.T) {
 
 	ctx := context.Background()
 	args := replicationtestutils.DefaultTenantStreamingClustersArgs
+	args.SrcClusterSettings[`stream_replication.job_liveness.timeout`] = `'1m'`
 	c, cleanup := replicationtestutils.CreateTenantStreamingClusters(ctx, t, args)
 	defer cleanup()
 
@@ -59,7 +58,6 @@ func TestTenantStreamingProducerJobTimedOut(t *testing.T) {
 
 	jobutils.WaitForJobToRun(c.T, c.SrcSysSQL, jobspb.JobID(producerJobID))
 	jobutils.WaitForJobToRun(c.T, c.DestSysSQL, jobspb.JobID(ingestionJobID))
-	c.SrcSysSQL.Exec(t, fmt.Sprintf(`ALTER TENANT '%s' SET REPLICATION EXPIRATION WINDOW ='1m'`, c.Args.SrcTenantName))
 
 	srcTime := c.SrcCluster.Server(0).Clock().Now()
 	c.WaitUntilReplicatedTime(srcTime, jobspb.JobID(ingestionJobID))
@@ -70,7 +68,9 @@ func TestTenantStreamingProducerJobTimedOut(t *testing.T) {
 	require.True(t, srcTime.LessEq(stats.ReplicationLagInfo.MinIngestedTimestamp))
 
 	// Make producer job easily times out
-	c.SrcSysSQL.Exec(t, fmt.Sprintf(`ALTER TENANT '%s' SET REPLICATION EXPIRATION WINDOW ='100ms'`, c.Args.SrcTenantName))
+	c.SrcSysSQL.ExecMultiple(t, replicationtestutils.ConfigureClusterSettings(map[string]string{
+		`stream_replication.job_liveness.timeout`: `'100ms'`,
+	})...)
 
 	jobutils.WaitForJobToFail(c.T, c.SrcSysSQL, jobspb.JobID(producerJobID))
 	// The ingestion job will stop retrying as this is a permanent job error.
@@ -79,7 +79,7 @@ func TestTenantStreamingProducerJobTimedOut(t *testing.T) {
 		replicationtestutils.RunningStatus(t, c.DestSysSQL, ingestionJobID))
 
 	ts := c.DestCluster.Server(0).Clock().Now()
-	afterPauseFingerprint := replicationtestutils.FingerprintTenantAtTimestampNoHistory(t, c.DestSysSQL, c.Args.DestTenantName, ts.AsOfSystemTime())
+	afterPauseFingerprint := replicationtestutils.FingerprintTenantAtTimestampNoHistory(t, c.DestSysSQL, c.Args.DestTenantID.ToUint64(), ts.AsOfSystemTime())
 	// Make dest cluster to ingest KV events faster.
 	c.SrcSysSQL.ExecMultiple(t, replicationtestutils.ConfigureClusterSettings(map[string]string{
 		`stream_replication.min_checkpoint_frequency`: `'100ms'`,
@@ -341,20 +341,15 @@ func requireReleasedProducerPTSRecord(
 	producerJobID jobspb.JobID,
 ) {
 	t.Helper()
-	testutils.SucceedsSoon(t, func() error {
-		job, err := srv.JobRegistry().(*jobs.Registry).LoadJob(ctx, producerJobID)
-		require.NoError(t, err)
-		ptsRecordID := job.Payload().Details.(*jobspb.Payload_StreamReplication).StreamReplication.ProtectedTimestampRecordID
-		ptsProvider := srv.ExecutorConfig().(sql.ExecutorConfig).ProtectedTimestampProvider
-		err = srv.InternalDB().(descs.DB).Txn(ctx, func(ctx context.Context, txn isql.Txn) error {
-			_, err := ptsProvider.WithTxn(txn).GetRecord(ctx, ptsRecordID)
-			return err
-		})
-		if !errors.Is(err, protectedts.ErrNotExists) {
-			return errors.Wrapf(err, "unexpected error")
-		}
-		return nil
+	job, err := srv.JobRegistry().(*jobs.Registry).LoadJob(ctx, producerJobID)
+	require.NoError(t, err)
+	ptsRecordID := job.Payload().Details.(*jobspb.Payload_StreamReplication).StreamReplication.ProtectedTimestampRecordID
+	ptsProvider := srv.ExecutorConfig().(sql.ExecutorConfig).ProtectedTimestampProvider
+	err = srv.InternalDB().(descs.DB).Txn(ctx, func(ctx context.Context, txn isql.Txn) error {
+		_, err := ptsProvider.WithTxn(txn).GetRecord(ctx, ptsRecordID)
+		return err
 	})
+	require.ErrorIs(t, err, protectedts.ErrNotExists)
 }
 
 func TestTenantStreamingCancelIngestion(t *testing.T) {
@@ -582,7 +577,7 @@ func TestTenantStreamingMultipleNodes(t *testing.T) {
 	defer log.Scope(t).Close(t)
 
 	skip.UnderDeadlock(t, "multi-node may time out under deadlock")
-	skip.UnderRace(t, "multi-node test may time out under race")
+	skip.UnderRace(t, "takes too long with multiple nodes")
 
 	ctx := context.Background()
 	args := replicationtestutils.DefaultTenantStreamingClustersArgs
@@ -682,6 +677,7 @@ func TestStreamingAutoReplan(t *testing.T) {
 	defer log.Scope(t).Close(t)
 
 	skip.UnderRace(t, "multi cluster/node config exhausts hardware")
+	skip.UnderDeadlock(t, "takes too long")
 
 	ctx := context.Background()
 	args := replicationtestutils.DefaultTenantStreamingClustersArgs
@@ -730,8 +726,7 @@ func TestStreamingAutoReplan(t *testing.T) {
 	c.SrcCluster.AddAndStartServer(c.T, replicationtestutils.CreateServerArgs(c.Args))
 	require.NoError(t, c.SrcCluster.WaitForFullReplication())
 
-	// Only need at least two nodes as leaseholders for test.
-	replicationtestutils.CreateScatteredTable(t, c, 2)
+	replicationtestutils.CreateScatteredTable(t, c, 3)
 
 	// Configure the ingestion job to replan eagerly.
 	serverutils.SetClusterSetting(t, c.DestCluster, "stream_replication.replan_flow_threshold", 0.1)
@@ -763,6 +758,7 @@ func TestStreamingReplanOnLag(t *testing.T) {
 	defer log.Scope(t).Close(t)
 
 	skip.UnderDuressWithIssue(t, 115850, "time to scatter ranges takes too long under duress")
+	skip.UnderMetamorphic(t, "time to scatter ranges takes too long under non-default settings")
 
 	ctx := context.Background()
 	args := replicationtestutils.DefaultTenantStreamingClustersArgs
@@ -962,7 +958,6 @@ func TestProtectedTimestampManagement(t *testing.T) {
 				jobutils.WaitForJobToRun(c.T, c.DestSysSQL, jobspb.JobID(replicationJobID))
 				var emptyCutoverTime time.Time
 				c.Cutover(producerJobID, replicationJobID, emptyCutoverTime, false)
-				c.SrcSysSQL.Exec(t, fmt.Sprintf(`ALTER TENANT '%s' SET REPLICATION EXPIRATION WINDOW ='100ms'`, c.Args.SrcTenantName))
 			}
 
 			// Set GC TTL low, so that the GC job completes quickly in the test.
@@ -970,11 +965,11 @@ func TestProtectedTimestampManagement(t *testing.T) {
 			c.DestSysSQL.Exec(t, fmt.Sprintf("DROP TENANT %s", c.Args.DestTenantName))
 
 			if !completeReplication {
-				c.SrcSysSQL.Exec(t, fmt.Sprintf(`ALTER TENANT '%s' SET REPLICATION EXPIRATION WINDOW ='1ms'`, c.Args.SrcTenantName))
 				jobutils.WaitForJobToCancel(c.T, c.DestSysSQL, jobspb.JobID(replicationJobID))
 				jobutils.WaitForJobToFail(c.T, c.SrcSysSQL, jobspb.JobID(producerJobID))
 			}
 
+			// Check if the producer job has released protected timestamp.
 			requireReleasedProducerPTSRecord(t, ctx, c.SrcSysServer, jobspb.JobID(producerJobID))
 
 			// Check if the replication job has released protected timestamp.
@@ -1046,7 +1041,7 @@ func TestTenantStreamingShowTenant(t *testing.T) {
 	require.Equal(t, "replicating", status)
 	require.Equal(t, "none", serviceMode)
 	require.Equal(t, "source", source)
-	expectedURI, err := redactSourceURI(c.SrcURL.String())
+	expectedURI, err := streamclient.RedactSourceURI(c.SrcURL.String())
 	require.NoError(t, err)
 	require.Equal(t, expectedURI, sourceUri)
 	require.Equal(t, ingestionJobID, jobId)
@@ -1209,7 +1204,8 @@ func TestLoadProducerAndIngestionProgress(t *testing.T) {
 func TestStreamingRegionalConstraint(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
-	skip.UnderRace(t, "takes too long under race")
+	skip.UnderStressRace(t, "takes too long under stress race")
+	skip.UnderStress(t, "the allocator machinery stuggles with cpu contention, which can cause the test to timeout")
 
 	ctx := context.Background()
 	regions := []string{"mars", "venus", "mercury"}
@@ -1280,7 +1276,7 @@ func TestStreamingRegionalConstraint(t *testing.T) {
 func TestStreamingMismatchedMRDatabase(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
-	skip.UnderDuress(t, "multi node c2c is very flaky")
+	skip.UnderStressRace(t, "takes too long under stress race")
 
 	ctx := context.Background()
 	regions := []string{"mars", "venus", "mercury"}
@@ -1307,7 +1303,10 @@ func TestStreamingMismatchedMRDatabase(t *testing.T) {
 	srcTime := c.SrcCluster.Server(0).Clock().Now()
 	c.Cutover(producerJobID, ingestionJobID, srcTime.GoTime(), false)
 
-	defer c.StartDestTenant(ctx, nil, 0)()
+	cleanupTenant := c.StartDestTenant(ctx, nil)
+	defer func() {
+		require.NoError(t, cleanupTenant())
+	}()
 
 	// Check how MR primitives have replicated to non-mr stand by cluster
 	t.Run("mr db only with primary region", func(t *testing.T) {
@@ -1358,7 +1357,7 @@ WHERE
 func TestStreamingZoneConfigsMismatchedRegions(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
-	skip.UnderDuress(t, "multi node c2c is very flaky")
+	skip.UnderStressRace(t, "takes too long under stress race")
 
 	ctx := context.Background()
 	regions := []string{"mars", "venus", "mercury"}
@@ -1382,7 +1381,10 @@ func TestStreamingZoneConfigsMismatchedRegions(t *testing.T) {
 	srcTime := c.SrcCluster.Server(0).Clock().Now()
 	c.Cutover(producerJobID, ingestionJobID, srcTime.GoTime(), false)
 
-	defer c.StartDestTenant(ctx, nil, 0)()
+	cleanupTenant := c.StartDestTenant(ctx, nil)
+	defer func() {
+		require.NoError(t, cleanupTenant())
+	}()
 
 	// Note that the unsatisfiable zone config does not appear in the create statement.
 	var res string

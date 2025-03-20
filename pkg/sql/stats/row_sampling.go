@@ -1,12 +1,7 @@
 // Copyright 2017 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package stats
 
@@ -49,7 +44,6 @@ type SampledRow struct {
 type SampleReservoir struct {
 	samples  []SampledRow
 	colTypes []*types.T
-	da       tree.DatumAlloc
 	ra       rowenc.EncDatumRowAlloc
 	memAcc   *mon.BoundAccount
 
@@ -252,17 +246,20 @@ func (sr *SampleReservoir) copyRow(
 		// the encoded bytes. The encoded bytes would have been scanned in a batch
 		// of ~10000 rows, so we must delete the reference to allow the garbage
 		// collector to release the memory from the batch.
-		if err := src[i].EnsureDecoded(sr.colTypes[i], &sr.da); err != nil {
+		if err := src[i].EnsureDecoded(sr.colTypes[i], nil /* da */); err != nil {
 			return err
 		}
 		beforeSize := dst[i].Size()
 		dst[i] = rowenc.DatumToEncDatum(sr.colTypes[i], src[i].Datum)
 		afterSize := dst[i].Size()
 
-		// If the datum is too large, truncate it.
+		// If the datum is too large, truncate it (this also performs a copy).
+		// Otherwise, just perform a copy.
 		if afterSize > uintptr(maxBytesPerSample) {
 			dst[i].Datum = truncateDatum(evalCtx, dst[i].Datum, maxBytesPerSample)
 			afterSize = dst[i].Size()
+		} else {
+			dst[i].Datum = deepCopyDatum(dst[i].Datum)
 		}
 
 		// Perform memory accounting.
@@ -339,6 +336,43 @@ func truncateString(s string, maxBytes int) string {
 	// Copy the truncated string so that the memory from the longer string can
 	// be garbage collected.
 	b := make([]byte, last)
+	copy(b, s)
+	return string(b)
+}
+
+// deepCopyDatum performs a deep copy for datums such as DString to remove any
+// references to the kv batch and allow the batch to be garbage collected.
+// Note: this function is currently only called for key-encoded datums. Update
+// the calling function if there is a need to call this for value-encoded
+// datums as well.
+func deepCopyDatum(d tree.Datum) tree.Datum {
+	switch t := d.(type) {
+	case *tree.DString:
+		return tree.NewDString(deepCopyString(string(*t)))
+
+	case *tree.DCollatedString:
+		return &tree.DCollatedString{
+			Contents: deepCopyString(t.Contents),
+			Locale:   t.Locale,
+			Key:      t.Key,
+		}
+
+	case *tree.DOidWrapper:
+		return &tree.DOidWrapper{
+			Wrapped: deepCopyDatum(t.Wrapped),
+			Oid:     t.Oid,
+		}
+
+	default:
+		// We do not collect stats on JSON, and other types do not require a deep
+		// copy (or they are already copied during decoding).
+		return d
+	}
+}
+
+// deepCopyString performs a deep copy of a string.
+func deepCopyString(s string) string {
+	b := make([]byte, len(s))
 	copy(b, s)
 	return string(b)
 }

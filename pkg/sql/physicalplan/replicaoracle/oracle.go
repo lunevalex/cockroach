@@ -1,12 +1,7 @@
 // Copyright 2019 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 // Package replicaoracle provides functionality for physicalplan to choose a
 // replica for a range.
@@ -35,8 +30,7 @@ type Policy byte
 var (
 	// RandomChoice chooses lease replicas randomly.
 	RandomChoice = RegisterPolicy(newRandomOracle)
-	// BinPackingChoice gives preference to leaseholders if possible, otherwise
-	// bin-packs the choices
+	// BinPackingChoice bin-packs the choices.
 	BinPackingChoice = RegisterPolicy(newBinPackingOracle)
 	// ClosestChoice chooses the node closest to the current node.
 	ClosestChoice = RegisterPolicy(newClosestOracle)

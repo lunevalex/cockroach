@@ -1,12 +1,7 @@
 // Copyright 2017 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package spanset
 
@@ -14,7 +9,6 @@ import (
 	"bytes"
 	"context"
 	"fmt"
-	"time"
 
 	"github.com/cockroachdb/cockroach/pkg/keys"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
@@ -465,11 +459,9 @@ func (s spanSetReader) Closed() bool {
 }
 
 func (s spanSetReader) MVCCIterate(
-	ctx context.Context,
 	start, end roachpb.Key,
 	iterKind storage.MVCCIterKind,
 	keyTypes storage.IterKeyType,
-	readCategory storage.ReadCategory,
 	f func(storage.MVCCKeyValue, storage.MVCCRangeKeyStack) error,
 ) error {
 	if s.spansOnly {
@@ -481,13 +473,13 @@ func (s spanSetReader) MVCCIterate(
 			return err
 		}
 	}
-	return s.r.MVCCIterate(ctx, start, end, iterKind, keyTypes, readCategory, f)
+	return s.r.MVCCIterate(start, end, iterKind, keyTypes, f)
 }
 
 func (s spanSetReader) NewMVCCIterator(
-	ctx context.Context, iterKind storage.MVCCIterKind, opts storage.IterOptions,
+	iterKind storage.MVCCIterKind, opts storage.IterOptions,
 ) (storage.MVCCIterator, error) {
-	mvccIter, err := s.r.NewMVCCIterator(ctx, iterKind, opts)
+	mvccIter, err := s.r.NewMVCCIterator(iterKind, opts)
 	if err != nil {
 		return nil, err
 	}
@@ -497,10 +489,8 @@ func (s spanSetReader) NewMVCCIterator(
 	return NewIteratorAt(mvccIter, s.spans, s.ts), nil
 }
 
-func (s spanSetReader) NewEngineIterator(
-	ctx context.Context, opts storage.IterOptions,
-) (storage.EngineIterator, error) {
-	engineIter, err := s.r.NewEngineIterator(ctx, opts)
+func (s spanSetReader) NewEngineIterator(opts storage.IterOptions) (storage.EngineIterator, error) {
+	engineIter, err := s.r.NewEngineIterator(opts)
 	if err != nil {
 		return nil, err
 	}
@@ -518,8 +508,8 @@ func (s spanSetReader) ConsistentIterators() bool {
 }
 
 // PinEngineStateForIterators implements the storage.Reader interface.
-func (s spanSetReader) PinEngineStateForIterators(readCategory storage.ReadCategory) error {
-	return s.r.PinEngineStateForIterators(readCategory)
+func (s spanSetReader) PinEngineStateForIterators() error {
+	return s.r.PinEngineStateForIterators()
 }
 
 type spanSetWriter struct {
@@ -767,12 +757,6 @@ type spanSetBatch struct {
 
 var _ storage.Batch = spanSetBatch{}
 
-func (s spanSetBatch) NewBatchOnlyMVCCIterator(
-	ctx context.Context, opts storage.IterOptions,
-) (storage.MVCCIterator, error) {
-	panic("unimplemented")
-}
-
 func (s spanSetBatch) ScanInternal(
 	ctx context.Context,
 	lower, upper roachpb.Key,
@@ -939,8 +923,6 @@ func NewEventuallyFileOnlySnapshot(
 }
 
 // WaitForFileOnly implements the storage.EventuallyFileOnlyReader interface.
-func (e *spanSetEFOS) WaitForFileOnly(
-	ctx context.Context, gracePeriodBeforeFlush time.Duration,
-) error {
-	return e.efos.WaitForFileOnly(ctx, gracePeriodBeforeFlush)
+func (e *spanSetEFOS) WaitForFileOnly(ctx context.Context) error {
+	return e.efos.WaitForFileOnly(ctx)
 }

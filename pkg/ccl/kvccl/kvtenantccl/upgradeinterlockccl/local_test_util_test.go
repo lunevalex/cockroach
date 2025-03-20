@@ -1,10 +1,7 @@
 // Copyright 2023 The Cockroach Authors.
 //
-// Licensed as a CockroachDB Enterprise file under the Cockroach Community
-// License (the "License"); you may not use this file except in compliance with
-// the License. You may obtain a copy of the License at
-//
-//     https://github.com/cockroachdb/cockroach/blob/master/licenses/CCL.txt
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package upgradeinterlockccl
 
@@ -58,13 +55,13 @@ func runTest(t *testing.T, variant sharedtestutil.TestVariant, test sharedtestut
 	defer close(resumeChannel)
 	defer close(completedChannel)
 
-	bv := clusterversion.Latest.Version()
-	msv := clusterversion.MinSupported.Version()
+	bv := clusterversion.TestingBinaryVersion
+	msv := clusterversion.TestingBinaryMinSupportedVersion
 
 	// If there are any non-empty errors expected on the upgrade, then we're
 	// expecting it to fail.
 	expectingUpgradeToFail := test.ExpUpgradeErr[variant][0] != ""
-	finalUpgradeVersion := clusterversion.Latest.Version()
+	finalUpgradeVersion := clusterversion.TestingBinaryVersion
 	if expectingUpgradeToFail {
 		finalUpgradeVersion = msv
 	}
@@ -118,8 +115,8 @@ func runTest(t *testing.T, variant sharedtestutil.TestVariant, test sharedtestut
 		slinstance.DefaultHeartBeat.Override(ctx, &s.SV, heartbeatOverride)
 	}
 
-	// Initialize the version to the MinSupportedVersion so that we can perform
-	// upgrades.
+	// Initialize the version to the BinaryMinSupportedVersion so that
+	// we can perform upgrades.
 	settings := cluster.MakeTestingClusterSettingsWithVersions(bv, msv, false /* initializeVersion */)
 	disableBackgroundTasks(settings)
 	require.NoError(t, clusterversion.Initialize(ctx, msv, &settings.SV))

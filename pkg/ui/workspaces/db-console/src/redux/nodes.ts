@@ -1,12 +1,7 @@
 // Copyright 2018 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 import _ from "lodash";
 import { createSelector } from "reselect";
@@ -314,6 +309,7 @@ export function nodeCapacityStats(n: INodeStatus): CapacityStats {
 export function getDisplayName(
   node: INodeStatus | NoConnection,
   livenessStatus = LivenessStatus.NODE_STATUS_LIVE,
+  includeAddress = true,
 ) {
   const decommissionedString =
     livenessStatus === LivenessStatus.NODE_STATUS_DECOMMISSIONED
@@ -324,7 +320,11 @@ export function getDisplayName(
     return `${decommissionedString}(n${node.from.nodeID})`;
   }
   // as the only other type possible right now is INodeStatus we don't have a type guard for that
-  return `${decommissionedString}(n${node.desc.node_id}) ${node.desc.address.address_field}`;
+  if (includeAddress) {
+    return `${decommissionedString}(n${node.desc.node_id}) ${node.desc.address.address_field}`;
+  } else {
+    return `${decommissionedString}n${node.desc.node_id}`;
+  }
 }
 
 function isNoConnection(
@@ -351,6 +351,25 @@ export const nodeDisplayNameByIDSelector = createSelector(
         result[ns.desc.node_id] = getDisplayName(
           ns,
           livenessStatusByNodeID[ns.desc.node_id],
+          true,
+        );
+      });
+    }
+    return result;
+  },
+);
+
+export const nodeDisplayNameByIDSelectorWithoutAddress = createSelector(
+  partialNodeStatusesSelector,
+  livenessStatusByNodeIDSelector,
+  (nodeStatuses, livenessStatusByNodeID) => {
+    const result: { [key: string]: string } = {};
+    if (!_.isEmpty(nodeStatuses)) {
+      nodeStatuses.forEach(ns => {
+        result[ns.desc.node_id] = getDisplayName(
+          ns,
+          livenessStatusByNodeID[ns.desc.node_id],
+          false,
         );
       });
     }

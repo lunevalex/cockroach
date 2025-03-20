@@ -36,7 +36,7 @@ go_proto_library(
     proto = ":scpb_proto",
     visibility = ["//visibility:public"],
     deps = [
-        "//pkg/geo/geopb",
+        "//pkg/geo/geoindex",
         "//pkg/sql/catalog/catenumpb",
         "//pkg/sql/catalog/catpb",
         "//pkg/sql/sem/catid",  # keep
@@ -55,7 +55,7 @@ proto_library(
     strip_import_prefix = "/pkg",
     visibility = ["//visibility:public"],
     deps = [
-        "//pkg/geo/geopb:geopb_proto",
+        "//pkg/geo/geoindex:geoindex_proto",
         "//pkg/sql/catalog/catenumpb:catenumpb_proto",
         "//pkg/sql/catalog/catpb:catpb_proto",
         "//pkg/sql/sem/semenumpb:semenumpb_proto",
@@ -117,10 +117,7 @@ genrule(
 go_test(
     name = "scpb_test",
     srcs = ["element_collection_test.go"],
+    args = ["-test.timeout=295s"],
     embed = [":scpb"],
-    exec_properties = select({
-        "//build/toolchains:is_heavy": {"Pool": "heavy"},
-        "//conditions:default": {"Pool": "default"},
-    }),
     deps = ["@com_github_stretchr_testify//require"],
 )

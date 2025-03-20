@@ -1,10 +1,7 @@
 // Copyright 2022 The Cockroach Authors.
 //
-// Licensed as a CockroachDB Enterprise file under the Cockroach Community
-// License (the "License"); you may not use this file except in compliance with
-// the License. You may obtain a copy of the License at
-//
-//     https://github.com/cockroachdb/cockroach/blob/master/licenses/CCL.txt
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package cdceval
 
@@ -320,9 +317,10 @@ func normalizeAndPlan(
 	sc *tree.SelectClause,
 	splitFams bool,
 ) (norm *NormalizedSelectClause, withDiff bool, plan sql.CDCExpressionPlan, err error) {
-	if err := withPlanner(ctx, execCfg, schemaTS, user, schemaTS, sd,
+	if err := withPlanner(ctx, execCfg, user, schemaTS, sd,
 		func(ctx context.Context, execCtx sql.JobExecContext, cleanup func()) error {
 			defer cleanup()
+			defer configSemaForCDC(execCtx.SemaCtx())()
 
 			norm, withDiff, err = NormalizeExpression(ctx, execCtx, descr, schemaTS, target, sc, splitFams)
 			if err != nil {
@@ -337,7 +335,8 @@ func normalizeAndPlan(
 			plan, err = sql.PlanCDCExpression(ctx, execCtx,
 				norm.SelectStatementForFamily(), sql.WithExtraColumn(prevCol))
 			return err
-		}); err != nil {
+		},
+	); err != nil {
 		return nil, false, sql.CDCExpressionPlan{}, err
 	}
 	return norm, withDiff, plan, nil

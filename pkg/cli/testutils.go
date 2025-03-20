@@ -1,12 +1,7 @@
 // Copyright 2017 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package cli
 
@@ -33,7 +28,9 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/security/certnames"
 	"github.com/cockroachdb/cockroach/pkg/security/securitytest"
 	"github.com/cockroachdb/cockroach/pkg/security/username"
+	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
 	"github.com/cockroachdb/cockroach/pkg/sql/sqlstats"
+	"github.com/cockroachdb/cockroach/pkg/sql/stats"
 	"github.com/cockroachdb/cockroach/pkg/testutils/serverutils"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/errors"
@@ -100,6 +97,10 @@ type TestCLIParams struct {
 	// UseSystemTenant is used to force the test to target the system tenant
 	// in a shared process multitenant test.
 	UseSystemTenant bool
+
+	// DisableAutoStats is used to disable the collection of automatic table statistics
+	// for the entire cluster.
+	DisableAutoStats bool
 }
 
 // testTempFilePrefix is a sentinel marker to be used as the prefix of a
@@ -145,6 +146,11 @@ func newCLITestWithArgs(params TestCLIParams, argsFn func(args *base.TestServerA
 
 	c.cleanupFunc = func() error { return nil }
 
+	settings := cluster.MakeClusterSettings()
+	if params.DisableAutoStats {
+		stats.AutomaticStatisticsClusterMode.Override(context.Background(), &settings.SV, false)
+	}
+
 	if !params.NoServer {
 		if !params.Insecure {
 			c.cleanupFunc = securitytest.CreateTestCerts(certsDir)
@@ -154,6 +160,7 @@ func newCLITestWithArgs(params TestCLIParams, argsFn func(args *base.TestServerA
 			DefaultTestTenant: base.TestControlsTenantsExplicitly,
 
 			Insecure:      params.Insecure,
+			Settings:      settings,
 			SSLCertsDir:   c.certsDir,
 			StoreSpecs:    params.StoreSpecs,
 			Locality:      params.Locality,

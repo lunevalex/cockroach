@@ -1,12 +1,7 @@
 // Copyright 2014 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package allocatorimpl
 
@@ -8624,8 +8619,8 @@ func TestAllocatorFullDisks(t *testing.T) {
 				continue
 			}
 			ts := &testStores[j]
-			// Add [0,2) ranges to the node, simulating splits and data growth.
-			toAdd := alloc.randGen.Intn(2)
+			// Add [0,3) ranges to the node, simulating splits and data growth.
+			toAdd := alloc.randGen.Intn(3)
 			for k := 0; k < toAdd; k++ {
 				if rangesAdded < rangesToAdd {
 					ts.add(rangeSize, 0)

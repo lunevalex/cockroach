@@ -9,6 +9,7 @@ go_library(
     importpath = "github.com/cockroachdb/cockroach/pkg/util/mon",
     visibility = ["//visibility:public"],
     deps = [
+        "//pkg/settings",
         "//pkg/settings/cluster",
         "//pkg/sql/pgwire/pgcode",
         "//pkg/sql/pgwire/pgerror",
@@ -29,11 +30,8 @@ go_test(
     name = "mon_test",
     size = "small",
     srcs = ["bytes_usage_test.go"],
+    args = ["-test.timeout=55s"],
     embed = [":mon"],
-    exec_properties = select({
-        "//build/toolchains:is_heavy": {"Pool": "heavy"},
-        "//conditions:default": {"Pool": "default"},
-    }),
     deps = [
         "//pkg/settings/cluster",
         "//pkg/util/leaktest",

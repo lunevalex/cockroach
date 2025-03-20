@@ -1784,9 +1784,9 @@ query I
 SELECT count(descriptor_id)
   FROM (
         SELECT json_array_elements_text(
-                crdb_internal.pb_to_json('cockroach.sql.jobs.jobspb.Payload', value)->'descriptorIds'
+                crdb_internal.pb_to_json('cockroach.sql.jobs.jobspb.Payload', payload)->'descriptorIds'
                )::INT8 AS descriptor_id
-          FROM system.job_info WHERE info_key = 'legacy_payload'
+          FROM system.jobs
        )
  WHERE descriptor_id = ('test.public.t45985'::REGCLASS)::INT8;
 ----
@@ -3397,7 +3397,7 @@ ALTER TABLE t_99281 ADD COLUMN p INT DEFAULT unique_rowid(), ADD FOREIGN KEY (j)
 # The following statement is not supported using the legacy schema changer.
 skipif config local-legacy-schema-changer
 skipif config local-mixed-23.1
-statement error pq: foreign key violation: "t_99281" row j=0, i=[0-1] has no match in "t_99281_other"
+statement error pq: foreign key violation: "t_99281" row j=0, k=[0-1] has no match in "t_99281_other"
 ALTER TABLE t_99281 ALTER PRIMARY KEY USING COLUMNS (k), ADD FOREIGN KEY (j) REFERENCES t_99281_other;
 
 query TT
@@ -3474,7 +3474,7 @@ SET sql_safe_updates = false;
 statement error pgcode 2BP01 pq: cannot drop index "t_108974_f_i_j_idx" because function "f_108974" depends on it
 DROP INDEX t_108974_f@t_108974_f_i_j_idx;
 
-statement error pgcode 2BP01 pq: cannot drop index "t_108974_f_pkey" because function "f_108974" depends on it
+statement error pgcode 0A000 pq: unimplemented: table \"t_108974_f\" has an index \(t_108974_f_i_j_idx\) that is still referenced by \"f_108974\"
 ALTER TABLE t_108974_f ALTER PRIMARY KEY USING COLUMNS (j);
 
 statement error pgcode 2BP01 pq: cannot drop index "t_108974_v_pkey" because view "v_108974" depends on it
@@ -3501,3 +3501,154 @@ CREATE TABLE t_110629 (a INT PRIMARY KEY);
 
 statement error subqueries are not allowed in table storage parameters
 ALTER TABLE t SET ( 'string' = EXISTS ( TABLE error ) );
+
+# When the new primary key does not have the same columns as the original primary
+# key schema changes recreating secondary indexes could fail incorrectly during validation,
+# if the secondary had some references to the old primary index key (for example
+# partial expressions). This was because an scan of the new secondary index would
+# not return the old primary key, which query execution was expecting.
+subtest 118626
+
+statement ok
+CREATE TABLE public.t_118626(n int primary key, b int NOT NULL, c int NOT NULL);
+INSERT INTO public.t_118626 VALUES(1, 2, 3);
+
+statement ok
+CREATE UNIQUE INDEX ON public.t_118626(c) WHERE n>= 1;
+
+statement ok
+ALTER TABLE public.t_118626 ALTER PRIMARY KEY USING COLUMNS(b);
+
+# Regression test to make sure that we can drop and re-add a CHECK constraint
+# with the same name in one statement.
+subtest 120017
+
+statement ok
+CREATE TABLE t_120017 (
+  a INT PRIMARY KEY,
+  b TEXT,
+  c INT NOT NULL,
+  CHECK (b IN ('x', 'y'))
+)
+
+skipif config local-legacy-schema-changer
+statement ok
+ALTER TABLE t_120017
+DROP CONSTRAINT check_b,
+ADD CONSTRAINT check_b CHECK (b IN ('x', 'y', 'z'))
+
+query T
+SELECT crdb_internal.pb_to_json('desc', descriptor) #> '{table,mutations}'
+FROM system.descriptor
+WHERE id = 't_120017'::regclass::oid
+----
+NULL
+
+statement ok
+ALTER TABLE t_120017
+DROP CONSTRAINT "t_120017_pkey",
+ADD CONSTRAINT "t_120017_pkey" PRIMARY KEY (a, c)
+
+subtest end
+
+subtest add_default_empty_array
+
+statement ok
+CREATE TABLE t_114316 (i INT PRIMARY KEY)
+
+statement ok
+ALTER TABLE t_114316 ADD COLUMN a INT[] DEFAULT ARRAY[]::OID[]
+
+query T
+SELECT create_statement FROM [SHOW CREATE TABLE t_114316];
+----
+CREATE TABLE public.t_114316 (
+  i INT8 NOT NULL,
+  a INT8[] NULL DEFAULT ARRAY[]:::OID[],
+  CONSTRAINT t_114316_pkey PRIMARY KEY (i ASC)
+)
+
+subtest end
+
+subtest regression_test_alter_table_add_constraint_unique
+
+statement ok
+create table t_124546(a int);
+
+# Regression Test for https://github.com/cockroachdb/cockroach/issues/124546
+statement error pgcode 42601 variable sub-expressions are not allowed in EXPRESSION INDEX ELEMENT
+ALTER TABLE t_124546 ADD CONSTRAINT ident UNIQUE ( ( EXISTS ( TABLE error FOR READ ONLY ) ) DESC ) STORING ( ident , ident );
+
+subtest end
+
+# Regression tests for issue #137326. Add column with IF NOT EXIST.
+subtest add_col_if_not_exists
+
+statement ok
+CREATE TABLE t1_add ();
+
+statement ok
+ALTER TABLE t1_add ADD COLUMN c1 BIGINT;
+
+statement ok
+INSERT INTO t1_add VALUES (100);
+
+statement error pgcode 42601 pq: variable sub-expressions are not allowed in ON UPDATE
+ALTER TABLE t1_add ADD COLUMN IF NOT EXISTS c1 TEXT ON UPDATE EXISTS ( TABLE error );
+
+statement ok
+ALTER TABLE t1_add ADD COLUMN IF NOT EXISTS c1 TEXT ON UPDATE 10;
+
+query TT
+SHOW CREATE TABLE t1_add
+----
+t1_add  CREATE TABLE public.t1_add (
+          rowid INT8 NOT VISIBLE NOT NULL DEFAULT unique_rowid(),
+          c1 INT8 NULL,
+          CONSTRAINT t1_add_pkey PRIMARY KEY (rowid ASC)
+        )
+
+let $use_decl_sc
+SHOW use_declarative_schema_changer
+
+statement ok
+set use_declarative_schema_changer = 'unsafe_always';
+
+statement ok;
+BEGIN;
+ALTER TABLE t1_add DROP COLUMN c1;
+ALTER TABLE t1_add ADD COLUMN IF NOT EXISTS c1 date DEFAULT '2024-08-31';
+COMMIT;
+
+query T
+SELECT c1 FROM t1_add
+----
+2024-08-31 00:00:00 +0000 +0000
+
+query TT
+SHOW CREATE TABLE t1_add
+----
+t1_add  CREATE TABLE public.t1_add (
+          rowid INT8 NOT VISIBLE NOT NULL DEFAULT unique_rowid(),
+          c1 DATE NULL DEFAULT '2024-08-31':::DATE,
+          CONSTRAINT t1_add_pkey PRIMARY KEY (rowid ASC)
+        )
+
+statement ok
+DROP TABLE t1_add
+
+statement ok
+SET use_declarative_schema_changer = $use_decl_sc;
+
+subtest end
+
+subtest block_json_unique_in_mixed_version
+
+statement ok
+CREATE TABLE t136790 (a INT PRIMARY KEY)
+
+onlyif config local-mixed-23.1
+statement error column b is of type jsonb and thus is not indexable
+ALTER TABLE t136790 ADD COLUMN b JSONB UNIQUE
+
+subtest end

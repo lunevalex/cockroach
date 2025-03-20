@@ -1,18 +1,12 @@
 // Copyright 2023 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package scexec
 
 import (
 	"context"
-	"sort"
 
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/catalogkeys"
@@ -136,11 +130,8 @@ func (s *immediateState) exec(ctx context.Context, c Catalog) error {
 	s.descriptorsToDelete.ForEach(func(id descpb.ID) {
 		s.modifiedDescriptors.Remove(id)
 	})
-	for _, newDescID := range getOrderedNewDescriptorIDs(s.newDescriptors) {
-		// Create new descs by the ascending order of their ID. This determinism
-		// helps avoid flakes in end-to-end tests in which we assert a particular
-		// order of desc upsertion.
-		if err := c.CreateOrUpdateDescriptor(ctx, s.newDescriptors[newDescID]); err != nil {
+	for _, desc := range s.newDescriptors {
+		if err := c.CreateOrUpdateDescriptor(ctx, desc); err != nil {
 			return err
 		}
 	}
@@ -183,18 +174,4 @@ func (s *immediateState) exec(ctx context.Context, c Catalog) error {
 		c.InitializeSequence(s.id, s.startVal)
 	}
 	return c.Validate(ctx)
-}
-
-// getOrderedNewDescriptorIDs returns ids in `newDescriptors` in ascending order.
-func getOrderedNewDescriptorIDs(
-	newDescriptors map[descpb.ID]catalog.MutableDescriptor,
-) []descpb.ID {
-	res := make([]descpb.ID, 0, len(newDescriptors))
-	for id := range newDescriptors {
-		res = append(res, id)
-	}
-	sort.Slice(res, func(i, j int) bool {
-		return res[i] < res[j]
-	})
-	return res
 }

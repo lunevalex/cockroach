@@ -1,12 +1,7 @@
 // Copyright 2016 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package rowexec
 
@@ -261,10 +256,14 @@ func newAggregator(
 	if spec.IsRowCount() {
 		return newCountAggregator(ctx, flowCtx, processorID, input, post)
 	}
-	if len(spec.OrderedGroupCols) == len(spec.GroupCols) {
-		return newOrderedAggregator(ctx, flowCtx, processorID, spec, input, post)
+	needHash, err := execagg.NeedHashAggregator(spec)
+	if err != nil {
+		return nil, err
 	}
-	return newHashAggregator(ctx, flowCtx, processorID, spec, input, post)
+	if needHash {
+		return newHashAggregator(ctx, flowCtx, processorID, spec, input, post)
+	}
+	return newOrderedAggregator(ctx, flowCtx, processorID, spec, input, post)
 }
 
 func newHashAggregator(

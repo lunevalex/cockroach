@@ -1,12 +1,7 @@
 // Copyright 2018 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package norm
 
@@ -45,6 +40,41 @@ func (c *CustomFuncs) HasHoistableSubquery(scalar opt.ScalarExpr) bool {
 }
 
 func (c *CustomFuncs) deriveHasHoistableSubquery(scalar opt.ScalarExpr) bool {
+	if c.deriveHasUnhoistableExpr(scalar) {
+		// Some expressions disqualify subquery-hoisting entirely.
+		return false
+	}
+	return c.deriveHasHoistableSubqueryImpl(scalar)
+}
+
+// deriveHasUnhoistableExpr checks for expressions within the given scalar
+// expression which cannot be hoisted. This is necessary beyond existing
+// volatility checks because of #97432: when a subquery-hoisting rule is
+// triggered, *all* correlated subqueries are hoisted, not just the leak-proof
+// subqueries. Therefore, it is necessary for correctness to avoid hoisting
+// entirely in the presence of certain expressions.
+func (c *CustomFuncs) deriveHasUnhoistableExpr(expr opt.Expr) bool {
+	switch t := expr.(type) {
+	case *memo.BarrierExpr:
+		// An optimization barrier indicates the presence of an expression which
+		// cannot be reordered with other expressions.
+		return true
+	case *memo.UDFCallExpr:
+		if t.TailCall {
+			// A routine with the "tail-call" property cannot be reordered with other
+			// expressions, since it may then no longer be in tail-call position.
+			return true
+		}
+	}
+	for i := 0; i < expr.ChildCount(); i++ {
+		if c.deriveHasUnhoistableExpr(expr.Child(i)) {
+			return true
+		}
+	}
+	return false
+}
+
+func (c *CustomFuncs) deriveHasHoistableSubqueryImpl(scalar opt.ScalarExpr) bool {
 	switch t := scalar.(type) {
 	case *memo.SubqueryExpr:
 		return !t.Input.Relational().OuterCols.Empty()
@@ -1210,6 +1240,10 @@ func (c *CustomFuncs) tryRemapOuterCols(
 // cycles. Any other rules that reuse this logic should reconsider the
 // simplification made in getSubstituteColsSetOp.
 //
+// NOTE: care must be taken for operators that may aggregate or "group" rows.
+// If rows for which the outer-column equality holds are grouped together with
+// those for which it does not, the result set will be incorrect (see #130001).
+//
 // getSubstituteColsRelExpr copies substituteCols before performing any
 // modifications, so the original ColSet is not mutated.
 func (c *CustomFuncs) getSubstituteColsRelExpr(
@@ -1245,16 +1279,29 @@ func (c *CustomFuncs) getSubstituteColsRelExpr(
 		*memo.SemiJoinApplyExpr, *memo.AntiJoinExpr, *memo.AntiJoinApplyExpr:
 		// [PushSelectIntoJoinLeft]
 		// [PushSelectCondLeftIntoJoinLeftAndRight]
+		// NOTE: These join variants do perform "grouping" operations, but only on
+		// the right input, for which we do not push down the equality.
 		substituteCols = getSubstituteColsLeftSemiAntiJoin(t, substituteCols)
 	case *memo.GroupByExpr, *memo.DistinctOnExpr:
 		// [PushSelectIntoGroupBy]
-		// Filters must refer only to grouping and ConstAgg columns.
+		// Filters must refer only to grouping columns. This ensures that the rows
+		// that satisfy the outer-column equality are grouped separately from those
+		// that do not. The rows that do not satisfy the equality will therefore not
+		// affect the values of the rows that do, and they will be filtered out
+		// later, ensuring that the transformation does not change the result set.
+		// See also #130001.
+		//
+		// NOTE: this is more restrictive than PushSelectIntoGroupBy, which also
+		// allows references to ConstAgg columns.
 		private := t.Private().(*memo.GroupingPrivate)
-		aggs := t.Child(1).(*memo.AggregationsExpr)
-		substituteCols.IntersectionWith(c.GroupingAndConstCols(private, *aggs))
+		substituteCols.IntersectionWith(private.GroupingCols)
 	case *memo.UnionExpr, *memo.UnionAllExpr, *memo.IntersectExpr,
 		*memo.IntersectAllExpr, *memo.ExceptExpr, *memo.ExceptAllExpr:
 		// [PushFilterIntoSetOp]
+		// NOTE: the distinct variants (Union, Intersect, Except) de-duplicate
+		// across all columns, so the requirement that filters only reference
+		// grouping columns is always satisfied. See the comment for DistinctOn
+		// above.
 		substituteCols = getSubstituteColsSetOp(t, substituteCols)
 	default:
 		// Filter push-down through this expression is not supported.

@@ -1,12 +1,7 @@
 // Copyright 2019 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package batcheval
 
@@ -162,14 +157,18 @@ func TestLeaseTransferForwardsStartTime(t *testing.T) {
 			// The previous lease should have been revoked.
 			require.Equal(t, prevLease.Sequence, evalCtx.RevokedLeaseSeq)
 
-			// The prior read summary should reflect the maximum read times served
-			// under the current leaseholder, even if this time is below the proposed
-			// lease start time.
+			// The prior read summary should reflect the maximum read times
+			// served under the current leaseholder.
 			propReadSum, err := readsummary.Load(ctx, batch, desc.RangeID)
 			require.NoError(t, err)
 			require.NotNil(t, propReadSum, "should write prior read summary")
-			require.Equal(t, maxPriorReadTS, propReadSum.Local.LowWater)
-			require.Equal(t, maxPriorReadTS, propReadSum.Global.LowWater)
+			if servedFutureReads {
+				require.Equal(t, maxPriorReadTS, propReadSum.Local.LowWater)
+				require.Equal(t, maxPriorReadTS, propReadSum.Global.LowWater)
+			} else {
+				require.Equal(t, propLease.Start.ToTimestamp(), propReadSum.Local.LowWater)
+				require.Equal(t, propLease.Start.ToTimestamp(), propReadSum.Global.LowWater)
+			}
 		})
 	})
 }

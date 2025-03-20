@@ -1,12 +1,7 @@
 // Copyright 2014 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package batcheval
 
@@ -35,19 +30,14 @@ func ReverseScan(
 	h := cArgs.Header
 	reply := resp.(*kvpb.ReverseScanResponse)
 
-	var lockTableForSkipLocked storage.LockTableView
-	if h.WaitPolicy == lock.WaitPolicy_SkipLocked {
-		lockTableForSkipLocked = newRequestBoundLockTableView(
-			readWriter, cArgs.Concurrency, h.Txn, args.KeyLockingStrength,
-		)
-		defer lockTableForSkipLocked.Close()
+	if err := maybeDisallowSkipLockedRequest(h, args.KeyLockingStrength); err != nil {
+		return result.Result{}, err
 	}
 
 	var res result.Result
 	var scanRes storage.MVCCScanResult
 	var err error
 
-	readCategory := ScanReadCategory(cArgs.EvalCtx.AdmissionHeader())
 	opts := storage.MVCCScanOptions{
 		Inconsistent:          h.ReadConsistency != kvpb.CONSISTENT,
 		SkipLocked:            h.WaitPolicy == lock.WaitPolicy_SkipLocked,
@@ -62,9 +52,8 @@ func ReverseScan(
 		FailOnMoreRecent:      args.KeyLockingStrength != lock.None,
 		Reverse:               true,
 		MemoryAccount:         cArgs.EvalCtx.GetResponseMemoryAccount(),
-		LockTable:             lockTableForSkipLocked,
+		LockTable:             cArgs.Concurrency,
 		DontInterleaveIntents: cArgs.DontInterleaveIntents,
-		ReadCategory:          readCategory,
 	}
 
 	switch args.ScanFormat {
@@ -124,7 +113,7 @@ func ReverseScan(
 			ctx, readWriter, h.Txn, args.KeyLockingStrength, args.KeyLockingDurability,
 			args.ScanFormat, &scanRes, cArgs.Stats, cArgs.EvalCtx.ClusterSettings())
 		if err != nil {
-			return result.Result{}, err
+			return result.Result{}, maybeInterceptDisallowedSkipLockedUsage(h, err)
 		}
 		res.Local.AcquiredLocks = acquiredLocks
 	}

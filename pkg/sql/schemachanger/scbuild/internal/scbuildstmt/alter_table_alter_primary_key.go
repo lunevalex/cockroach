@@ -1,12 +1,7 @@
 // Copyright 2022 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package scbuildstmt
 
@@ -106,7 +101,7 @@ func alterPrimaryKey(b BuildCtx, tn *tree.TableName, tbl *scpb.Table, t alterPri
 	b.LogEventForExistingTarget(inflatedChain.finalSpec.primary)
 
 	// Recreate all secondary indexes.
-	recreateAllSecondaryIndexes(b, tbl, inflatedChain.finalSpec.primary, inflatedChain.inter2Spec.primary)
+	recreateAllSecondaryIndexes(b, t, tbl, inflatedChain.finalSpec.primary, inflatedChain.inter2Spec.primary)
 
 	// Drop the rowid column, if applicable.
 	rowidToDrop := getPrimaryIndexDefaultRowIDColumn(b, tbl.TableID, inflatedChain.oldSpec.primary.IndexID)
@@ -658,7 +653,10 @@ func checkIfConstraintNameAlreadyExists(b BuildCtx, tbl *scpb.Table, t alterPrim
 // columns remain the same in the face of a primary key change, the key suffix
 // columns or the stored columns may not.
 func recreateAllSecondaryIndexes(
-	b BuildCtx, tbl *scpb.Table, newPrimaryIndex, sourcePrimaryIndex *scpb.PrimaryIndex,
+	b BuildCtx,
+	t alterPrimaryKeySpec,
+	tbl *scpb.Table,
+	newPrimaryIndex, sourcePrimaryIndex *scpb.PrimaryIndex,
 ) {
 	publicTableElts := b.QueryByID(tbl.TableID).Filter(publicTargetFilter)
 	// Generate all possible key suffix columns.
@@ -677,15 +675,46 @@ func recreateAllSecondaryIndexes(
 	// Recreate each secondary index.
 	scpb.ForEachSecondaryIndex(publicTableElts, func(_ scpb.Status, _ scpb.TargetStatus, idx *scpb.SecondaryIndex) {
 		out := makeIndexSpec(b, idx.TableID, idx.IndexID)
+		// If this index is referenced by any other objects, then we wil
+		// block the primary key swap, since we don't have a mechanism to
+		// fix these references yet.
+		// TODO(fqazi): As a part of #124131 we should add logic to fix
+		// these references.
+		backrefs := b.BackReferences(idx.TableID)
+		functions := backrefs.FilterFunctionBody().Elements()
+		for _, function := range functions {
+			for _, tableRef := range function.UsesTables {
+				if tableRef.TableID == idx.TableID && tableRef.IndexID == idx.IndexID {
+					panic(unimplemented.NewWithIssuef(124131,
+						"table %q has an index (%s) that is still referenced by %q",
+						publicTableElts.FilterNamespace().MustGetOneElement().Name,
+						out.name.Name,
+						b.QueryByID(function.FunctionID).FilterFunctionName().MustGetOneElement().Name))
+				}
+			}
+		}
+		views := backrefs.FilterView().Elements()
+		for _, view := range views {
+			for _, f := range view.ForwardReferences {
+				if f.ToID == idx.TableID && f.IndexID == idx.IndexID {
+					panic(unimplemented.NewWithIssuef(124131,
+						"table %q has an index (%s) that is still referenced by %q",
+						publicTableElts.FilterNamespace().MustGetOneElement().Name,
+						out.name.Name,
+						b.QueryByID(view.ViewID).FilterNamespace().MustGetOneElement().Name))
+				}
+			}
+		}
+
 		var idxColIDs catalog.TableColSet
 		inColumns := make([]indexColumnSpec, 0, len(out.columns))
 		// Determine which columns end up in the new secondary index.
 		{
 			var largestKeyOrdinal uint32
 			var invertedColumnID catid.ColumnID
-			// First, add all key columns.
-			// Also determine the ID of the inverted column, if applicable.
 			for _, ic := range out.columns {
+				// First, add all key columns.
+				// Also determine the ID of the inverted column, if applicable.
 				if ic.Kind == scpb.IndexColumn_KEY {
 					idxColIDs.Add(ic.ColumnID)
 					inColumns = append(inColumns, indexColumnSpec{
@@ -699,7 +728,17 @@ func recreateAllSecondaryIndexes(
 					}
 				}
 			}
-			// Second, determine the key suffix columns: add all primary key columns
+			// Next, add all the stored columns.
+			for _, ic := range out.columns {
+				if ic.Kind == scpb.IndexColumn_STORED && !idxColIDs.Contains(ic.ColumnID) {
+					idxColIDs.Add(ic.ColumnID)
+					inColumns = append(inColumns, indexColumnSpec{
+						columnID: ic.ColumnID,
+						kind:     scpb.IndexColumn_STORED,
+					})
+				}
+			}
+			// Finally, determine the key suffix columns: add all primary key columns
 			// which have not already been added to the secondary index.
 			for _, ics := range newKeySuffix {
 				if !idxColIDs.Contains(ics.columnID) {
@@ -726,21 +765,9 @@ func recreateAllSecondaryIndexes(
 					))
 				}
 			}
-			// Finally, add all the stored columns if it is not already a key or key suffix column.
-			for _, ic := range out.columns {
-				if ic.Kind == scpb.IndexColumn_STORED && !idxColIDs.Contains(ic.ColumnID) {
-					idxColIDs.Add(ic.ColumnID)
-					inColumns = append(inColumns, indexColumnSpec{
-						columnID: ic.ColumnID,
-						kind:     scpb.IndexColumn_STORED,
-					})
-				}
-			}
 		}
 		in, temp := makeSwapIndexSpec(b, out, sourcePrimaryIndex.IndexID, inColumns, false /* inUseTempIDs */)
-		if b.ClusterSettings().Version.IsActive(b, clusterversion.V23_1) {
-			in.secondary.RecreateSourceIndexID = out.indexID()
-		}
+		in.secondary.RecreateSourceIndexID = out.indexID()
 		out.apply(b.Drop)
 		in.apply(b.Add)
 		temp.apply(b.AddTransient)

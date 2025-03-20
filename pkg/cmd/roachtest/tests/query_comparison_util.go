@@ -1,12 +1,7 @@
 // Copyright 2022 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package tests
 
@@ -22,6 +17,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/cluster"
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/option"
@@ -108,7 +104,7 @@ func runQueryComparison(
 			return
 		}
 		c.Stop(clusterCtx, t.L(), option.DefaultStopOpts())
-		c.Wipe(clusterCtx, false /* preserveCerts */)
+		c.Wipe(clusterCtx)
 	}
 }
 
@@ -324,13 +320,15 @@ func runOneRoundQueryComparison(
 
 		// Initialize a smither that generates only deterministic SELECT statements.
 		smither, err := sqlsmith.NewSmither(conn, rnd,
-			sqlsmith.DisableMutations(), sqlsmith.DisableNondeterministicFns(), sqlsmith.DisableLimits(),
+			sqlsmith.DisableMutations(), sqlsmith.DisableNondeterministicFns(),
+			sqlsmith.DisableNondeterministicLimits(),
 			sqlsmith.UnlikelyConstantPredicate(), sqlsmith.FavorCommonData(),
 			sqlsmith.UnlikelyRandomNulls(), sqlsmith.DisableCrossJoins(),
 			sqlsmith.DisableIndexHints(), sqlsmith.DisableWith(), sqlsmith.DisableDecimals(),
 			sqlsmith.LowProbabilityWhereClauseWithJoinTables(),
 			sqlsmith.SetComplexity(.3),
 			sqlsmith.SetScalarComplexity(.1),
+			sqlsmith.SimpleNames(),
 		)
 		if err != nil {
 			t.Fatal(err)
@@ -398,7 +396,9 @@ func newMutatingSmither(
 		sqlsmith.FavorCommonData(), sqlsmith.UnlikelyRandomNulls(),
 		sqlsmith.DisableInsertSelect(), sqlsmith.DisableCrossJoins(),
 		sqlsmith.SetComplexity(.05),
-		sqlsmith.SetScalarComplexity(.01))
+		sqlsmith.SetScalarComplexity(.01),
+		sqlsmith.SimpleNames(),
+	)
 	if disableDelete {
 		smitherOpts = append(smitherOpts, sqlsmith.InsUpdOnly())
 	} else {
@@ -447,11 +447,17 @@ func (h *queryComparisonHelper) runQuery(stmt string) ([][]string, error) {
 	// such a scenario, since the stmt didn't execute successfully, it won't get
 	// logged by the caller).
 	h.logStmt(fmt.Sprintf("-- %s: %s", timeutil.Now(),
-		// Remove all newline symbols to log this stmt as a single line. This
-		// way this auxiliary logging takes up less space (if the stmt executes
+		// Replace all control characters, including newline symbols, with a
+		// single space to log this stmt as a single line. This way this
+		// auxiliary logging takes up less space (if the stmt executes
 		// successfully, it'll still get logged with the nice formatting).
-		strings.ReplaceAll(stmt, "\n", "")),
-	)
+		strings.Map(func(r rune) rune {
+			if unicode.IsControl(r) {
+				return ' '
+			}
+			return r
+		}, stmt),
+	))
 
 	runQueryImpl := func(stmt string) ([][]string, error) {
 		rows, err := h.conn.Query(stmt)
@@ -529,6 +535,7 @@ func (h *queryComparisonHelper) makeError(err error, msg string) error {
 	return errors.Wrapf(err, "%s. %d statements run", msg, h.stmtNo)
 }
 
+// joinAndSortRows sorts rows using string comparison.
 func joinAndSortRows(rowMatrix1, rowMatrix2 [][]string, sep string) (rows1, rows2 []string) {
 	for _, row := range rowMatrix1 {
 		rows1 = append(rows1, strings.Join(row[:], sep))
@@ -541,10 +548,79 @@ func joinAndSortRows(rowMatrix1, rowMatrix2 [][]string, sep string) (rows1, rows
 	return rows1, rows2
 }
 
+func needApproximateMatch(colType string) bool {
+	// On s390x, check that values for both float and decimal coltypes are
+	// approximately equal to take into account platform differences in floating
+	// point calculations. On other architectures, check float values only.
+	return (runtime.GOARCH == "s390x" && (colType == "DECIMAL" || colType == "[]DECIMAL")) ||
+		colType == "FLOAT4" || colType == "[]FLOAT4" ||
+		colType == "FLOAT8" || colType == "[]FLOAT8"
+}
+
+// sortRowsWithFloatComp is similar to joinAndSortRows, but it uses float
+// comparison for float columns (and decimal columns when on s390x).
+func sortRowsWithFloatComp(rowMatrix1, rowMatrix2 [][]string, colTypes []string) {
+	floatsLess := func(i, j int, rowMatrix [][]string) bool {
+		for idx := range colTypes {
+			if needApproximateMatch(colTypes[idx]) {
+				cmpFn := floatcmp.FloatsCmp
+				if strings.HasPrefix(colTypes[idx], "[]") {
+					cmpFn = floatcmp.FloatArraysCmp
+				}
+				res, err := cmpFn(rowMatrix[i][idx], rowMatrix[j][idx])
+				if err != nil {
+					panic(errors.NewAssertionErrorWithWrappedErrf(err, "error comparing floats %s and %s",
+						rowMatrix[i][idx], rowMatrix[j][idx]))
+				}
+				if res != 0 {
+					return res == -1
+				}
+			} else {
+				if rowMatrix[i][idx] != rowMatrix[j][idx] {
+					return rowMatrix[i][idx] < rowMatrix[j][idx]
+				}
+			}
+		}
+		return false
+	}
+
+	sort.Slice(rowMatrix1, func(i, j int) bool {
+		return floatsLess(i, j, rowMatrix1)
+	})
+	sort.Slice(rowMatrix2, func(i, j int) bool {
+		return floatsLess(i, j, rowMatrix2)
+	})
+}
+
+func trimDecimalTrailingZeroes(d string) string {
+	if !strings.Contains(d, ".") {
+		// The number is an integer - nothing to trim.
+		return d
+	}
+	d = strings.TrimRight(d, "0")
+	if d[len(d)-1] == '.' {
+		// We fully trimmed the fractional part, so we need to remove the
+		// dangling dot.
+		d = d[:len(d)-1]
+	}
+	return d
+}
+
+func trimDecimalsTrailingZeroesInArray(array string) string {
+	decimals := strings.Split(strings.Trim(array, "{}"), ",")
+	for i := range decimals {
+		decimals[i] = trimDecimalTrailingZeroes(decimals[i])
+	}
+	return "{" + strings.Join(decimals, ",") + "}"
+}
+
 // unsortedMatricesDiffWithFloatComp sorts and compares the rows in rowMatrix1
 // to rowMatrix2 and outputs a diff or message related to the comparison. If a
 // string comparison of the rows fails, and they contain floats or decimals, it
 // performs an approximate comparison of the values.
+// TODO(yuzefovich): if we extend this logic to handle COLLATED STRINGs in a
+// special way (i.e. using DB connection), then we can remove some code
+// introduced in #124677.
 func unsortedMatricesDiffWithFloatComp(
 	rowMatrix1, rowMatrix2 [][]string, colTypes []string,
 ) (string, error) {
@@ -556,51 +632,33 @@ func unsortedMatricesDiffWithFloatComp(
 	if len(rows1) != len(rows2) || len(colTypes) != len(rowMatrix1[0]) || len(colTypes) != len(rowMatrix2[0]) {
 		return result, nil
 	}
-	var needApproxMatch bool
-	for i := range colTypes {
-		// On s390x, check that values for both float and decimal coltypes are
-		// approximately equal to take into account platform differences in floating
-		// point calculations. On other architectures, check float values only.
-		if (runtime.GOARCH == "s390x" && colTypes[i] == "DECIMAL") ||
-			colTypes[i] == "FLOAT4" || colTypes[i] == "FLOAT8" {
-			needApproxMatch = true
+	var needCustomMatch bool
+	for _, colType := range colTypes {
+		if needApproximateMatch(colType) || colType == "DECIMAL" || colType == "[]DECIMAL" {
+			needCustomMatch = true
 			break
 		}
 	}
-	if !needApproxMatch {
+	if !needCustomMatch {
 		return result, nil
 	}
-	// Use an unlikely string as a separator so that we can make a comparison
-	// using sorted rows. We don't use the rows sorted above because splitting
-	// the rows could be ambiguous.
-	sep := ",unsortedMatricesDiffWithFloatComp separator,"
-	rows1, rows2 = joinAndSortRows(rowMatrix1, rowMatrix2, sep)
-	for i := range rows1 {
-		// Split the sorted rows.
-		row1 := strings.Split(rows1[i], sep)
-		row2 := strings.Split(rows2[i], sep)
+	sortRowsWithFloatComp(rowMatrix1, rowMatrix2, colTypes)
+	for i := range rowMatrix1 {
+		row1 := rowMatrix1[i]
+		row2 := rowMatrix2[i]
 
-		for j := range row1 {
-			if runtime.GOARCH == "s390x" && colTypes[j] == "DECIMAL" {
-				// On s390x, check that values for both float and decimal coltypes are
-				// approximately equal to take into account platform differences in floating
-				// point calculations. On other architectures, check float values only.
-				match, err := floatcmp.FloatsMatchApprox(row1[j], row2[j])
-				if err != nil {
-					return "", err
+		for j, colType := range colTypes {
+			if needApproximateMatch(colType) {
+				cmpFn := floatcmp.FloatsMatch
+				switch {
+				case runtime.GOARCH == "s390x" && strings.HasPrefix(colType, "[]"):
+					cmpFn = floatcmp.FloatArraysMatchApprox
+				case runtime.GOARCH == "s390x" && !strings.HasPrefix(colType, "[]"):
+					cmpFn = floatcmp.FloatsMatchApprox
+				case strings.HasPrefix(colType, "[]"):
+					cmpFn = floatcmp.FloatArraysMatch
 				}
-				if !match {
-					return result, nil
-				}
-			} else if colTypes[j] == "FLOAT4" || colTypes[j] == "FLOAT8" {
-				// Check that float values are approximately equal.
-				var err error
-				var match bool
-				if runtime.GOARCH == "s390x" {
-					match, err = floatcmp.FloatsMatchApprox(row1[j], row2[j])
-				} else {
-					match, err = floatcmp.FloatsMatch(row1[j], row2[j])
-				}
+				match, err := cmpFn(row1[j], row2[j])
 				if err != nil {
 					return "", err
 				}
@@ -608,6 +666,17 @@ func unsortedMatricesDiffWithFloatComp(
 					return result, nil
 				}
 			} else {
+				switch colType {
+				case "DECIMAL":
+					// For decimals, remove any trailing zeroes.
+					row1[j] = trimDecimalTrailingZeroes(row1[j])
+					row2[j] = trimDecimalTrailingZeroes(row2[j])
+				case "[]DECIMAL":
+					// For decimal arrays, remove any trailing zeroes from each
+					// decimal.
+					row1[j] = trimDecimalsTrailingZeroesInArray(row1[j])
+					row2[j] = trimDecimalsTrailingZeroesInArray(row2[j])
+				}
 				// Check that other columns are equal with a string comparison.
 				if row1[j] != row2[j] {
 					return result, nil
@@ -619,6 +688,9 @@ func unsortedMatricesDiffWithFloatComp(
 }
 
 // unsortedMatricesDiff sorts and compares rows of data.
+// TODO(yuzefovich): if we extend this logic to handle COLLATED STRINGs in a
+// special way (i.e. using DB connection), then we can remove some code
+// introduced in #124677.
 func unsortedMatricesDiff(rowMatrix1, rowMatrix2 [][]string) string {
 	var rows1 []string
 	for _, row := range rowMatrix1 {

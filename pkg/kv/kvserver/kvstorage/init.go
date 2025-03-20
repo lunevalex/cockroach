@@ -1,12 +1,7 @@
 // Copyright 2022 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package kvstorage
 
@@ -19,6 +14,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/keys"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvpb"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/kvserverpb"
+	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/logstore"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/stateloader"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/storage"
@@ -100,7 +96,7 @@ func checkCanInitializeEngine(ctx context.Context, eng storage.Engine) error {
 	//
 	// We use an EngineIterator to ensure that there are no keys that cannot be
 	// parsed as MVCCKeys (e.g. lock table keys) in the engine.
-	iter, err := eng.NewEngineIterator(ctx, storage.IterOptions{
+	iter, err := eng.NewEngineIterator(storage.IterOptions{
 		KeyTypes:   storage.IterKeyTypePointsAndRanges,
 		UpperBound: roachpb.KeyMax,
 	})
@@ -165,7 +161,7 @@ func IterateIDPrefixKeys(
 ) error {
 	rangeID := roachpb.RangeID(1)
 	// NB: Range-ID local keys have no versions and no intents.
-	iter, err := reader.NewMVCCIterator(ctx, storage.MVCCKeyIterKind, storage.IterOptions{
+	iter, err := reader.NewMVCCIterator(storage.MVCCKeyIterKind, storage.IterOptions{
 		UpperBound: keys.LocalRangeIDPrefix.PrefixEnd().AsRawKey(),
 	})
 	if err != nil {
@@ -267,7 +263,7 @@ func IterateRangeDescriptorsFromDisk(
 	}
 	lastReportTime := timeutil.Now()
 	kvToDesc := func(kv roachpb.KeyValue) error {
-		const reportPeriod = 10 * time.Second
+		const reportPeriod = 15 * time.Second
 		if timeutil.Since(lastReportTime) >= reportPeriod {
 			// Note: MVCCIterate scans and buffers 1000 keys at a time which could
 			// make the scan stats confusing. However, because this callback can't
@@ -413,47 +409,44 @@ func loadReplicas(ctx context.Context, eng storage.Engine) ([]Replica, error) {
 		}
 	}
 
-	// Load replicas from disk based on their RaftReplicaID and HardState.
-	//
 	// INVARIANT: all replicas have a persisted full ReplicaID (i.e. a "ReplicaID from disk").
+	//
+	// This invariant is true for replicas created in 22.1. Without further action, it
+	// would be violated for clusters that originated before 22.1. In this method, we
+	// backfill the ReplicaID (for initialized replicas) and we remove uninitialized
+	// replicas lacking a ReplicaID (see below for rationale).
+	//
+	// The migration can be removed when the KV host cluster MinSupportedVersion
+	// matches or exceeds 23.1 (i.e. once we know that a store has definitely
+	// started up on >=23.1 at least once).
+
+	// Collect all the RangeIDs that either have a RaftReplicaID or HardState. For
+	// unmigrated replicas we see only the HardState - that is how we detect
+	// replicas that still need to be migrated.
 	//
 	// TODO(tbg): tighten up the case where we see a RaftReplicaID but no HardState.
 	// This leads to the general desire to validate the internal consistency of the
 	// entire raft state (i.e. HardState, TruncatedState, Log).
 	{
-		logEvery := log.Every(10 * time.Second)
-		var i int
 		var msg kvserverpb.RaftReplicaID
 		if err := IterateIDPrefixKeys(ctx, eng, func(rangeID roachpb.RangeID) roachpb.Key {
 			return keys.RaftReplicaIDKey(rangeID)
 		}, &msg, func(rangeID roachpb.RangeID) error {
-			if logEvery.ShouldLog() && i > 0 { // only log if slow
-				log.Infof(ctx, "loaded replica ID for %d/%d replicas", i, len(s))
-			}
-			i++
 			s.setReplicaID(rangeID, msg.ReplicaID)
 			return nil
 		}); err != nil {
 			return nil, err
 		}
-		log.Infof(ctx, "loaded replica ID for %d/%d replicas", len(s), len(s))
 
-		logEvery = log.Every(10 * time.Second)
-		i = 0
 		var hs raftpb.HardState
 		if err := IterateIDPrefixKeys(ctx, eng, func(rangeID roachpb.RangeID) roachpb.Key {
 			return keys.RaftHardStateKey(rangeID)
 		}, &hs, func(rangeID roachpb.RangeID) error {
-			if logEvery.ShouldLog() && i > 0 { // only log if slow
-				log.Infof(ctx, "loaded Raft state for %d/%d replicas", i, len(s))
-			}
-			i++
 			s.setHardState(rangeID, hs)
 			return nil
 		}); err != nil {
 			return nil, err
 		}
-		log.Infof(ctx, "loaded Raft state for %d/%d replicas", len(s), len(s))
 	}
 	sl := make([]Replica, 0, len(s))
 	for _, repl := range s {
@@ -480,24 +473,13 @@ func LoadAndReconcileReplicas(ctx context.Context, eng storage.Engine) ([]Replic
 	if err != nil {
 		return nil, err
 	}
-	log.Infof(ctx, "loaded %d replicas", len(sl))
 
 	// Check invariants.
 	//
-	// TODO(erikgrinaker): consider moving this logic into loadReplicas.
-	logEvery := log.Every(10 * time.Second)
-	for i, repl := range sl {
-		// Log progress regularly, but not for the first replica (we only want to
-		// log when this is slow). The last replica is logged after iteration.
-		if logEvery.ShouldLog() && i > 0 {
-			log.Infof(ctx, "verified %d/%d replicas", i, len(sl))
-		}
-
-		// INVARIANT: a Replica always has a replica ID.
-		if repl.ReplicaID == 0 {
-			return nil, errors.AssertionFailedf("no RaftReplicaID for %s", repl.Desc)
-		}
-
+	// Migrate into RaftReplicaID for all replicas that need it.
+	var newIdx int
+	for _, repl := range sl {
+		var descReplicaID roachpb.ReplicaID
 		if repl.Desc != nil {
 			// INVARIANT: a Replica's RangeDescriptor always contains the local Store,
 			// i.e. a Store is a member of all of its local initialized Replicas.
@@ -505,15 +487,51 @@ func LoadAndReconcileReplicas(ctx context.Context, eng storage.Engine) ([]Replic
 			if !found {
 				return nil, errors.AssertionFailedf("s%d not found in %s", ident.StoreID, repl.Desc)
 			}
-			// INVARIANT: a Replica's ID always matches the descriptor.
-			if replDesc.ReplicaID != repl.ReplicaID {
+			if repl.ReplicaID != 0 && replDesc.ReplicaID != repl.ReplicaID {
 				return nil, errors.AssertionFailedf("conflicting RaftReplicaID %d for %s", repl.ReplicaID, repl.Desc)
 			}
+			descReplicaID = replDesc.ReplicaID
+		}
+
+		if repl.ReplicaID != 0 {
+			sl[newIdx] = repl
+			newIdx++
+			// RaftReplicaID present, no need to migrate.
+			continue
+		}
+
+		// Migrate into RaftReplicaID. This migration can be removed once the
+		// BinaryMinSupportedVersion is >= 23.1, and we can assert that
+		// repl.ReplicaID != 0 always holds.
+
+		if descReplicaID != 0 {
+			// Backfill RaftReplicaID for an initialized Replica.
+			if err := logstore.NewStateLoader(repl.RangeID).SetRaftReplicaID(ctx, eng, descReplicaID); err != nil {
+				return nil, errors.Wrapf(err, "backfilling ReplicaID for r%d", repl.RangeID)
+			}
+			repl.ReplicaID = descReplicaID
+			sl[newIdx] = repl
+			newIdx++
+			log.Eventf(ctx, "backfilled replicaID for initialized replica %s", repl.ID())
+		} else {
+			// We found an uninitialized replica that did not have a persisted
+			// ReplicaID. We can't determine the ReplicaID now, so we migrate by
+			// removing this uninitialized replica. This technically violates raft
+			// invariants if this replica has cast a vote, but the conditions under
+			// which this matters are extremely unlikely.
+			//
+			// TODO(tbg): if clearRangeData were in this package we could destroy more
+			// effectively even if for some reason we had in the past written state
+			// other than the HardState here (not supposed to happen, but still).
+			if err := eng.ClearUnversioned(logstore.NewStateLoader(repl.RangeID).RaftHardStateKey(), storage.ClearOptions{}); err != nil {
+				return nil, errors.Wrapf(err, "removing HardState for r%d", repl.RangeID)
+			}
+			log.Eventf(ctx, "removed legacy uninitialized replica for r%s", repl.RangeID)
+			// NB: removed from `sl` since we're not incrementing `newIdx`.
 		}
 	}
-	log.Infof(ctx, "verified %d/%d replicas", len(sl), len(sl))
 
-	return sl, nil
+	return sl[:newIdx], nil
 }
 
 // A NotBootstrappedError indicates that an engine has not yet been

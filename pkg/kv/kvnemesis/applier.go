@@ -1,12 +1,7 @@
 // Copyright 2020 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package kvnemesis
 
@@ -18,6 +13,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/kv"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvnemesis/kvnemesisutil"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvpb"
+	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/batcheval"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/concurrency"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/concurrency/lock"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
@@ -119,6 +115,10 @@ func exceptSkipLockedReplayError(err error) bool { // true if skip locked replay
 	return errors.Is(err, &concurrency.SkipLockedReplayError{})
 }
 
+func exceptSkipLockedUnsupportedError(err error) bool { // true if unsupported use of skip locked error
+	return errors.Is(err, &batcheval.SkipLockedUnsupportedError{})
+}
+
 func applyOp(ctx context.Context, env *Env, db *kv.DB, op *Operation) {
 	switch o := op.GetValue().(type) {
 	case *GetOperation,
@@ -129,7 +129,7 @@ func applyOp(ctx context.Context, env *Env, db *kv.DB, op *Operation) {
 		*DeleteRangeOperation,
 		*DeleteRangeUsingTombstoneOperation,
 		*AddSSTableOperation:
-		applyClientOp(ctx, db, op, false /* inTxn */, nil /* spIDToToken */)
+		applyClientOp(ctx, db, op, false)
 	case *SplitOperation:
 		err := db.AdminSplit(ctx, o.Key, hlc.MaxTimestamp)
 		o.Result = resultInit(ctx, err)
@@ -172,9 +172,6 @@ func applyOp(ctx context.Context, env *Env, db *kv.DB, op *Operation) {
 				retryOnAbort.Next()
 			}
 			savedTxn = txn
-			// A map of a savepoint id to the corresponding savepoint token that was
-			// created after applying the savepoint op.
-			spIDToToken := make(map[int]kv.SavepointToken)
 			// First error. Because we need to mark everything that
 			// we didn't "reach" due to a prior error with errOmitted,
 			// we *don't* return eagerly on this but save it to the end.
@@ -197,7 +194,7 @@ func applyOp(ctx context.Context, env *Env, db *kv.DB, op *Operation) {
 						continue
 					}
 
-					applyClientOp(ctx, txn, op, true /* inTxn */, &spIDToToken)
+					applyClientOp(ctx, txn, op, true)
 					// The KV api disallows use of a txn after an operation on it errors.
 					if r := op.Result(); r.Type == ResultType_Error {
 						err = errors.DecodeError(ctx, *r.Err)
@@ -240,8 +237,6 @@ func applyOp(ctx context.Context, env *Env, db *kv.DB, op *Operation) {
 			o.Txn = savedTxn.TestingCloneTxn()
 			o.Result.OptionalTimestamp = o.Txn.WriteTimestamp
 		}
-	case *SavepointCreateOperation, *SavepointReleaseOperation, *SavepointRollbackOperation:
-		panic(errors.AssertionFailedf(`can't apply a savepoint operation %v outside of a ClosureTxnOperation`, o))
 	default:
 		panic(errors.AssertionFailedf(`unknown operation type: %T %v`, o, o))
 	}
@@ -294,13 +289,7 @@ func batchRun(
 	return ts, nil
 }
 
-func applyClientOp(
-	ctx context.Context,
-	db clientI,
-	op *Operation,
-	inTxn bool,
-	spIDToToken *map[int]kv.SavepointToken,
-) {
+func applyClientOp(ctx context.Context, db clientI, op *Operation, inTxn bool) {
 	switch o := op.GetValue().(type) {
 	case *GetOperation:
 		res, ts, err := dbRunWithResultAndTimestamp(ctx, db, func(b *kv.Batch) {
@@ -463,49 +452,6 @@ func applyClientOp(
 	case *BatchOperation:
 		b := &kv.Batch{}
 		applyBatchOp(ctx, b, db.Run, o)
-	case *SavepointCreateOperation:
-		txn, ok := db.(*kv.Txn) // savepoints are only allowed with transactions
-		if !ok {
-			panic(errors.AssertionFailedf(`non-txn interface attempted to create a savepoint %v`, o))
-		}
-		spt, err := txn.CreateSavepoint(ctx)
-		o.Result = resultInit(ctx, err)
-		if err != nil {
-			return
-		}
-		// Map the savepoint id to the newly created savepoint token.
-		if _, ok := (*spIDToToken)[int(o.ID)]; ok {
-			panic(errors.AssertionFailedf("applying a savepoint create op: ID %d already exists", o.ID))
-		}
-		(*spIDToToken)[int(o.ID)] = spt
-	case *SavepointReleaseOperation:
-		txn, ok := db.(*kv.Txn) // savepoints are only allowed with transactions
-		if !ok {
-			panic(errors.AssertionFailedf(`non-txn interface attempted to release a savepoint %v`, o))
-		}
-		spt, ok := (*spIDToToken)[int(o.ID)]
-		if !ok {
-			panic(errors.AssertionFailedf("applying a savepoint release op: ID %d does not exist", o.ID))
-		}
-		err := txn.ReleaseSavepoint(ctx, spt)
-		o.Result = resultInit(ctx, err)
-		if err != nil {
-			return
-		}
-	case *SavepointRollbackOperation:
-		txn, ok := db.(*kv.Txn) // savepoints are only allowed with transactions
-		if !ok {
-			panic(errors.AssertionFailedf(`non-txn interface attempted to rollback a savepoint %v`, o))
-		}
-		spt, ok := (*spIDToToken)[int(o.ID)]
-		if !ok {
-			panic(errors.AssertionFailedf("applying a savepoint rollback op: ID %d does not exist", o.ID))
-		}
-		err := txn.RollbackToSavepoint(ctx, spt)
-		o.Result = resultInit(ctx, err)
-		if err != nil {
-			return
-		}
 	default:
 		panic(errors.AssertionFailedf(`unknown batch operation type: %T %v`, o, o))
 	}
@@ -677,23 +623,17 @@ func getRangeDesc(ctx context.Context, key roachpb.Key, dbs ...*kv.DB) roachpb.R
 
 func newGetReplicasFn(dbs ...*kv.DB) GetReplicasFn {
 	ctx := context.Background()
-	return func(key roachpb.Key) ([]roachpb.ReplicationTarget, []roachpb.ReplicationTarget) {
+	return func(key roachpb.Key) []roachpb.ReplicationTarget {
 		desc := getRangeDesc(ctx, key, dbs...)
 		replicas := desc.Replicas().Descriptors()
-		var voters []roachpb.ReplicationTarget
-		var nonVoters []roachpb.ReplicationTarget
-		for _, replica := range replicas {
-			target := roachpb.ReplicationTarget{
+		targets := make([]roachpb.ReplicationTarget, len(replicas))
+		for i, replica := range replicas {
+			targets[i] = roachpb.ReplicationTarget{
 				NodeID:  replica.NodeID,
 				StoreID: replica.StoreID,
 			}
-			if replica.Type == roachpb.NON_VOTER {
-				nonVoters = append(nonVoters, target)
-			} else {
-				voters = append(voters, target)
-			}
 		}
-		return voters, nonVoters
+		return targets
 	}
 }
 

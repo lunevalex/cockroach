@@ -1,12 +1,7 @@
 // Copyright 2022 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package descs
 
@@ -402,26 +397,34 @@ func (g MutableByNameGetter) Type(
 
 func makeGetterBase(txn *kv.Txn, col *Collection, flags getterFlags) getterBase {
 	return getterBase{
-		txnWrapper: txnWrapper{Txn: txn, Collection: col},
-		flags:      flags,
+		txn:   &txnWrapper{Txn: txn, Collection: col},
+		flags: flags,
 	}
 }
 
 type getterBase struct {
-	txnWrapper
+	txn
 	flags getterFlags
 }
 
-type txnWrapper struct {
-	*kv.Txn
-	*Collection
-}
+type (
+	txn interface {
+		KV() *kv.Txn
+		Descriptors() *Collection
+	}
+	txnWrapper struct {
+		*kv.Txn
+		*Collection
+	}
+)
 
-func (w txnWrapper) KV() *kv.Txn {
+var _ txn = &txnWrapper{}
+
+func (w *txnWrapper) KV() *kv.Txn {
 	return w.Txn
 }
 
-func (w txnWrapper) Descriptors() *Collection {
+func (w *txnWrapper) Descriptors() *Collection {
 	return w.Collection
 }
 

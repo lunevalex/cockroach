@@ -1,12 +1,7 @@
 // Copyright 2015 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package cli
 
@@ -1128,6 +1123,10 @@ func startShutdownAsync(
 	}()
 }
 
+// cgoAllocConfStr is populated from start_jemalloc.go if we are using jemalloc.
+// Otherwise, it stays empty.
+var cgoAllocConfStr string
+
 // reportServerInfo prints out the server version and network details
 // in a standardized format.
 func reportServerInfo(
@@ -1144,6 +1143,9 @@ func reportServerInfo(
 	buf.Printf("CockroachDB %s starting at %s (took %0.1fs)\n", serverType, timeutil.Now(), timeutil.Since(startTime).Seconds())
 	buf.Printf("build:\t%s %s @ %s (%s)\n",
 		redact.Safe(info.Distribution), redact.Safe(info.Tag), redact.Safe(info.Time), redact.Safe(info.GoVersion))
+	if cgoAllocConfStr != "" {
+		buf.Printf("malloc_conf:\t%s\n", redact.Safe(cgoAllocConfStr))
+	}
 	buf.Printf("webui:\t%s\n", log.SafeManaged(serverCfg.AdminURL()))
 
 	// (Re-)compute the client connection URL. We cannot do this

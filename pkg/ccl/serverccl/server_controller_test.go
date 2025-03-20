@@ -1,10 +1,7 @@
 // Copyright 2018 The Cockroach Authors.
 //
-// Licensed as a CockroachDB Enterprise file under the Cockroach Community
-// License (the "License"); you may not use this file except in compliance with
-// the License. You may obtain a copy of the License at
-//
-//     https://github.com/cockroachdb/cockroach/blob/master/licenses/CCL.txt
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package serverccl
 
@@ -336,6 +333,7 @@ func TestServerControllerDefaultHTTPTenant(t *testing.T) {
 	for _, c := range resp.Cookies() {
 		if c.Name == authserver.TenantSelectCookieName {
 			tenantCookie = c.Value
+			require.True(t, c.Secure)
 		}
 	}
 	require.Equal(t, "hello", tenantCookie)
@@ -554,6 +552,10 @@ func TestServerControllerLoginLogout(t *testing.T) {
 	for i, c := range resp.Cookies() {
 		cookieNames[i] = c.Name
 		cookieValues[i] = c.Value
+		require.True(t, c.Secure)
+		if c.Name == "session" {
+			require.True(t, c.HttpOnly)
+		}
 	}
 	require.ElementsMatch(t, []string{"session", "tenant"}, cookieNames)
 	require.ElementsMatch(t, []string{"", ""}, cookieValues)
@@ -578,6 +580,10 @@ func TestServerControllerLoginLogout(t *testing.T) {
 	for i, c := range resp.Cookies() {
 		cookieNames[i] = c.Name
 		cookieValues[i] = c.Value
+		require.True(t, c.Secure)
+		if c.Name == "session" {
+			require.True(t, c.HttpOnly)
+		}
 	}
 	require.ElementsMatch(t, []string{"session", "tenant"}, cookieNames)
 	require.ElementsMatch(t, []string{"", ""}, cookieValues)
@@ -603,7 +609,45 @@ func TestServerControllerLoginLogout(t *testing.T) {
 	for i, c := range resp.Cookies() {
 		cookieNames[i] = c.Name
 		cookieValues[i] = c.Value
+		require.True(t, c.Secure)
+		if c.Name == "session" {
+			require.True(t, c.HttpOnly)
+		}
 	}
 	require.ElementsMatch(t, []string{"session", "tenant"}, cookieNames)
 	require.ElementsMatch(t, []string{"", ""}, cookieValues)
+}
+
+func TestServiceShutdownUsesGracefulDrain(t *testing.T) {
+	defer leaktest.AfterTest(t)()
+	defer log.Scope(t).Close(t)
+
+	ctx := context.Background()
+
+	s, db, _ := serverutils.StartServer(t, base.TestServerArgs{
+		DefaultTestTenant: base.TestControlsTenantsExplicitly,
+	})
+	defer s.Stopper().Stop(ctx)
+
+	drainCh := make(chan struct{})
+
+	// Start a shared process server.
+	_, _, err := s.TenantController().StartSharedProcessTenant(ctx,
+		base.TestSharedProcessTenantArgs{
+			TenantName: "hello",
+			Knobs: base.TestingKnobs{
+				Server: &server.TestingKnobs{
+					RequireGracefulDrain: true,
+					DrainReportCh:        drainCh,
+				},
+			},
+		})
+	require.NoError(t, err)
+
+	_, err = db.Exec("ALTER TENANT hello STOP SERVICE")
+	require.NoError(t, err)
+
+	// Wait for the server to shut down. This also asserts that the
+	// graceful drain has occurred.
+	<-drainCh
 }

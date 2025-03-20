@@ -1,12 +1,7 @@
 // Copyright 2015 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package localtestcluster
 
@@ -161,7 +156,7 @@ func (ltc *LocalTestCluster) Start(t testing.TB, initFactory InitFactoryFn) {
 		storage.InMemory(),
 		cfg.Settings,
 		storage.CacheSize(0),
-		storage.MaxSize(50<<20 /* 50 MiB */),
+		storage.MaxSizeBytes(50<<20 /* 50 MiB */),
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -199,11 +194,13 @@ func (ltc *LocalTestCluster) Start(t testing.TB, initFactory InitFactoryFn) {
 		Stopper:                 ltc.stopper,
 		Clock:                   cfg.Clock,
 		Storage:                 liveness.NewKVStorage(cfg.DB),
-		Cache:                   liveness.NewCache(cfg.Gossip, cfg.Clock, cfg.Settings, cfg.NodeDialer),
+		Gossip:                  cfg.Gossip,
 		LivenessThreshold:       active,
 		RenewalDuration:         renewal,
+		Settings:                cfg.Settings,
 		HistogramWindowInterval: cfg.HistogramWindowInterval,
 		Engines:                 []storage.Engine{ltc.Eng},
+		NodeDialer:              cfg.NodeDialer,
 	})
 	liveness.TimeUntilNodeDead.Override(ctx, &cfg.Settings.SV, liveness.TestTimeUntilNodeDead)
 	nodeCountFn := func() int {
@@ -278,7 +275,7 @@ func (ltc *LocalTestCluster) Start(t testing.TB, initFactory InitFactoryFn) {
 		ctx,
 		ltc.Eng,
 		initialValues,
-		clusterversion.Latest.Version(),
+		clusterversion.TestingBinaryVersion,
 		1, /* numStores */
 		splits,
 		ltc.Clock.PhysicalNow(),

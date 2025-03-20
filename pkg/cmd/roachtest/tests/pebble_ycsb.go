@@ -1,12 +1,7 @@
 // Copyright 2020 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package tests
 
@@ -18,7 +13,6 @@ import (
 	"time"
 
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/cluster"
-	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/option"
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/registry"
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/spec"
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/test"
@@ -164,7 +158,7 @@ func runPebbleYCSB(
 // runPebbleCmd runs the given command on all worker nodes in the test cluster.
 func runPebbleCmd(ctx context.Context, t test.Test, c cluster.Cluster, cmd string) {
 	t.L().PrintfCtx(ctx, "> %s", cmd)
-	err := c.RunE(ctx, option.WithNodes(c.All()), cmd)
+	err := c.RunE(ctx, c.All(), cmd)
 	t.L().Printf("> result: %+v", err)
 	if err := ctx.Err(); err != nil {
 		t.L().Printf("(note: incoming context was canceled: %s", err)

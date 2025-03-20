@@ -1,12 +1,7 @@
 // Copyright 2023 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package server
 
@@ -15,6 +10,7 @@ import (
 	"time"
 
 	"github.com/cockroachdb/cockroach/pkg/base"
+	"github.com/cockroachdb/cockroach/pkg/clusterversion"
 	"github.com/cockroachdb/cockroach/pkg/multitenant/mtinfopb"
 	"github.com/cockroachdb/cockroach/pkg/multitenant/tenantcapabilities"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
@@ -34,15 +30,11 @@ import (
 // start monitors changes to the service mode and updates
 // the running servers accordingly.
 func (c *serverController) start(ctx context.Context, ie isql.Executor) error {
-	// If the SQL server is disabled there are no initial secondary tenants to
-	// start.
-	if !c.disableSQLServer {
-		// We perform one round of updates synchronously, to ensure that
-		// any tenants already in service mode SHARED get a chance to boot
-		// up before we signal readiness.
-		if err := c.startInitialSecondaryTenantServers(ctx, ie); err != nil {
-			return err
-		}
+	// We perform one round of updates synchronously, to ensure that
+	// any tenants already in service mode SHARED get a chance to boot
+	// up before we signal readiness.
+	if err := c.startInitialSecondaryTenantServers(ctx, ie); err != nil {
+		return err
 	}
 
 	// Run the detection of which servers should be started or stopped.
@@ -191,6 +183,12 @@ func (c *serverController) createServerEntryLocked(
 func (c *serverController) getExpectedRunningTenants(
 	ctx context.Context, ie isql.Executor,
 ) (tenantNames []roachpb.TenantName, resErr error) {
+	if !c.st.Version.IsActive(ctx, clusterversion.V23_1TenantNamesStateAndServiceMode) {
+		// Cluster not yet upgraded - we know there is no secondary tenant
+		// with a name yet.
+		return []roachpb.TenantName{catconstants.SystemTenantName}, nil
+	}
+
 	rowIter, err := ie.QueryIterator(ctx, "list-tenants", nil, /* txn */
 		`SELECT name FROM system.tenants
 WHERE service_mode = $1
@@ -269,9 +267,7 @@ func (c *serverController) newServerForOrchestrator(
 // Close implements the stop.Closer interface.
 func (c *serverController) Close() {
 	ctx := c.AnnotateCtx(context.Background())
-	log.Infof(ctx, "server controller shutting down ungracefully")
-	// Note Close() is only called in the case of expedited shutdown.
-	// It should not invoke the graceful drain process.
+	log.Infof(ctx, "server controller shutting down")
 	entries := c.getAllEntries()
 	// Request immediate shutdown. This is probably not needed; the
 	// server should already be sensitive to the parent stopper

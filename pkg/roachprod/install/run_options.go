@@ -1,12 +1,7 @@
 // Copyright 2023 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package install
 
@@ -37,10 +32,7 @@ type RunOptions struct {
 type FailOption int8
 
 const (
-	// FailDefault will use the default behaviour of the function it's being used
-	// with. For instance, note that `RunWithDetails` will use FailSlow, while
-	// `Run` and `Parallel` will use FailFast when FailDefault is specified in the
-	// RunOptions.
+	// FailDefault will use the default behaviour of the function you are using.
 	FailDefault FailOption = iota
 	// FailFast will exit immediately on the first error, in which case the slice
 	// of ParallelResults will only contain the one error result.
@@ -50,23 +42,10 @@ const (
 	FailSlow
 )
 
-// AlwaysTrue is a should retry predicate function that always returns true to
-// indicate that the operation is always retryable no matter what the previous
-// result was.
-var AlwaysTrue = func(res *RunResultDetails) bool { return true }
-
-func DefaultRunOptions() RunOptions {
+func OnNodes(nodes Nodes) RunOptions {
 	return RunOptions{
-		RetryOptions:  DefaultRetryOpt,
-		ShouldRetryFn: DefaultShouldRetryFn,
-		FailOption:    FailDefault,
+		Nodes: nodes,
 	}
-}
-
-func WithNodes(nodes Nodes) RunOptions {
-	r := DefaultRunOptions()
-	r.Nodes = nodes
-	return r
 }
 
 func (r RunOptions) WithRetryOpts(retryOpts retry.Options) RunOptions {
@@ -79,7 +58,7 @@ func (r RunOptions) WithRetryDisabled() RunOptions {
 	return r
 }
 
-func (r RunOptions) WithShouldRetryFn(fn func(*RunResultDetails) bool) RunOptions {
+func (r RunOptions) WithRetryFn(fn func(*RunResultDetails) bool) RunOptions {
 	r.ShouldRetryFn = fn
 	return r
 }

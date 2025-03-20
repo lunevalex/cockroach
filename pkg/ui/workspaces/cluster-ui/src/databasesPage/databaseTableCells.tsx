@@ -1,12 +1,7 @@
 // Copyright 2023 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 import React, { useContext } from "react";
 import { Tooltip } from "antd";
@@ -20,7 +15,7 @@ import { Link } from "react-router-dom";
 import { StackIcon } from "../icon/stackIcon";
 import { CockroachCloudContext } from "../contexts";
 import {
-  checkInfoAvailable,
+  LoadingCell,
   getNetworkErrorMessage,
   getQueryErrorMessage,
 } from "../databases";
@@ -33,19 +28,18 @@ interface CellProps {
   database: DatabasesPageDataDatabase;
 }
 
-export const DiskSizeCell = ({ database }: CellProps): JSX.Element => {
-  return (
-    <>
-      {checkInfoAvailable(
-        database.spanStatsRequestError,
-        database.spanStats?.error,
-        database.spanStats?.approximate_disk_bytes
-          ? format.Bytes(database.spanStats?.approximate_disk_bytes)
-          : null,
-      )}
-    </>
-  );
-};
+export const DiskSizeCell = ({ database }: CellProps) => (
+  <LoadingCell
+    requestError={database.spanStatsRequestError}
+    queryError={database.spanStats?.error}
+    loading={database.spanStatsLoading}
+    errorClassName={cx("databases-table__cell-error")}
+  >
+    {database.spanStats?.approximate_disk_bytes
+      ? format.Bytes(database.spanStats?.approximate_disk_bytes)
+      : null}
+  </LoadingCell>
+);
 
 export const IndexRecCell = ({ database }: CellProps): JSX.Element => {
   const text =

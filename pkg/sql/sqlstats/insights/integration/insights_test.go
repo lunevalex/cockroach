@@ -1,12 +1,7 @@
 // Copyright 2022 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package integration
 
@@ -40,7 +35,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/cockroach/pkg/util/timeutil"
 	"github.com/cockroachdb/cockroach/pkg/util/uuid"
-	"github.com/cockroachdb/errors"
 	"github.com/stretchr/testify/require"
 )
 
@@ -57,16 +51,17 @@ func TestInsightsIntegration(t *testing.T) {
 	const appName = "TestInsightsIntegration"
 	const appNameToIgnore = "TestInsightsIntegrationIgnore"
 
-	// Start the server. (One node is sufficient; the outliers system is
-	// currently in-memory only.)
+	// Start the cluster. (One node is sufficient; the outliers system is currently in-memory only.)
 	ctx := context.Background()
-	srv, conn, _ := serverutils.StartServer(t, base.TestServerArgs{})
-	defer srv.Stopper().Stop(ctx)
-	sv := &srv.ApplicationLayer().ClusterSettings().SV
+	settings := cluster.MakeTestingClusterSettings()
+	args := base.TestClusterArgs{ServerArgs: base.TestServerArgs{Settings: settings}}
+	tc := testcluster.StartTestCluster(t, 1, args)
+	defer tc.Stopper().Stop(ctx)
+	conn := tc.ServerConn(0)
 
 	// Enable detection by setting a latencyThreshold > 0.
 	latencyThreshold := 250 * time.Millisecond
-	insights.LatencyThreshold.Override(ctx, sv, latencyThreshold)
+	insights.LatencyThreshold.Override(ctx, &settings.SV, latencyThreshold)
 
 	_, err := conn.ExecContext(ctx, "SET SESSION application_name=$1", appNameToIgnore)
 	require.NoError(t, err)
@@ -209,27 +204,26 @@ func TestFailedInsights(t *testing.T) {
 	const appName = "TestFailedInsights"
 	re := regexp.MustCompile(",?SlowExecution,?")
 
-	// Start the server. (One node is sufficient; the outliers system is
-	// currently in-memory only.)
+	// Start the cluster. (One node is sufficient; the outliers system is currently in-memory only.)
 	ctx := context.Background()
-	srv, conn, _ := serverutils.StartServer(t, base.TestServerArgs{})
-	defer srv.Stopper().Stop(ctx)
-	s := srv.ApplicationLayer()
-	sv := &s.ClusterSettings().SV
-	rootConn := sqlutils.MakeSQLRunner(conn)
+	settings := cluster.MakeTestingClusterSettings()
+	args := base.TestClusterArgs{ServerArgs: base.TestServerArgs{Settings: settings}}
+	tc := testcluster.StartTestCluster(t, 1, args)
+	defer tc.Stopper().Stop(ctx)
+	rootConn := sqlutils.MakeSQLRunner(tc.ApplicationLayer(0).SQLConn(t))
 
 	// Enable detection by setting a latencyThreshold > 0.
 	latencyThreshold := 100 * time.Millisecond
-	insights.LatencyThreshold.Override(ctx, sv, latencyThreshold)
+	insights.LatencyThreshold.Override(ctx, &settings.SV, latencyThreshold)
 
 	rootConn.Exec(t, fmt.Sprintf("CREATE USER %s WITH VIEWACTIVITYREDACTED", "testuser"))
 	rootConn.Exec(t, "SET SESSION application_name=$1", appName)
 
 	testutils.RunTrueAndFalse(t, "with_redaction", func(t *testing.T, testRedacted bool) {
 		rootConn.Exec(t, `select crdb_internal.reset_sql_stats()`)
-		conn := s.SQLConn(t)
+		conn := tc.ApplicationLayer(0).SQLConn(t)
 		if testRedacted {
-			conn = s.SQLConn(t, serverutils.User("testuser"))
+			conn = tc.ApplicationLayer(0).SQLConn(t, serverutils.User("testuser"))
 		}
 
 		_, err := conn.Exec("SET SESSION application_name=$1", appName)
@@ -421,8 +415,7 @@ func TestTransactionInsightsFailOnCommit(t *testing.T) {
 	ctx := context.Background()
 	conflictingTxns := make([]txnInConflict, 0, 4)
 
-	// Start the server. (One node is sufficient; the outliers system is
-	// currently in-memory only.)
+	// Start the cluster. (One node is sufficient; the outliers system is currently in-memory only.)
 	srv, db, _ := serverutils.StartServer(t, base.TestServerArgs{
 		Knobs: base.TestingKnobs{
 			SQLExecutor: &sql.ExecutorTestingKnobs{
@@ -569,13 +562,15 @@ func TestInsightsPriorityIntegration(t *testing.T) {
 	const appName = "TestInsightsPriorityIntegration"
 
 	ctx := context.Background()
-	srv, conn, _ := serverutils.StartServer(t, base.TestServerArgs{})
-	defer srv.Stopper().Stop(ctx)
-	sv := &srv.ApplicationLayer().ClusterSettings().SV
+	settings := cluster.MakeTestingClusterSettings()
+	args := base.TestClusterArgs{ServerArgs: base.TestServerArgs{Settings: settings}}
+	tc := testcluster.StartTestCluster(t, 1, args)
+	defer tc.Stopper().Stop(ctx)
+	conn := tc.ServerConn(0)
 
 	// Enable detection by setting a latencyThreshold > 0.
 	latencyThreshold := 50 * time.Millisecond
-	insights.LatencyThreshold.Override(ctx, sv, latencyThreshold)
+	insights.LatencyThreshold.Override(ctx, &settings.SV, latencyThreshold)
 
 	_, err := conn.ExecContext(ctx, "SET SESSION application_name=$1", appName)
 	require.NoError(t, err)
@@ -766,7 +761,6 @@ func TestInsightsIntegrationForContention(t *testing.T) {
 		if !ok || waitingTxnFingerprintID == appstatspb.InvalidTransactionFingerprintID {
 			return fmt.Errorf("waiting txn fingerprint not found in cache")
 		}
-
 		return nil
 	})
 
@@ -795,11 +789,12 @@ func TestInsightsIntegrationForContention(t *testing.T) {
 		// at least 1 row matches the one we're looking for.
 		foundRow := false
 		var lastErr error
+		rowsCount := 0
 		for rows.Next() {
 			if err != nil {
 				return err
 			}
-
+			rowsCount++
 			var totalContentionFromQueryMs, contentionFromEventMs float64
 			var queryText, schemaName, dbName, tableName, indexName, waitingTxnFingerprintID string
 			err = rows.Scan(&queryText, &totalContentionFromQueryMs, &contentionFromEventMs, &schemaName, &dbName, &tableName, &indexName, &waitingTxnFingerprintID)
@@ -842,16 +837,13 @@ func TestInsightsIntegrationForContention(t *testing.T) {
 				continue
 			}
 
-			if waitingTxnFingerprintID == "0000000000000000" || waitingTxnFingerprintID == "" {
-				lastErr = fmt.Errorf("waitingTxnFingerprintID is default value\n%s", prettyPrintRow)
-				continue
-			}
-
 			foundRow = true
 			break
 		}
 
 		if !foundRow && lastErr != nil {
+			t.Logf("rowsCount = %d", rowsCount)
+			t.Logf("ContentionRegistry: \n%s", tc.ApplicationLayer(0).ExecutorConfig().(sql.ExecutorConfig).ContentionRegistry.String())
 			return lastErr
 		}
 
@@ -885,9 +877,13 @@ func TestInsightsIndexRecommendationIntegration(t *testing.T) {
 	skip.UnderStressRace(t, "expensive tests")
 
 	ctx := context.Background()
-	srv, sqlConn, _ := serverutils.StartServer(t, base.TestServerArgs{})
-	defer srv.Stopper().Stop(ctx)
-	ts := srv.ApplicationLayer()
+	settings := cluster.MakeTestingClusterSettings()
+	args := base.TestClusterArgs{ServerArgs: base.TestServerArgs{Settings: settings}}
+	tc := testcluster.StartTestCluster(t, 1, args)
+	defer tc.Stopper().Stop(ctx)
+
+	ts := tc.ApplicationLayer(0)
+	sqlConn := tc.ServerConn(0)
 
 	// Enable detection by setting a latencyThreshold > 0.
 	latencyThreshold := 30 * time.Millisecond
@@ -956,64 +952,4 @@ func TestInsightsIndexRecommendationIntegration(t *testing.T) {
 
 		return nil
 	}, 1*time.Second)
-}
-
-// TestExportStatementInsights test detecting Insights with the flag to
-// export to obsservice enabled.
-func TestExportStatementInsights(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-	defer log.Scope(t).Close(t)
-	const appName = "TestExportStatementInsights"
-
-	ctx := context.Background()
-	srv, conn, _ := serverutils.StartServer(t, base.TestServerArgs{})
-	defer srv.Stopper().Stop(ctx)
-	sqlConn := sqlutils.MakeSQLRunner(conn)
-
-	sqlConn.CheckQueryResults(t, fmt.Sprintf(`
-		SELECT count(*)
-		FROM crdb_internal.cluster_execution_insights
-		WHERE app_name = '%s'
-		`, appName), [][]string{{"0"}})
-
-	sqlConn.Exec(t, fmt.Sprintf("SET application_name = '%s'", appName))
-	sqlConn.Exec(t, "SELECT pg_sleep(0.11)")
-	sqlConn.Exec(t, "SELECT pg_sleep(0.11) WHERE 1=1")
-	sqlConn.Exec(t, "SET application_name = 'randomIgnore'")
-
-	testutils.SucceedsSoon(t, func() error {
-		var insightsCount int
-		row := sqlConn.QueryRow(t, fmt.Sprintf(`
-		SELECT count(*)
-		FROM crdb_internal.cluster_execution_insights
-		WHERE app_name = '%s'
-		`, appName))
-		row.Scan(&insightsCount)
-		if insightsCount != 2 {
-			return errors.Newf("waiting for slow executions to complete")
-		}
-		return nil
-	})
-
-	// Enable export to Observability Service.
-	sqlConn.Exec(t, "SET CLUSTER SETTING sql.insights.export.enabled = true")
-
-	sqlConn.Exec(t, fmt.Sprintf("SET application_name = '%s'", appName))
-	sqlConn.Exec(t, "SELECT pg_sleep(0.11)")
-	sqlConn.Exec(t, "SELECT pg_sleep(0.11) WHERE 1=1")
-	sqlConn.Exec(t, "SET application_name = 'randomIgnore'")
-
-	testutils.SucceedsSoon(t, func() error {
-		var insightsCount int
-		row := sqlConn.QueryRow(t, fmt.Sprintf(`
-		SELECT count(*)
-		FROM crdb_internal.cluster_execution_insights
-		WHERE app_name = '%s'
-		`, appName))
-		row.Scan(&insightsCount)
-		if insightsCount != 4 {
-			return errors.Newf("waiting for slow executions to complete")
-		}
-		return nil
-	})
 }

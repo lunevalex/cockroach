@@ -20,11 +20,8 @@ go_test(
     name = "binfetcher_test",
     size = "small",
     srcs = ["binfetcher_test.go"],
+    args = ["-test.timeout=55s"],
     embed = [":binfetcher"],
-    exec_properties = select({
-        "//build/toolchains:is_heavy": {"Pool": "heavy"},
-        "//conditions:default": {"Pool": "default"},
-    }),
     deps = [
         "//pkg/testutils",
         "//pkg/testutils/skip",

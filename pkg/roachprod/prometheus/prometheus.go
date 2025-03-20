@@ -1,12 +1,7 @@
 // Copyright 2021 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package prometheus
 
@@ -253,7 +248,7 @@ func Init(
 		// NB: when upgrading here, make sure to target a version that picks up this PR:
 		// https://github.com/prometheus/node_exporter/pull/2311
 		// At time of writing, there hasn't been a release in over half a year.
-		if err := c.Run(ctx, l, l.Stdout, l.Stderr, install.WithNodes(cfg.NodeExporter).WithShouldRetryFn(install.AlwaysTrue),
+		if err := c.RepeatRun(ctx, l, l.Stdout, l.Stderr, cfg.NodeExporter,
 			"download node exporter",
 			fmt.Sprintf(`
 (sudo systemctl stop node_exporter || true) &&
@@ -265,7 +260,7 @@ rm -rf node_exporter && mkdir -p node_exporter && curl -fsSL \
 		}
 
 		// Start node_exporter.
-		if err := c.Run(ctx, l, l.Stdout, l.Stderr, install.WithNodes(cfg.NodeExporter), "init node exporter",
+		if err := c.Run(ctx, l, l.Stdout, l.Stderr, install.OnNodes(cfg.NodeExporter), "init node exporter",
 			`cd node_exporter &&
 sudo systemd-run --unit node_exporter --same-dir ./node_exporter`,
 		); err != nil {
@@ -274,24 +269,24 @@ sudo systemd-run --unit node_exporter --same-dir ./node_exporter`,
 			return nil, errors.Wrap(err, "grafana-start currently cannot run on darwin")
 		}
 	}
-	if err := c.Run(
+	if err := c.RepeatRun(
 		ctx,
 		l,
 		l.Stdout,
 		l.Stderr,
-		install.WithNodes(cfg.PrometheusNode).WithShouldRetryFn(install.AlwaysTrue),
+		cfg.PrometheusNode,
 		"reset prometheus",
 		"sudo systemctl stop prometheus || echo 'no prometheus is running'",
 	); err != nil {
 		return nil, err
 	}
 
-	if err := c.Run(
+	if err := c.RepeatRun(
 		ctx,
 		l,
 		l.Stdout,
 		l.Stderr,
-		install.WithNodes(cfg.PrometheusNode).WithShouldRetryFn(install.AlwaysTrue),
+		cfg.PrometheusNode,
 		"download prometheus",
 		fmt.Sprintf(`sudo rm -rf /tmp/prometheus && mkdir /tmp/prometheus && cd /tmp/prometheus &&
 			curl -fsSL https://storage.googleapis.com/cockroach-test-artifacts/prometheus/prometheus-2.27.1.linux-%s.tar.gz | tar zxv --strip-components=1`,
@@ -325,7 +320,7 @@ sudo systemd-run --unit node_exporter --same-dir ./node_exporter`,
 		l,
 		l.Stdout,
 		l.Stderr,
-		install.WithNodes(cfg.PrometheusNode),
+		install.OnNodes(cfg.PrometheusNode),
 		"start-prometheus",
 		`cd /tmp/prometheus &&
 sudo systemd-run --unit prometheus --same-dir \
@@ -336,9 +331,9 @@ sudo systemd-run --unit prometheus --same-dir \
 
 	if cfg.Grafana.Enabled {
 		// Install Grafana.
-		if err := c.Run(ctx, l,
+		if err := c.RepeatRun(ctx, l,
 			l.Stdout,
-			l.Stderr, install.WithNodes(cfg.PrometheusNode).WithShouldRetryFn(install.AlwaysTrue), "install grafana",
+			l.Stderr, cfg.PrometheusNode, "install grafana",
 			fmt.Sprintf(`
 sudo apt-get install -qqy apt-transport-https &&
 sudo apt-get install -qqy software-properties-common &&
@@ -352,9 +347,9 @@ sudo mkdir -p /var/lib/grafana/dashboards`,
 		}
 
 		// Provision local prometheus instance as data source.
-		if err := c.Run(ctx, l,
+		if err := c.RepeatRun(ctx, l,
 			l.Stdout,
-			l.Stderr, install.WithNodes(cfg.PrometheusNode).WithShouldRetryFn(install.AlwaysTrue), "permissions",
+			l.Stderr, cfg.PrometheusNode, "permissions",
 			`sudo chmod -R 777 /etc/grafana/provisioning/datasources /etc/grafana/provisioning/dashboards /var/lib/grafana/dashboards /etc/grafana/grafana.ini`,
 		); err != nil {
 			return nil, err
@@ -396,7 +391,7 @@ org_role = Admin
 
 		for idx, u := range cfg.Grafana.DashboardURLs {
 			cmd := fmt.Sprintf("curl -fsSL %s -o /var/lib/grafana/dashboards/%d.json", u, idx)
-			if err := c.Run(ctx, l, l.Stdout, l.Stderr, install.WithNodes(cfg.PrometheusNode), "download dashboard",
+			if err := c.Run(ctx, l, l.Stdout, l.Stderr, install.OnNodes(cfg.PrometheusNode), "download dashboard",
 				cmd); err != nil {
 				l.PrintfCtx(ctx, "failed to download dashboard from %s: %s", u, err)
 			}
@@ -410,7 +405,7 @@ org_role = Admin
 		}
 
 		// Start Grafana. Default port is 3000.
-		if err := c.Run(ctx, l, l.Stdout, l.Stderr, install.WithNodes(cfg.PrometheusNode), "start grafana",
+		if err := c.Run(ctx, l, l.Stdout, l.Stderr, install.OnNodes(cfg.PrometheusNode), "start grafana",
 			`sudo systemctl restart grafana-server`); err != nil {
 			return nil, err
 		}
@@ -434,7 +429,7 @@ func Snapshot(
 		l,
 		l.Stdout,
 		l.Stderr,
-		install.WithNodes(promNode),
+		install.OnNodes(promNode),
 		"prometheus snapshot",
 		`sudo rm -rf /tmp/prometheus/data/snapshots/* && curl -XPOST http://localhost:9090/api/v1/admin/tsdb/snapshot &&
 	cd /tmp/prometheus && tar cvf prometheus-snapshot.tar.gz data/snapshots`,
@@ -504,24 +499,24 @@ func Shutdown(
 			shutdownErr = errors.CombineErrors(shutdownErr, err)
 		}
 	}
-	if err := c.Run(ctx, l, l.Stdout, l.Stderr, install.WithNodes(nodes), "stop node exporter",
+	if err := c.Run(ctx, l, l.Stdout, l.Stderr, install.OnNodes(nodes), "stop node exporter",
 		`sudo systemctl stop node_exporter || echo 'Stopped node exporter'`); err != nil {
 		l.Printf("Failed to stop node exporter: %v", err)
 		shutdownErr = errors.CombineErrors(shutdownErr, err)
 	}
 
-	if err := c.Run(ctx, l, l.Stdout, l.Stderr, install.WithNodes(promNode), "stop grafana",
+	if err := c.Run(ctx, l, l.Stdout, l.Stderr, install.OnNodes(promNode), "stop grafana",
 		`sudo systemctl stop grafana-server || echo 'Stopped grafana'`); err != nil {
 		l.Printf("Failed to stop grafana server: %v", err)
 		shutdownErr = errors.CombineErrors(shutdownErr, err)
 	}
 
-	if err := c.Run(
+	if err := c.RepeatRun(
 		ctx,
 		l,
 		l.Stdout,
 		l.Stderr,
-		install.WithNodes(promNode).WithShouldRetryFn(install.AlwaysTrue),
+		promNode,
 		"stop prometheus",
 		"sudo systemctl stop prometheus || echo 'Stopped prometheus'",
 	); err != nil {

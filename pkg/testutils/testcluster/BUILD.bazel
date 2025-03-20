@@ -19,7 +19,6 @@ go_library(
         "//pkg/rpc/nodedialer",
         "//pkg/server",
         "//pkg/server/serverpb",
-        "//pkg/settings/cluster",
         "//pkg/spanconfig",
         "//pkg/sql/catalog",
         "//pkg/sql/isql",
@@ -51,11 +50,8 @@ go_test(
         "main_test.go",
         "testcluster_test.go",
     ],
+    args = ["-test.timeout=295s"],
     embed = [":testcluster"],
-    exec_properties = select({
-        "//build/toolchains:is_heavy": {"Pool": "heavy"},
-        "//conditions:default": {"Pool": "large"},
-    }),
     deps = [
         "//pkg/base",
         "//pkg/keys",

@@ -32,10 +32,7 @@ go_test(
         "util_test.go",
         "zcfg_test.go",
     ],
-    exec_properties = select({
-        "//build/toolchains:is_heavy": {"Pool": "heavy"},
-        "//conditions:default": {"Pool": "default"},
-    }),
+    args = ["-test.timeout=895s"],
     shard_count = 8,
     deps = [
         "//pkg/base",

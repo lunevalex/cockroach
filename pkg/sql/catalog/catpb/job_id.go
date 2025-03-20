@@ -1,12 +1,7 @@
 // Copyright 2022 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package catpb
 
@@ -26,20 +21,4 @@ func (j JobID) SafeValue() {}
 // String implements the fmt.Stringer interface.
 func (j JobID) String() string {
 	return strconv.Itoa(int(j))
-}
-
-// ScheduleID is the ID of a job schedule. It is defined here and imported in
-// jobspb for the same reasons as JobID. Additionally, it's helpful to keep the
-// two type definitions close together.
-type ScheduleID int64
-
-// InvalidScheduleID is a constant indicating the schedule ID is not valid.
-const InvalidScheduleID ScheduleID = 0
-
-// SafeValue implements the redact.SafeValue interface.
-func (s ScheduleID) SafeValue() {}
-
-// String implements the fmt.Stringer interface.
-func (s ScheduleID) String() string {
-	return strconv.Itoa(int(s))
 }

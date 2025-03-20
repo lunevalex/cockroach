@@ -1,12 +1,7 @@
 // Copyright 2022 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package insights
 
@@ -50,7 +45,7 @@ type nullWriter struct{}
 func (n *nullWriter) ObserveStatement(_ clusterunique.ID, _ *Statement) {
 }
 
-func (n *nullWriter) ObserveTransaction(_ context.Context, _ clusterunique.ID, _ *Transaction) {
+func (n *nullWriter) ObserveTransaction(_ clusterunique.ID, _ *Transaction) {
 }
 
 var nullWriterInstance Writer = &nullWriter{}

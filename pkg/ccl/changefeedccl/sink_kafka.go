@@ -1,10 +1,7 @@
 // Copyright 2018 The Cockroach Authors.
 //
-// Licensed as a CockroachDB Enterprise file under the Cockroach Community
-// License (the "License"); you may not use this file except in compliance with
-// the License. You may obtain a copy of the License at
-//
-//     https://github.com/cockroachdb/cockroach/blob/master/licenses/CCL.txt
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package changefeedccl
 
@@ -17,6 +14,7 @@ import (
 	"fmt"
 	"hash/fnv"
 	"math"
+	"net"
 	"net/url"
 	"strings"
 	"sync"
@@ -30,6 +28,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/pgcode"
 	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/pgerror"
 	"github.com/cockroachdb/cockroach/pkg/util/bufalloc"
+	"github.com/cockroachdb/cockroach/pkg/util/cidr"
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/cockroach/pkg/util/syncutil"
@@ -118,6 +117,7 @@ type kafkaClient interface {
 
 // kafkaSink emits to Kafka asynchronously. It is not concurrency-safe; all
 // calls to Emit and Flush should be from the same goroutine.
+// Deprecated: use kafkaSinkClientV2 in sink_kafka_v2.go instead.
 type kafkaSink struct {
 	ctx            context.Context
 	bootstrapAddrs string
@@ -257,22 +257,6 @@ func (s *kafkaSink) Dial() error {
 		return err
 	}
 
-	if err = client.RefreshMetadata(); err != nil {
-		// Dial() seems to be at a weird state while topics are still setting up and
-		// passing specific topics s.Topics() RefreshMetadata here can trigger a
-		// sarama error. To match the previous behaviour in sarama prior to #114740
-		// during Dial(), we manually fetch metadata for all topics just during
-		// Dial(). See more in #116872.
-		if errors.Is(err, sarama.ErrLeaderNotAvailable) || errors.Is(err, sarama.ErrReplicaNotAvailable) ||
-			errors.Is(err, sarama.ErrTopicAuthorizationFailed) || errors.Is(err, sarama.ErrClusterAuthorizationFailed) {
-			// To match sarama code in NewClient with conf.Metadata.Full == true, we
-			// swallow the error when it is one of the errors above.
-			log.Infof(s.ctx, "kafka sink unable to refreshMetadata during Dial() due to: %s", err.Error())
-		} else {
-			return errors.CombineErrors(err, client.Close())
-		}
-	}
-
 	producer, err := s.newAsyncProducer(client)
 	if err != nil {
 		return err
@@ -371,11 +355,21 @@ func (s *kafkaSink) EmitRow(
 		return err
 	}
 
+	// Since we cannot distinguish between time spent buffering vs emitting
+	// inside sarama, set the DownstreamClientSend timer to the same value as
+	// BatchHistNanos.
+	recordOneMessageCb := s.metrics.recordOneMessage()
+	downstreamClientSendCb := s.metrics.timers().DownstreamClientSend.Start()
+	updateMetrics := func(mvcc hlc.Timestamp, bytes int, compressedBytes int) {
+		recordOneMessageCb(mvcc, bytes, compressedBytes)
+		downstreamClientSendCb()
+	}
+
 	msg := &sarama.ProducerMessage{
 		Topic:    topic,
 		Key:      sarama.ByteEncoder(key),
 		Value:    sarama.ByteEncoder(value),
-		Metadata: messageMetadata{alloc: alloc, mvcc: mvcc, updateMetrics: s.metrics.recordOneMessage()},
+		Metadata: messageMetadata{alloc: alloc, mvcc: mvcc, updateMetrics: updateMetrics},
 	}
 	s.stats.startMessage(int64(msg.Key.Length() + msg.Value.Length()))
 	return s.emitMessage(ctx, msg)
@@ -1078,7 +1072,10 @@ func buildConfluentKafkaConfig(u sinkURL) (kafkaDialConfig, error) {
 }
 
 func buildKafkaConfig(
-	ctx context.Context, u sinkURL, jsonStr changefeedbase.SinkSpecificJSONConfig,
+	ctx context.Context,
+	u sinkURL,
+	jsonStr changefeedbase.SinkSpecificJSONConfig,
+	netMetrics *cidr.NetMetrics,
 ) (*sarama.Config, error) {
 	dialConfig, err := buildDialConfig(u)
 	if err != nil {
@@ -1088,8 +1085,6 @@ func buildKafkaConfig(
 	config.ClientID = `CockroachDB`
 	config.Producer.Return.Successes = true
 	config.Producer.Partitioner = newChangefeedPartitioner
-	// Do not fetch metadata for all topics but just for the necessary ones.
-	config.Metadata.Full = false
 
 	if dialConfig.tlsEnabled {
 		config.Net.TLS.Enable = true
@@ -1152,6 +1147,18 @@ func buildKafkaConfig(
 			"failed to parse sarama config; check %s option", changefeedbase.OptKafkaSinkConfig)
 	}
 
+	// Leverage sarama's proxy support to slip in our net metrics
+	config.Net.Proxy.Enable = true
+	// This is how sarama constructs its Dialer. See (*Config).getDialer() in sarama.
+	dialer := &net.Dialer{
+		Timeout:   config.Net.DialTimeout,
+		KeepAlive: config.Net.KeepAlive,
+		LocalAddr: config.Net.LocalAddr,
+	}
+	config.Net.Proxy.Dialer = netMetrics.WrapDialer(dialer, "kafka")
+
+	// Note that the sarama.Config.Validate() below only logs an error in some
+	// cases, so we explicitly validate sarama config from our side.
 	if err := saramaCfg.Validate(); err != nil {
 		return nil, errors.Wrap(err, "invalid sarama configuration")
 	}
@@ -1162,6 +1169,7 @@ func buildKafkaConfig(
 	return config, nil
 }
 
+// Deprecated: use makeKafkaSinkV2 instead.
 func makeKafkaSink(
 	ctx context.Context,
 	u sinkURL,
@@ -1176,7 +1184,8 @@ func makeKafkaSink(
 		return nil, errors.Errorf(`%s is not yet supported`, changefeedbase.SinkParamSchemaTopic)
 	}
 
-	config, err := buildKafkaConfig(ctx, u, jsonStr)
+	m := mb(requiresResourceAccounting)
+	config, err := buildKafkaConfig(ctx, u, jsonStr, m.netMetrics())
 	if err != nil {
 		return nil, err
 	}

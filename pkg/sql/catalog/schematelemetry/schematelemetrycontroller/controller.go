@@ -1,12 +1,7 @@
 // Copyright 2022 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package schematelemetrycontroller
 
@@ -257,9 +252,7 @@ func CreateSchemaTelemetrySchedule(
 
 // GetSchemaTelemetryScheduleID returns the ID of the schema telemetry schedule
 // if it exists, 0 if it does not exist yet.
-func GetSchemaTelemetryScheduleID(
-	ctx context.Context, txn isql.Txn,
-) (id jobspb.ScheduleID, _ error) {
+func GetSchemaTelemetryScheduleID(ctx context.Context, txn isql.Txn) (id int64, _ error) {
 	row, err := txn.QueryRowEx(
 		ctx,
 		"check-existing-schema-telemetry-schedule",
@@ -279,5 +272,5 @@ func GetSchemaTelemetryScheduleID(
 	if !ok {
 		return 0, errors.AssertionFailedf("unexpectedly received non-integer value %v", row[0])
 	}
-	return jobspb.ScheduleID(v), nil
+	return int64(v), nil
 }

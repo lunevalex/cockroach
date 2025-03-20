@@ -1,12 +1,7 @@
 // Copyright 2021 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package rangefeed
 
@@ -55,8 +50,7 @@ func (f *RangeFeed) runInitialScan(
 		f.onValue(ctx, &v)
 	}
 
-	getSpansToScan, cleanup := f.getSpansToScan(ctx)
-	defer cleanup()
+	getSpansToScan := f.getSpansToScan(ctx)
 
 	r.Reset()
 	for r.Next() {
@@ -81,14 +75,13 @@ func (f *RangeFeed) runInitialScan(
 	return false
 }
 
-func (f *RangeFeed) getSpansToScan(ctx context.Context) (func() []roachpb.Span, func()) {
+func (f *RangeFeed) getSpansToScan(ctx context.Context) func() []roachpb.Span {
 	retryAll := func() []roachpb.Span {
 		return f.spans
 	}
 
-	noCleanup := func() {}
 	if f.retryBehavior == ScanRetryAll {
-		return retryAll, noCleanup
+		return retryAll
 	}
 
 	// We want to retry remaining spans.
@@ -101,9 +94,8 @@ func (f *RangeFeed) getSpansToScan(ctx context.Context) (func() []roachpb.Span, 
 		// so, log it and fall back to retrying all spans.
 		log.Errorf(ctx, "failed to build frontier for the initial scan; "+
 			"falling back to retry all behavior: err=%v", err)
-		return retryAll, noCleanup
+		return retryAll
 	}
-	frontier = span.MakeConcurrentFrontier(frontier)
 
 	userSpanDoneCallback := f.onSpanDone
 	f.onSpanDone = func(ctx context.Context, sp roachpb.Span) error {
@@ -132,5 +124,5 @@ func (f *RangeFeed) getSpansToScan(ctx context.Context) (func() []roachpb.Span, 
 			return span.ContinueMatch
 		})
 		return retrySpans
-	}, frontier.Release
+	}
 }

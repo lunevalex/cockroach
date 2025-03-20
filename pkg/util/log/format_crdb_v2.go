@@ -1,12 +1,7 @@
 // Copyright 2020 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 //
 // This file is also published under the Apache License; use either
 // one of BSL and Apache:
@@ -504,16 +499,20 @@ type entryDecoderV2 struct {
 // Decode decodes the next log entry into the provided protobuf message.
 func (d *entryDecoderV2) Decode(entry *logpb.Entry) (err error) {
 	defer func() {
-		if err != nil && !errors.Is(err, io.EOF) {
-			err = errors.Wrapf(err, "decoding on line %d", d.lines)
+		switch r := recover().(type) {
+		case nil: // do nothing
+		case error:
+			err = errors.Wrapf(r, "decoding on line %d", d.lines)
+		default:
+			panic(r)
 		}
 	}()
-	frag, err := d.peekNextFragment()
-	if err != nil {
-		return err
+	frag, atEOF := d.peekNextFragment()
+	if atEOF {
+		return io.EOF
 	}
 	d.popFragment()
-	if err = d.initEntryFromFirstLine(entry, frag); err != nil {
+	if err := d.initEntryFromFirstLine(entry, frag); err != nil {
 		return err
 	}
 
@@ -523,16 +522,12 @@ func (d *entryDecoderV2) Decode(entry *logpb.Entry) (err error) {
 
 	// While the entry has additional lines, collect the full message.
 	for {
-		frag, err = d.peekNextFragment()
-		if err != nil || !frag.isContinuation() {
-			// Ignore this error as it is relevant to the next line and we don't
-			// know if it is continuation line or not.
+		frag, atEOF := d.peekNextFragment()
+		if atEOF || !frag.isContinuation() {
 			break
 		}
 		d.popFragment()
-		if err = d.addContinuationFragmentToEntry(entry, &entryMsg, frag); err != nil {
-			return err
-		}
+		d.addContinuationFragmentToEntry(entry, &entryMsg, frag)
 	}
 
 	r := redactablePackage{
@@ -548,7 +543,7 @@ func (d *entryDecoderV2) Decode(entry *logpb.Entry) (err error) {
 
 func (d *entryDecoderV2) addContinuationFragmentToEntry(
 	entry *logpb.Entry, entryMsg *bytes.Buffer, frag entryDecoderV2Fragment,
-) error {
+) {
 	switch frag.getContinuation() {
 	case '+':
 		entryMsg.WriteByte('\n')
@@ -568,26 +563,25 @@ func (d *entryDecoderV2) addContinuationFragmentToEntry(
 			entryMsg.Write(frag.getMsg())
 		}
 	default:
-		return errors.Wrapf(ErrMalformedLogEntry, "unexpected continuation character %c", frag.getContinuation())
+		panic(errors.Errorf("unexpected continuation character %c", frag.getContinuation()))
 	}
-	return nil
 }
 
 // peekNextFragment populates the nextFragment buffer by reading from the
 // underlying reader a line at a time until a valid line is reached.
-// It returns error if malformed log line is discovered. It permits the first
+// It will panic if a malformed log line is discovered. It permits the first
 // line in the decoder to be malformed and it will skip that line. Upon EOF,
 // if there is no text left to consume, the atEOF return value will be true.
-func (d *entryDecoderV2) peekNextFragment() (entryDecoderV2Fragment, error) {
+func (d *entryDecoderV2) peekNextFragment() (_ entryDecoderV2Fragment, atEOF bool) {
 	for d.nextFragment == nil {
 		d.lines++
 		nextLine, err := d.reader.ReadBytes('\n')
-		if errors.Is(err, io.EOF) {
+		if isEOF := errors.Is(err, io.EOF); isEOF {
 			if len(nextLine) == 0 {
-				return nil, err
+				return nil, true
 			}
 		} else if err != nil {
-			return nil, err
+			panic(err)
 		}
 		nextLine = bytes.TrimSuffix(nextLine, []byte{'\n'})
 		m := entryREV2.FindSubmatch(nextLine)
@@ -595,11 +589,11 @@ func (d *entryDecoderV2) peekNextFragment() (entryDecoderV2Fragment, error) {
 			if d.lines == 1 { // allow non-matching lines if we've never seen a line
 				continue
 			}
-			return nil, ErrMalformedLogEntry
+			panic(errors.New("malformed log entry"))
 		}
 		d.nextFragment = m
 	}
-	return d.nextFragment, nil
+	return d.nextFragment, false
 }
 
 func (d *entryDecoderV2) popFragment() {

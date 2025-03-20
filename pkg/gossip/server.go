@@ -1,12 +1,7 @@
 // Copyright 2014 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package gossip
 
@@ -15,6 +10,7 @@ import (
 	"math/rand"
 	"net"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/cockroachdb/cockroach/pkg/base"
@@ -49,16 +45,18 @@ type server struct {
 		is       *infoStore                         // The backing infostore
 		incoming nodeSet                            // Incoming client node IDs
 		nodeMap  map[util.UnresolvedAddr]serverInfo // Incoming client's local address -> serverInfo
-		// ready broadcasts a wakeup to waiting gossip requests. This is done
-		// via closing the current ready channel and opening a new one. This
-		// is required due to the fact that condition variables are not
-		// composable. There's an open proposal to add them:
-		// https://github.com/golang/go/issues/16620
-		ready chan struct{}
 		// The time at which we last checked if the network should be tightened.
 		// Used to avoid burning CPU and mutex cycles on checking too frequently.
 		lastTighten time.Time
 	}
+
+	// ready broadcasts a wakeup to waiting gossip requests. This is done
+	// via closing the current ready channel and opening a new one. This
+	// is required due to the fact that condition variables are not
+	// composable. There's an open proposal to add them:
+	// https://github.com/golang/go/issues/16620
+	ready atomic.Value
+
 	tighten chan struct{} // Sent on when we may want to tighten the network
 
 	nodeMetrics   Metrics
@@ -85,10 +83,10 @@ func newServer(
 		serverMetrics:  makeMetrics(),
 	}
 
-	s.mu.is = newInfoStore(s.AmbientContext, nodeID, util.UnresolvedAddr{}, stopper)
+	s.mu.is = newInfoStore(s.AmbientContext, nodeID, util.UnresolvedAddr{}, stopper, s.nodeMetrics)
 	s.mu.incoming = makeNodeSet(minPeers, metric.NewGauge(MetaConnectionsIncomingGauge))
 	s.mu.nodeMap = make(map[util.UnresolvedAddr]serverInfo)
-	s.mu.ready = make(chan struct{})
+	s.ready.Store(make(chan struct{}))
 
 	registry.AddMetric(s.mu.incoming.gauge)
 	registry.AddMetricStruct(s.nodeMetrics)
@@ -147,11 +145,10 @@ func (s *server) Gossip(stream Gossip_GossipServer) error {
 	reply := new(Response)
 
 	for init := true; ; init = false {
+		// Remember the old ready so that if it gets replaced with a new one and is
+		// closed, we still trigger the select below.
+		ready := s.ready.Load().(chan struct{})
 		s.mu.Lock()
-		// Store the old ready so that if it gets replaced with a new one
-		// (once the lock is released) and is closed, we still trigger the
-		// select below.
-		ready := s.mu.ready
 		delta := s.mu.is.delta(args.HighWaterStamps)
 		if init {
 			s.mu.is.populateMostDistantMarkers(delta)
@@ -185,10 +182,9 @@ func (s *server) Gossip(stream Gossip_GossipServer) error {
 			if err := send(reply); err != nil {
 				return err
 			}
-			s.mu.Lock()
+		} else {
+			s.mu.Unlock()
 		}
-
-		s.mu.Unlock()
 
 		select {
 		case <-s.stopper.ShouldQuiesce():
@@ -370,11 +366,7 @@ func (s *server) start(addr net.Addr) {
 	broadcast := func() {
 		// Close the old ready and open a new one. This will broadcast to all
 		// receivers and setup a fresh channel to replace the closed one.
-		s.mu.Lock()
-		defer s.mu.Unlock()
-		ready := make(chan struct{})
-		close(s.mu.ready)
-		s.mu.ready = ready
+		close(s.ready.Swap(make(chan struct{})).(chan struct{}))
 	}
 
 	// We require redundant callbacks here as the broadcast callback is

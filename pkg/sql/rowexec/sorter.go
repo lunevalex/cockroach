@@ -1,12 +1,7 @@
 // Copyright 2016 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package rowexec
 
@@ -163,6 +158,9 @@ func newSorter(
 		// smallest k rows seen. It has a worst-case time complexity of
 		// O(n*log(k)) and a worst-case space complexity of O(k).
 		return newSortTopKProcessor(ctx, flowCtx, processorID, spec, input, post, uint64(spec.Limit))
+	}
+	if spec.Limit != 0 && (post.Limit == 0 || post.Limit > uint64(spec.Limit)) {
+		post.Limit = uint64(spec.Limit)
 	}
 	// Ordering match length is specified. We will be able to use existing
 	// ordering in order to avoid loading all the rows into memory. If we're

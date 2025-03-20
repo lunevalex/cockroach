@@ -1,12 +1,7 @@
 // Copyright 2021 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package stats
 
@@ -14,7 +9,6 @@ import (
 	"context"
 
 	"github.com/cockroachdb/cockroach/pkg/jobs/jobspb"
-	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/descpb"
 	"github.com/cockroachdb/cockroach/pkg/sql/opt/cat"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/eval"
@@ -29,9 +23,7 @@ import (
 // are the merged combinations of the latest full statistic and the latest partial
 // statistic for a specific column set. If merging a partial stat with the full
 // stat is not possible, we don't include that statistic as part of the resulting array.
-func MergedStatistics(
-	ctx context.Context, stats []*TableStatistic, st *cluster.Settings,
-) []*TableStatistic {
+func MergedStatistics(ctx context.Context, stats []*TableStatistic) []*TableStatistic {
 	// Map the ColumnIDs to the latest full table statistic,
 	// and map the keys to the number of columns in the set.
 	// It relies on the fact that the first full statistic
@@ -60,7 +52,7 @@ func MergedStatistics(
 			var merged *TableStatistic
 			var err error
 			if fullStat, ok := fullStatsMap[col]; ok && partialStat.CreatedAt.After(fullStat.CreatedAt) {
-				merged, err = mergeExtremesStatistic(ctx, fullStat, partialStat, st)
+				merged, err = mergeExtremesStatistic(fullStat, partialStat)
 				if err != nil {
 					log.VEventf(ctx, 2, "could not merge statistics for table %v columns %s: %v", fullStat.TableID, redact.Safe(col), err)
 					continue
@@ -116,7 +108,7 @@ func MergedStatistics(
 // with the statistic renamed to the string assigned to.
 // jobspb.MergedStatsName.
 func mergeExtremesStatistic(
-	ctx context.Context, fullStat *TableStatistic, partialStat *TableStatistic, st *cluster.Settings,
+	fullStat *TableStatistic, partialStat *TableStatistic,
 ) (*TableStatistic, error) {
 	fullStatColKey := MakeSortedColStatKey(fullStat.ColumnIDs)
 	partialStatColKey := MakeSortedColStatKey(partialStat.ColumnIDs)
@@ -241,7 +233,7 @@ func mergeExtremesStatistic(
 	hist := histogram{
 		buckets: mergedHistogram,
 	}
-	histData, err := hist.toHistogramData(ctx, fullStat.HistogramData.ColumnType, st)
+	histData, err := hist.toHistogramData(fullStat.HistogramData.ColumnType)
 	if err != nil {
 		return nil, err
 	}

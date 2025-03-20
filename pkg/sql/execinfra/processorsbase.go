@@ -1,12 +1,7 @@
 // Copyright 2017 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package execinfra
 
@@ -30,6 +25,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/tracing"
 	"github.com/cockroachdb/errors"
 	"github.com/cockroachdb/redact"
+	"github.com/cockroachdb/redact/interfaces"
 	"go.opentelemetry.io/otel/attribute"
 )
 
@@ -73,9 +69,9 @@ type DoesNotUseTxn interface {
 // ProcOutputHelper is a helper type that performs filtering and projection on
 // the output of a processor.
 type ProcOutputHelper struct {
-	// eh only contains expressions if we have at least one rendering. It will
-	// not be used if outputCols is set.
-	eh execinfrapb.MultiExprHelper
+	// renderExprs has length > 0 if we have a rendering. Only one of renderExprs
+	// and outputCols can be set.
+	renderExprs []execinfrapb.ExprHelper
 	// outputCols is non-nil if we have a projection. Only one of renderExprs and
 	// outputCols can be set. Note that 0-length projections are possible, in
 	// which case outputCols will be 0-length but non-nil.
@@ -107,12 +103,14 @@ func (h *ProcOutputHelper) Reset() {
 	// Deeply reset the render expressions and the output row. Note that we
 	// don't bother deeply resetting the types slice since the types are small
 	// objects.
-	h.eh.Reset()
+	for i := range h.renderExprs {
+		h.renderExprs[i] = execinfrapb.ExprHelper{}
+	}
 	for i := range h.outputRow {
 		h.outputRow[i] = rowenc.EncDatum{}
 	}
 	*h = ProcOutputHelper{
-		eh:          h.eh,
+		renderExprs: h.renderExprs[:0],
 		outputRow:   h.outputRow[:0],
 		OutputTypes: h.OutputTypes[:0],
 	}
@@ -157,20 +155,21 @@ func (h *ProcOutputHelper) Init(
 			h.OutputTypes[i] = coreOutputTypes[c]
 		}
 	} else if nRenders := len(post.RenderExprs); nRenders > 0 {
+		if cap(h.renderExprs) >= nRenders {
+			h.renderExprs = h.renderExprs[:nRenders]
+		} else {
+			h.renderExprs = make([]execinfrapb.ExprHelper, nRenders)
+		}
 		if cap(h.OutputTypes) >= nRenders {
 			h.OutputTypes = h.OutputTypes[:nRenders]
 		} else {
 			h.OutputTypes = make([]*types.T, nRenders)
 		}
-		if err := h.eh.Init(ctx, nRenders, coreOutputTypes, semaCtx, evalCtx); err != nil {
-			return err
-		}
 		for i, expr := range post.RenderExprs {
-			var err error
-			if err = h.eh.AddExpr(ctx, expr, i); err != nil {
+			if err := h.renderExprs[i].Init(ctx, expr, coreOutputTypes, semaCtx, evalCtx); err != nil {
 				return err
 			}
-			h.OutputTypes[i] = h.eh.Expr(i).ResolvedType()
+			h.OutputTypes[i] = h.renderExprs[i].Expr.ResolvedType()
 		}
 	} else {
 		// No rendering or projection.
@@ -181,7 +180,7 @@ func (h *ProcOutputHelper) Init(
 		}
 		copy(h.OutputTypes, coreOutputTypes)
 	}
-	if h.outputCols != nil || h.eh.ExprCount() > 0 {
+	if h.outputCols != nil || len(h.renderExprs) > 0 {
 		// We're rendering or projecting, so allocate an output row.
 		if h.outputRow != nil && cap(h.outputRow) >= len(h.OutputTypes) {
 			// In some cases we might have no output columns, so nil outputRow
@@ -275,10 +274,10 @@ func (h *ProcOutputHelper) ProcessRow(
 		return nil, true, nil
 	}
 
-	if h.eh.ExprCount() > 0 {
+	if len(h.renderExprs) > 0 {
 		// Rendering.
-		for i, n := 0, h.eh.ExprCount(); i < n; i++ {
-			datum, err := h.eh.EvalExpr(ctx, i, row)
+		for i := range h.renderExprs {
+			datum, err := h.renderExprs[i].Eval(ctx, row)
 			if err != nil {
 				return nil, false, err
 			}
@@ -440,6 +439,21 @@ func (pb *ProcessorBase) Reset() {
 // states are relevant when the processor is using the draining utilities in
 // ProcessorBase.
 type procState int
+
+func (i procState) SafeFormat(s interfaces.SafePrinter, verb rune) {
+	switch i {
+	case StateRunning:
+		s.Print("StateRunning")
+	case StateDraining:
+		s.Print("StateDraining")
+	case StateTrailingMeta:
+		s.Print("StateTrailingMeta")
+	case StateExhausted:
+		s.Print("StateExhausted")
+	}
+}
+
+var _ redact.SafeFormatter = procState(0)
 
 //go:generate stringer -type=procState
 const (

@@ -1,12 +1,7 @@
 // Copyright 2018 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package tests
 
@@ -28,6 +23,7 @@ func registerAcceptance(r registry.Registry) {
 		timeout           time.Duration
 		encryptionSupport registry.EncryptionSupport
 		defaultLeases     bool
+		randomized        bool
 	}{
 		registry.OwnerKV: {
 			{name: "decommission-self", fn: runDecommissionSelf},
@@ -48,13 +44,7 @@ func registerAcceptance(r registry.Registry) {
 			{name: "cluster-init", fn: runClusterInit},
 			{name: "rapid-restart", fn: runRapidRestart},
 		},
-		registry.OwnerMultiTenant: {
-			{
-				name: "multitenant",
-				fn:   runAcceptanceMultitenant,
-			},
-		},
-		registry.OwnerObsInf: {
+		registry.OwnerObservability: {
 			{name: "status-server", fn: runStatusServer},
 		},
 		registry.OwnerDevInf: {
@@ -65,8 +55,9 @@ func registerAcceptance(r registry.Registry) {
 			{
 				name:          "version-upgrade",
 				fn:            runVersionUpgrade,
-				timeout:       30 * time.Minute,
+				timeout:       2 * time.Hour, // actually lower in local runs; see `runVersionUpgrade`
 				defaultLeases: true,
+				randomized:    true,
 			},
 		},
 		registry.OwnerDisasterRecovery: {
@@ -75,13 +66,18 @@ func registerAcceptance(r registry.Registry) {
 				fn:       runAcceptanceClusterReplication,
 				numNodes: 3,
 			},
+			{
+				name: "multitenant",
+				fn:   runAcceptanceMultitenant,
+			},
 		},
 		registry.OwnerSQLFoundations: {
 			{
 				name:          "validate-system-schema-after-version-upgrade",
 				fn:            runValidateSystemSchemaAfterVersionUpgrade,
-				timeout:       30 * time.Minute,
+				timeout:       60 * time.Minute,
 				defaultLeases: true,
+				randomized:    true,
 				numNodes:      1,
 			},
 			{
@@ -108,6 +104,7 @@ func registerAcceptance(r registry.Registry) {
 				Timeout:           10 * time.Minute,
 				CompatibleClouds:  registry.AllExceptAWS,
 				Suites:            registry.Suites(registry.Nightly, registry.Quick),
+				Randomized:        tc.randomized,
 			}
 
 			if tc.timeout != 0 {

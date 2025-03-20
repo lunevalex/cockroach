@@ -1,12 +1,7 @@
 // Copyright 2015 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package tree
 
@@ -1032,24 +1027,6 @@ func (n *AlterTenantReplication) walkStmt(v Visitor) Statement {
 			ret.Cutover.Timestamp = e
 		}
 	}
-	if n.ReplicationSourceAddress != nil {
-		e, changed := WalkExpr(v, n.ReplicationSourceAddress)
-		if changed {
-			if ret == n {
-				ret = n.copyNode()
-			}
-			ret.ReplicationSourceAddress = e
-		}
-	}
-	if n.ReplicationSourceTenantName != nil {
-		ts, changed := walkTenantSpec(v, n.ReplicationSourceTenantName)
-		if changed {
-			if ret == n {
-				ret = n.copyNode()
-			}
-			ret.TenantSpec = ts
-		}
-	}
 	if n.Options.Retention != nil {
 		e, changed := WalkExpr(v, n.Options.Retention)
 		if changed {
@@ -1059,15 +1036,16 @@ func (n *AlterTenantReplication) walkStmt(v Visitor) Statement {
 			ret.Options.Retention = e
 		}
 	}
-	if n.Options.ExpirationWindow != nil {
-		e, changed := WalkExpr(v, n.Options.ExpirationWindow)
+	if n.Options.ResumeTimestamp != nil {
+		e, changed := WalkExpr(v, n.Options.ResumeTimestamp)
 		if changed {
 			if ret == n {
 				ret = n.copyNode()
 			}
-			ret.Options.ExpirationWindow = e
+			ret.Options.ResumeTimestamp = e
 		}
 	}
+
 	return ret
 }
 
@@ -1131,15 +1109,16 @@ func (n *CreateTenantFromReplication) walkStmt(v Visitor) Statement {
 			ret.Options.Retention = e
 		}
 	}
-	if n.Options.ExpirationWindow != nil {
-		e, changed := WalkExpr(v, n.Options.ExpirationWindow)
+	if n.Options.ResumeTimestamp != nil {
+		e, changed := WalkExpr(v, n.Options.ResumeTimestamp)
 		if changed {
 			if ret == n {
 				ret = n.copyNode()
 			}
-			ret.Options.ExpirationWindow = e
+			ret.Options.ResumeTimestamp = e
 		}
 	}
+
 	if n.Like.OtherTenant != nil {
 		ts, changed := walkTenantSpec(v, n.TenantSpec)
 		if changed {
@@ -1173,35 +1152,6 @@ func (n *ShowTenant) walkStmt(v Visitor) Statement {
 }
 
 // copyNode makes a copy of this Statement without recursing in any child Statements.
-func (n *ShowFingerprints) copyNode() *ShowFingerprints {
-	stmtCopy := *n
-	return &stmtCopy
-}
-
-// walkStmt is part of the walkableStmt interface.
-func (n *ShowFingerprints) walkStmt(v Visitor) Statement {
-	ret := n
-	ts, changed := walkTenantSpec(v, n.TenantSpec)
-	if changed {
-		if ret == n {
-			ret = n.copyNode()
-		}
-		ret.TenantSpec = ts
-	}
-	if n.Options.StartTimestamp != nil {
-		e, changed := WalkExpr(v, n.Options.StartTimestamp)
-		if changed {
-			if ret == n {
-				ret = n.copyNode()
-			}
-			ret.Options.StartTimestamp = e
-		}
-	}
-
-	return ret
-}
-
-// copyNode makes a copy of this Statement without recursing in any child Statements.
 func (n *AlterTenantRename) copyNode() *AlterTenantRename {
 	stmtCopy := *n
 	return &stmtCopy
@@ -1224,35 +1174,6 @@ func (n *AlterTenantRename) walkStmt(v Visitor) Statement {
 		}
 		ret.NewName = ts
 	}
-	return ret
-}
-
-// copyNode makes a copy of this Statement without recursing in any child Statements.
-func (n *AlterTenantReset) copyNode() *AlterTenantReset {
-	stmtCopy := *n
-	return &stmtCopy
-}
-
-// walkStmt is part of the walkableStmt interface.
-func (n *AlterTenantReset) walkStmt(v Visitor) Statement {
-	ret := n
-	ts, changed := walkTenantSpec(v, n.TenantSpec)
-	if changed {
-		if ret == n {
-			ret = n.copyNode()
-		}
-		ret.TenantSpec = ts
-	}
-	if n.Timestamp != nil {
-		e, changed := WalkExpr(v, n.Timestamp)
-		if changed {
-			if ret == n {
-				ret = n.copyNode()
-			}
-			ret.Timestamp = e
-		}
-	}
-
 	return ret
 }
 
@@ -2084,9 +2005,7 @@ var _ walkableStmt = &Restore{}
 var _ walkableStmt = &SelectClause{}
 var _ walkableStmt = &Select{}
 var _ walkableStmt = &SetClusterSetting{}
-var _ walkableStmt = &SetTransaction{}
 var _ walkableStmt = &SetVar{}
-var _ walkableStmt = &ShowFingerprints{}
 var _ walkableStmt = &ShowTenantClusterSetting{}
 var _ walkableStmt = &ShowTenant{}
 var _ walkableStmt = &UnionClause{}

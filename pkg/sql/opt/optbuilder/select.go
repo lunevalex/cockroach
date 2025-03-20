@@ -1,12 +1,7 @@
 // Copyright 2018 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package optbuilder
 
@@ -661,6 +656,7 @@ func (b *Builder) buildScan(
 		private.Flags.NoIndexJoin = indexFlags.NoIndexJoin
 		private.Flags.NoZigzagJoin = indexFlags.NoZigzagJoin
 		private.Flags.NoFullScan = indexFlags.NoFullScan
+		private.Flags.ForceInvertedIndex = indexFlags.ForceInvertedIndex
 		if indexFlags.Index != "" || indexFlags.IndexID != 0 {
 			idx := -1
 			for i := 0; i < tab.IndexCount(); i++ {
@@ -843,6 +839,16 @@ func (b *Builder) addCheckConstraintsForTable(tabMeta *opt.TableMeta) {
 	// Create a scope that can be used for building the scalar expressions.
 	tableScope := b.allocScope()
 	tableScope.appendOrdinaryColumnsFromTable(tabMeta, &tabMeta.Alias)
+	// Synthesized CHECK expressions, e.g., for columns of ENUM types, may
+	// reference inaccessible columns. This can happen when the type of an
+	// indexed expression is an ENUM. We make these columns visible so that they
+	// can be resolved while building the CHECK expressions. This is safe to do
+	// for all CHECK expressions, not just synthesized ones, because
+	// user-created CHECK expressions will never reference inaccessible columns
+	// - this is enforced during CREATE TABLE and ALTER TABLE statements.
+	for i := range tableScope.cols {
+		tableScope.cols[i].visibility = columnVisibility(cat.Visible)
+	}
 
 	// Find the non-nullable table columns. Mutation columns can be NULL during
 	// backfill, so they should be excluded.

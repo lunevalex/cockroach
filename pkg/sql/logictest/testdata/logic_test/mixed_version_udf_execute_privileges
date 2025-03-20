@@ -1,4 +1,4 @@
-# LogicTest: cockroach-go-testserver-23.1
+# LogicTest: cockroach-go-testserver-upgrade-to-master
 
 # Verify that all nodes are running previous version binaries.
 
@@ -52,22 +52,22 @@ upgrade 1
 
 upgrade 2
 
-# Verify that all nodes are now running 24.1 binaries.
+# Verify that all nodes are now running 23.2 binaries.
 
 query T nodeidx=0
-SELECT crdb_internal.release_series(crdb_internal.node_executable_version())
+SELECT crdb_internal.node_executable_version()
 ----
-24.1
+23.2
 
 query T nodeidx=1
-SELECT crdb_internal.release_series(crdb_internal.node_executable_version())
+SELECT crdb_internal.node_executable_version()
 ----
-24.1
+23.2
 
 query T nodeidx=2
-SELECT crdb_internal.release_series(crdb_internal.node_executable_version())
+SELECT crdb_internal.node_executable_version()
 ----
-24.1
+23.2
 
 # Makes sure the upgrade job has finished, and the cluster version gate is
 # passed.

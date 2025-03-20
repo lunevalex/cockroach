@@ -1,12 +1,7 @@
 // Copyright 2019 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package storage
 
@@ -40,12 +35,6 @@ var _ Writer = &SSTWriter{}
 var _ ExportWriter = &SSTWriter{}
 var _ InternalWriter = &SSTWriter{}
 
-// NoopFinishAbortWritable wraps an io.Writer to make a objstorage.Writable that
-// will ignore Finish and Abort calls.
-func NoopFinishAbortWritable(w io.Writer) objstorage.Writable {
-	return &noopFinishAbort{Writer: w}
-}
-
 // noopFinishAbort is used to wrap io.Writers for sstable.Writer.
 type noopFinishAbort struct {
 	io.Writer
@@ -75,11 +64,15 @@ func MakeIngestionWriterOptions(ctx context.Context, cs *cluster.Settings) sstab
 	// table features available. Upgrade to an appropriate version only if the
 	// cluster supports it.
 	format := sstable.TableFormatPebblev2
+	// Don't ratchet up the format if value blocks are disabled, since the later
+	// formats always enable value blocks.
 	if ValueBlocksEnabled.Get(&cs.SV) {
-		format = sstable.TableFormatPebblev3
-	}
-	if cs.Version.IsActive(ctx, clusterversion.V23_2_EnablePebbleFormatVirtualSSTables) {
-		format = sstable.TableFormatPebblev4
+		if cs.Version.IsActive(ctx, clusterversion.V23_1EnablePebbleFormatSSTableValueBlocks) {
+			format = sstable.TableFormatPebblev3
+		}
+		if cs.Version.IsActive(ctx, clusterversion.V23_2_EnablePebbleFormatVirtualSSTables) {
+			format = sstable.TableFormatPebblev4
+		}
 	}
 	opts := DefaultPebbleOptions().MakeWriterOptions(0, format)
 	opts.MergerName = "nullptr"
@@ -236,6 +229,17 @@ func (fw *SSTWriter) ClearEngineRangeKey(start, end roachpb.Key, suffix []byte) 
 	// suffix here.
 	fw.DataSize += int64(len(start)) + int64(len(end))
 	return fw.fw.RangeKeyUnset(EngineKey{Key: start}.Encode(), EngineKey{Key: end}.Encode(), suffix)
+}
+
+// ClearEngineRange clears point keys in the specified EngineKey range.
+func (fw *SSTWriter) ClearEngineRange(start, end EngineKey) error {
+	fw.scratch = start.EncodeToBuf(fw.scratch[:0])
+	endRaw := end.Encode()
+	fw.DataSize += int64(len(start.Key)) + int64(len(end.Key))
+	if err := fw.fw.DeleteRange(fw.scratch, endRaw); err != nil {
+		return err
+	}
+	return nil
 }
 
 // ClearRawEncodedRange implements the InternalWriter interface.

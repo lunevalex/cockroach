@@ -1,12 +1,7 @@
 // Copyright 2020 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package descs
 
@@ -14,14 +9,13 @@ import (
 	"context"
 
 	"github.com/cockroachdb/cockroach/pkg/base"
+	"github.com/cockroachdb/cockroach/pkg/keys"
 	"github.com/cockroachdb/cockroach/pkg/kv"
-	clustersettings "github.com/cockroachdb/cockroach/pkg/settings/cluster"
 	"github.com/cockroachdb/cockroach/pkg/spanconfig"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/lease"
 	"github.com/cockroachdb/cockroach/pkg/sql/isql"
 	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/pgcode"
 	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/pgerror"
-	"github.com/cockroachdb/cockroach/pkg/sql/regionliveness"
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
 	"github.com/cockroachdb/cockroach/pkg/util/retry"
 	"github.com/cockroachdb/errors"
@@ -55,10 +49,8 @@ import (
 func CheckTwoVersionInvariant(
 	ctx context.Context,
 	clock *hlc.Clock,
-	db isql.DB,
+	noTxnExec isql.Executor,
 	descsCol *Collection,
-	regions regionliveness.CachedDatabaseRegions,
-	settings *clustersettings.Settings,
 	txn *kv.Txn,
 	onRetryBackoff func(),
 ) error {
@@ -69,6 +61,14 @@ func CheckTwoVersionInvariant(
 	if txn.IsCommitted() {
 		panic("transaction has already committed")
 	}
+
+	// Get a lease on the system database descriptor to determine if we
+	// should be using the multi-region leasing queries.
+	sysDBDesc, err := descsCol.ByIDWithLeased(txn).Get().Database(ctx, keys.SystemDatabaseID)
+	if err != nil {
+		return err
+	}
+	isMultiRegion := sysDBDesc.IsMultiRegion()
 
 	// We potentially hold leases for descriptors which we've modified which
 	// we need to drop. Say we're updating descriptors at version V. All leases
@@ -92,7 +92,7 @@ func CheckTwoVersionInvariant(
 	// transaction ends up committing then there won't have been any created
 	// in the meantime.
 	count, err := lease.CountLeases(
-		ctx, db, regions, settings, withNewVersion, txn.ProvisionalCommitTimestamp(), false, /*forAnyVersion*/
+		ctx, noTxnExec, isMultiRegion, descsCol.settings, withNewVersion, txn.ProvisionalCommitTimestamp(),
 	)
 	if err != nil {
 		return err
@@ -119,7 +119,7 @@ func CheckTwoVersionInvariant(
 	for r := retry.StartWithCtx(ctx, base.DefaultRetryOptions()); r.Next(); {
 		// Use the current clock time.
 		now := clock.Now()
-		count, err := lease.CountLeases(ctx, db, regions, settings, withNewVersion, now, false /*forAnyVersion*/)
+		count, err := lease.CountLeases(ctx, noTxnExec, isMultiRegion, descsCol.settings, withNewVersion, now)
 		if err != nil {
 			return err
 		}

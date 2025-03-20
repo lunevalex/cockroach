@@ -1,12 +1,7 @@
 // Copyright 2019 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package sqlsmith
 
@@ -437,6 +432,13 @@ func makeFunc(s *Smither, ctx Context, typ *types.T, refs colRefs) (tree.TypedEx
 			return nil, false
 		}
 	}
+	if fn.def.Name == "abs" && typ.Identical(types.Float4) {
+		// The 'abs' function is known to return somewhat unpredictable results
+		// on FLOAT4 type (different precision depending on the execution engine
+		// and the optimizer plan), so we choose to never use it in this
+		// context.
+		return nil, false
+	}
 
 	args := make(tree.TypedExprs, 0)
 	for _, argTyp := range fn.overload.Types.Types() {
@@ -752,11 +754,19 @@ func makeScalarSubquery(s *Smither, typ *types.T, refs colRefs) (tree.TypedExpr,
 		// This query must use a LIMIT, so bail if they are disabled.
 		return nil, false
 	}
-	selectStmt, _, ok := s.makeSelect([]*types.T{typ}, refs)
+	selectStmt, selectRefs, ok := s.makeSelect([]*types.T{typ}, refs)
 	if !ok {
 		return nil, false
 	}
 	selectStmt.Limit = &tree.Limit{Count: tree.NewDInt(1)}
+	if s.disableNondeterministicLimits {
+		// The ORDER BY clause must be fully specified with all select list columns
+		// in order to make a LIMIT clause deterministic.
+		selectStmt.OrderBy, ok = s.makeOrderByWithAllCols(selectRefs)
+		if !ok {
+			return nil, false
+		}
+	}
 
 	subq := &tree.Subquery{
 		Select: &tree.ParenSelect{Select: selectStmt},

@@ -1,12 +1,7 @@
 // Copyright 2021 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package admission
 
@@ -398,7 +393,7 @@ func (tr *testRequester) hasWaitingRequests() bool {
 
 func (tr *testRequester) granted(grantChainID grantChainID) int64 {
 	fmt.Fprintf(tr.buf, "%s%s: granted in chain %d, and returning %d\n",
-		tr.workKind, tr.additionalID,
+		workKindString(tr.workKind), tr.additionalID,
 		grantChainID, tr.returnValueFromGranted)
 	tr.grantChainID = grantChainID
 	return tr.returnValueFromGranted
@@ -408,24 +403,24 @@ func (tr *testRequester) close() {}
 
 func (tr *testRequester) tryGet(count int64) {
 	rv := tr.granter.tryGet(count)
-	fmt.Fprintf(tr.buf, "%s%s: tryGet(%d) returned %t\n", tr.workKind,
+	fmt.Fprintf(tr.buf, "%s%s: tryGet(%d) returned %t\n", workKindString(tr.workKind),
 		tr.additionalID, count, rv)
 }
 
 func (tr *testRequester) returnGrant(count int64) {
-	fmt.Fprintf(tr.buf, "%s%s: returnGrant(%d)\n", tr.workKind, tr.additionalID,
+	fmt.Fprintf(tr.buf, "%s%s: returnGrant(%d)\n", workKindString(tr.workKind), tr.additionalID,
 		count)
 	tr.granter.returnGrant(count)
 }
 
 func (tr *testRequester) tookWithoutPermission(count int64) {
-	fmt.Fprintf(tr.buf, "%s%s: tookWithoutPermission(%d)\n", tr.workKind,
+	fmt.Fprintf(tr.buf, "%s%s: tookWithoutPermission(%d)\n", workKindString(tr.workKind),
 		tr.additionalID, count)
 	tr.granter.tookWithoutPermission(count)
 }
 
 func (tr *testRequester) continueGrantChain() {
-	fmt.Fprintf(tr.buf, "%s%s: continueGrantChain\n", tr.workKind,
+	fmt.Fprintf(tr.buf, "%s%s: continueGrantChain\n", workKindString(tr.workKind),
 		tr.additionalID)
 	tr.granter.continueGrantChain(tr.grantChainID)
 }

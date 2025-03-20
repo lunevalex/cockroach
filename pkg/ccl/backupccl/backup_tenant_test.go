@@ -1,10 +1,7 @@
 // Copyright 2022 The Cockroach Authors.
 //
-// Licensed as a CockroachDB Enterprise file under the Cockroach Community
-// License (the "License"); you may not use this file except in compliance with
-// the License. You may obtain a copy of the License at
-//
-//     https://github.com/cockroachdb/cockroach/blob/master/licenses/CCL.txt
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package backupccl
 
@@ -23,7 +20,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/sql"
 	_ "github.com/cockroachdb/cockroach/pkg/sql/importer"
-	"github.com/cockroachdb/cockroach/pkg/sql/sqlclustersettings"
 	"github.com/cockroachdb/cockroach/pkg/sql/sqlliveness/slinstance"
 	"github.com/cockroachdb/cockroach/pkg/testutils"
 	"github.com/cockroachdb/cockroach/pkg/testutils/jobutils"
@@ -61,7 +57,7 @@ func TestBackupSharedProcessTenantNodeDown(t *testing.T) {
 	hostDB.Exec(t, "ALTER TENANT ALL SET CLUSTER SETTING server.sqlliveness.heartbeat='250ms'")
 
 	testTenantID := roachpb.MustMakeTenantID(11)
-	tenantApp, tenantDB, err := tc.Server(0).TenantController().StartSharedProcessTenant(ctx,
+	tenantApp, tenantDB, err := tc.Server(0).StartSharedProcessTenant(ctx,
 		base.TestSharedProcessTenantArgs{
 			TenantID:   testTenantID,
 			TenantName: "test",
@@ -277,7 +273,7 @@ func TestTenantBackupMultiRegionDatabases(t *testing.T) {
 		tenSQLDB.Exec(
 			t,
 			fmt.Sprintf(
-				"SET CLUSTER SETTING %s = 'us-east1'", sqlclustersettings.DefaultPrimaryRegionClusterSettingName,
+				"SET CLUSTER SETTING %s = 'us-east1'", sql.DefaultPrimaryRegionClusterSettingName,
 			),
 		)
 		setAndWaitForSystemVisibleClusterSetting(

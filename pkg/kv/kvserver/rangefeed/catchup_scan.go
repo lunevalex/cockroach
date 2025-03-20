@@ -1,12 +1,7 @@
 // Copyright 2021 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package rangefeed
 
@@ -77,14 +72,13 @@ type CatchUpIterator struct {
 // NB: startTime is exclusive, i.e. the first possible event will be emitted at
 // Timestamp.Next().
 func NewCatchUpIterator(
-	ctx context.Context,
 	reader storage.Reader,
 	span roachpb.Span,
 	startTime hlc.Timestamp,
 	closer func(),
 	pacer *admission.Pacer,
 ) (*CatchUpIterator, error) {
-	iter, err := storage.NewMVCCIncrementalIterator(ctx, reader,
+	iter, err := storage.NewMVCCIncrementalIterator(reader,
 		storage.MVCCIncrementalIterOptions{
 			KeyTypes:  storage.IterKeyTypePointsAndRanges,
 			StartKey:  span.Key,
@@ -96,7 +90,6 @@ func NewCatchUpIterator(
 			// over the provisional values during
 			// iteration.
 			IntentPolicy: storage.MVCCIncrementalIterIntentPolicyEmit,
-			ReadCategory: storage.RangefeedReadCategory,
 		})
 	if err != nil {
 		return nil, err
@@ -136,9 +129,6 @@ type outputEventFn func(e *kvpb.RangeFeedEvent) error
 // For example, with MVCC range tombstones [a-f)@5 and [a-f)@3 overlapping point
 // keys a@6, a@4, and b@2, the emitted order is [a-f)@3,[a-f)@5,a@4,a@6,b@2 because
 // the start key "a" is ordered before all of the timestamped point keys.
-//
-// TODO(sumeer): ctx is not used for SeekGE and Next. Fix by adding a method
-// to SimpleMVCCIterator to replace the context.
 func (i *CatchUpIterator) CatchUpScan(
 	ctx context.Context, outputFn outputEventFn, withDiff bool, withFiltering bool,
 ) error {

@@ -1,12 +1,7 @@
 // Copyright 2017 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package jobs_test
 
@@ -142,6 +137,21 @@ func (expected *expectation) verify(id jobspb.JobID, expectedStatus jobs.Status)
 		return errors.Errorf("expected error %q, got %q", e, a)
 	}
 	return nil
+}
+
+func TestJobsTableProgressFamily(t *testing.T) {
+	defer leaktest.AfterTest(t)()
+	defer log.Scope(t).Close(t)
+
+	ctx := context.Background()
+	s, db, _ := serverutils.StartServer(t, base.TestServerArgs{})
+	defer s.Stopper().Stop(ctx)
+
+	var table, schema string
+	sqlutils.MakeSQLRunner(db).QueryRow(t, `SHOW CREATE system.jobs`).Scan(&table, &schema)
+	if !strings.Contains(schema, `FAMILY progress (progress)`) {
+		t.Fatalf("expected progress family, got %q", schema)
+	}
 }
 
 type counters struct {
@@ -966,6 +976,53 @@ func TestRegistryLifecycle(t *testing.T) {
 		rts.mu.e.ResumeExit++
 		rts.check(t, jobs.StatusSucceeded)
 	})
+	t.Run("fail setting trace ID", func(t *testing.T) {
+		// The trace ID is set on the job above the state machine loop.
+		// This tests a regression where we fail to set trace ID and then
+		// don't clear the in-memory state that we were running this job.
+		// That prevents the job from being re-run.
+
+		rts := registryTestSuite{}
+		rts.setUp(t)
+		defer rts.tearDown()
+		rts.traceRealSpan = true
+
+		// Inject an error in the update to record the trace ID.
+		var failed atomic.Value
+		failed.Store(false)
+		rts.beforeUpdate = func(orig, updated jobs.JobMetadata) error {
+			if !failed.Load().(bool) &&
+				orig.Progress.TraceID == 0 &&
+				updated.Progress != nil &&
+				updated.Progress.TraceID != 0 {
+				failed.Store(true)
+				return errors.New("boom")
+			}
+			return nil
+		}
+
+		j, err := jobs.TestingCreateAndStartJob(context.Background(), rts.registry, rts.idb(), rts.mockJob)
+		if err != nil {
+			t.Fatal(err)
+		}
+		rts.job = j
+
+		testutils.SucceedsSoon(t, func() error {
+			if !failed.Load().(bool) {
+				return errors.New("not yet failed")
+			}
+			return nil
+		})
+
+		// Make sure the job retries and then succeeds.
+		rts.resumeCheckCh <- struct{}{}
+		rts.resumeCh <- nil
+		rts.mu.e.ResumeStart = true
+		rts.mu.e.ResumeExit++
+		rts.mu.e.Success = true
+		rts.check(t, jobs.StatusSucceeded)
+	})
+
 	t.Run("dump traces on pause-unpause-success", func(t *testing.T) {
 		ctx := context.Background()
 		completeCh := make(chan struct{})
@@ -1368,6 +1425,28 @@ func TestJobLifecycle(t *testing.T) {
 			}
 		})
 
+		// TODO(adityamaru): Delete these tests once we drop the payload and
+		// progress columns from system.jobs.
+		t.Run("payload in system.jobs is irrelevant when marking job as successful", func(t *testing.T) {
+			job, _ := createDefaultJob()
+			if _, err := sqlDB.Exec(
+				`UPDATE system.jobs SET payload = 'garbage' WHERE id = $1`, job.ID(),
+			); err != nil {
+				t.Fatal(err)
+			}
+			require.NoError(t, job.Succeeded(ctx))
+		})
+
+		t.Run("payload in system.jobs is irrelevant when marking job as failed", func(t *testing.T) {
+			job, _ := createDefaultJob()
+			if _, err := sqlDB.Exec(
+				`UPDATE system.jobs SET payload = 'garbage' WHERE id = $1`, job.ID(),
+			); err != nil {
+				t.Fatal(err)
+			}
+			require.NoError(t, job.Failed(ctx, errors.New("boom")))
+		})
+
 		t.Run("internal errors are not swallowed if marking job as successful", func(t *testing.T) {
 			job, _ := createDefaultJob()
 			if _, err := sqlDB.Exec(
@@ -1573,7 +1652,7 @@ func TestJobLifecycle(t *testing.T) {
 		}
 		for _, ts := range highWaters {
 			require.NoError(t, job.NoTxn().Update(ctx, func(_ isql.Txn, md jobs.JobMetadata, ju *jobs.JobUpdater) error {
-				return ju.UpdateHighwaterProgressed(ts, md)
+				return jobs.UpdateHighwaterProgressed(ts, md, ju)
 			}))
 			p := job.Progress()
 			if actual := *p.GetHighWater(); actual != ts {
@@ -1594,7 +1673,7 @@ func TestJobLifecycle(t *testing.T) {
 			t.Fatalf("expected 'outside allowable range' error, but got %v", err)
 		}
 		if err := job.NoTxn().Update(ctx, func(_ isql.Txn, md jobs.JobMetadata, ju *jobs.JobUpdater) error {
-			return ju.UpdateHighwaterProgressed(hlc.Timestamp{WallTime: -1}, md)
+			return jobs.UpdateHighwaterProgressed(hlc.Timestamp{WallTime: -1}, md, ju)
 		}); !testutils.IsError(err, "outside allowable range") {
 			t.Fatalf("expected 'outside allowable range' error, but got %v", err)
 		}
@@ -2448,15 +2527,15 @@ func TestStartableJobMixedVersion(t *testing.T) {
 
 	ctx := context.Background()
 	st := cluster.MakeTestingClusterSettingsWithVersions(
-		clusterversion.Latest.Version(),
-		clusterversion.MinSupported.Version(),
+		clusterversion.TestingBinaryVersion,
+		clusterversion.TestingBinaryMinSupportedVersion,
 		false, /* initializeVersion */
 	)
 	s, sqlDB, _ := serverutils.StartServer(t, base.TestServerArgs{
 		Settings: st,
 		Knobs: base.TestingKnobs{
 			Server: &server.TestingKnobs{
-				BinaryVersionOverride:          clusterversion.MinSupported.Version(),
+				BinaryVersionOverride:          clusterversion.TestingBinaryMinSupportedVersion,
 				DisableAutomaticVersionUpgrade: make(chan struct{}),
 			},
 		},

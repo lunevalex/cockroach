@@ -1,71 +1,64 @@
 // Copyright 2020 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package tests
 
 import (
 	"context"
-	"path/filepath"
 
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/cluster"
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/option"
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/test"
+	"github.com/cockroachdb/cockroach/pkg/roachprod"
 	"github.com/cockroachdb/cockroach/pkg/roachprod/install"
-	"github.com/cockroachdb/errors"
 	"github.com/stretchr/testify/require"
 )
 
 func runAcceptanceMultitenant(ctx context.Context, t test.Test, c cluster.Cluster) {
-	c.Start(ctx, t.L(), option.DefaultStartOpts(), install.MakeClusterSettings(install.SecureOption(true)), c.All())
+	// Start the storage layer.
+	storageNodes := c.All()
+	c.Start(ctx, t.L(), option.DefaultStartOpts(), install.MakeClusterSettings(), storageNodes)
 
-	const tenantID = 123
-	{
-		_, err := c.Conn(ctx, t.L(), 1).Exec(`SELECT crdb_internal.create_tenant($1::INT)`, tenantID)
-		require.NoError(t, err)
-	}
-
-	const (
-		tenantHTTPPort = 8081
-		tenantSQLPort  = 30258
+	// Start a virtual cluster.
+	const virtualClusterName = "acceptance-tenant"
+	virtualClusterNode := c.Node(1)
+	c.StartServiceForVirtualCluster(
+		ctx, t.L(),
+		option.StartVirtualClusterOpts(virtualClusterName, virtualClusterNode),
+		install.MakeClusterSettings(),
 	)
-	const tenantNode = 1
-	tenant := createTenantNode(ctx, t, c, c.All(), tenantID, tenantNode, tenantHTTPPort, tenantSQLPort)
-	tenant.start(ctx, t, c, "./cockroach")
 
-	t.Status("checking that a client can connect to the tenant server")
+	virtualClusterURL := func() string {
+		urls, err := c.ExternalPGUrl(ctx, t.L(), virtualClusterNode, roachprod.PGURLOptions{
+			VirtualClusterName: virtualClusterName,
+		})
+		require.NoError(t, err)
 
-	verifySQL(t, tenant.pgURL,
+		return urls[0]
+	}()
+
+	t.L().Printf("checking that a client can connect to the tenant server")
+	verifySQL(t, virtualClusterURL,
 		mkStmt(`CREATE TABLE foo (id INT PRIMARY KEY, v STRING)`),
 		mkStmt(`INSERT INTO foo VALUES($1, $2)`, 1, "bar"),
 		mkStmt(`SELECT * FROM foo LIMIT 1`).
 			withResults([][]string{{"1", "bar"}}))
 
-	t.Status("stopping the server ahead of checking for the tenant server")
+	// Verify that we are able to stop the virtual cluster instance.
+	t.L().Printf("stopping the virtual cluster instance")
+	c.StopServiceForVirtualCluster(
+		ctx, t.L(),
+		option.StopVirtualClusterOpts(virtualClusterName, virtualClusterNode),
+	)
 
-	// Stop the server, which also ensures that log files get flushed.
-	tenant.stop(ctx, t, c)
+	db := c.Conn(
+		ctx, t.L(), virtualClusterNode[0], option.VirtualClusterName(virtualClusterName),
+	)
+	defer db.Close()
 
-	t.Status("checking log file contents")
-
-	// Check that the server identifiers are present in the tenant log file.
-	logFile := filepath.Join(tenant.logDir(), "*.log")
-	if err := c.RunE(ctx, option.WithNodes(c.Node(1)),
-		"grep", "-q", "'start\\.go.*clusterID:'", logFile); err != nil {
-		t.Fatal(errors.Wrap(err, "cluster ID not found in log file"))
-	}
-	if err := c.RunE(ctx, option.WithNodes(c.Node(1)),
-		"grep", "-q", "'start\\.go.*tenantID:'", logFile); err != nil {
-		t.Fatal(errors.Wrap(err, "tenant ID not found in log file"))
-	}
-	if err := c.RunE(ctx, option.WithNodes(c.Node(1)),
-		"grep", "-q", "'start\\.go.*instanceID:'", logFile); err != nil {
-		t.Fatal(errors.Wrap(err, "SQL instance ID not found in log file"))
-	}
+	_, err := db.ExecContext(ctx, "CREATE TABLE bar (id INT PRIMARY KEY)")
+	require.Error(t, err)
+	t.L().Printf("after virtual cluster stopped, received error: %v", err)
 }

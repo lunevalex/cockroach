@@ -1,12 +1,7 @@
 // Copyright 2017 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package jobs
 
@@ -19,6 +14,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/cockroachdb/cockroach/pkg/build"
+	"github.com/cockroachdb/cockroach/pkg/clusterversion"
 	"github.com/cockroachdb/cockroach/pkg/jobs/jobspb"
 	"github.com/cockroachdb/cockroach/pkg/kv"
 	"github.com/cockroachdb/cockroach/pkg/security/username"
@@ -63,21 +60,11 @@ type Job struct {
 	}
 }
 
-// CreatedByInfo encapsulates the type and the ID of the system which created
+// CreatedByInfo encapsulates they type and the ID of the system which created
 // this job.
 type CreatedByInfo struct {
 	Name string
 	ID   int64
-}
-
-// ScheduleID return ID as a [jobspb.ScheduleID] iff Name is
-// [CreatedByScheduledJobs]. Otherwise it returns [jobspb.InvalidScheduleID],
-// the zero value.
-func (i *CreatedByInfo) ScheduleID() jobspb.ScheduleID {
-	if i.Name == CreatedByScheduledJobs {
-		return jobspb.ScheduleID(i.ID)
-	}
-	return jobspb.InvalidScheduleID
 }
 
 // Record bundles together the user-managed fields in jobspb.Payload.
@@ -161,16 +148,19 @@ func init() {
 // Status represents the status of a job in the system.jobs table.
 type Status string
 
-// SafeFormat implements redact.SafeFormatter.
-func (s Status) SafeFormat(sp redact.SafePrinter, verb rune) {
-	sp.SafeString(redact.SafeString(s))
-}
+// SafeValue implements redact.SafeValue.
+func (s Status) SafeValue() {}
 
-var _ redact.SafeFormatter = Status("")
+var _ redact.SafeValue = Status("")
 
 // RunningStatus represents the more detailed status of a running job in
 // the system.jobs table.
 type RunningStatus string
+
+// SafeValue implements redact.SafeValue.
+func (s RunningStatus) SafeValue() {}
+
+var _ redact.SafeValue = RunningStatus("")
 
 const (
 	// StatusPending is `for jobs that have been created but on which work has
@@ -247,11 +237,6 @@ func (j *Job) taskName() string {
 // Started marks the tracked job as started by updating status to running in
 // jobs table.
 func (u Updater) started(ctx context.Context) error {
-	sp := tracing.SpanFromContext(ctx)
-	traceID := tracingpb.TraceID(0)
-	if sp != nil {
-		traceID = sp.TraceID()
-	}
 	return u.Update(ctx, func(_ isql.Txn, md JobMetadata, ju *JobUpdater) error {
 		if md.Status != StatusPending && md.Status != StatusRunning {
 			return errors.Errorf("job with status %s cannot be marked started", md.Status)
@@ -271,10 +256,6 @@ func (u Updater) started(ctx context.Context) error {
 		if md.RunStats != nil {
 			ju.UpdateRunStats(md.RunStats.NumRuns+1, u.now())
 		}
-		if traceID != 0 && md.Progress != nil && md.Progress.TraceID != traceID {
-			md.Progress.TraceID = traceID
-			ju.UpdateProgress(md.Progress)
-		}
 		return nil
 	})
 }
@@ -287,12 +268,28 @@ func (u Updater) CheckStatus(ctx context.Context) error {
 	})
 }
 
+// CheckTerminalStatus returns true if the job is in a terminal status.
+func (u Updater) CheckTerminalStatus(ctx context.Context) bool {
+	err := u.Update(ctx, func(_ isql.Txn, md JobMetadata, _ *JobUpdater) error {
+		if !md.Status.Terminal() {
+			return &InvalidStatusError{md.ID, md.Status, "checking that job status is success", md.Payload.Error}
+		}
+		return nil
+	})
+
+	return err == nil
+}
+
 // RunningStatus updates the detailed status of a job currently in progress.
 // It sets the job's RunningStatus field to the value returned by runningStatusFn
 // and persists runningStatusFn's modifications to the job's details, if any.
-func (u Updater) RunningStatus(ctx context.Context, runningStatus RunningStatus) error {
+func (u Updater) RunningStatus(ctx context.Context, runningStatusFn RunningStatusFn) error {
 	return u.Update(ctx, func(_ isql.Txn, md JobMetadata, ju *JobUpdater) error {
 		if err := md.CheckRunningOrReverting(); err != nil {
+			return err
+		}
+		runningStatus, err := runningStatusFn(ctx, md.Progress.Details)
+		if err != nil {
 			return err
 		}
 		md.Progress.RunningStatus = string(runningStatus)
@@ -300,6 +297,11 @@ func (u Updater) RunningStatus(ctx context.Context, runningStatus RunningStatus)
 		return nil
 	})
 }
+
+// RunningStatusFn is a callback that computes a job's running status
+// given its details. It is safe to modify details in the callback; those
+// modifications will be automatically persisted to the database record.
+type RunningStatusFn func(ctx context.Context, details jobspb.Details) (RunningStatus, error)
 
 // NonCancelableUpdateFn is a callback that computes a job's non-cancelable
 // status given its current one.
@@ -329,16 +331,30 @@ func (u Updater) FractionProgressed(ctx context.Context, progressedFn FractionPr
 			return err
 		}
 		fractionCompleted := progressedFn(ctx, md.Progress.Details)
-		// allow for slight floating-point rounding inaccuracies
-		if fractionCompleted > 1.0 && fractionCompleted < 1.01 {
+
+		if !build.IsRelease() {
+			// We allow for slight floating-point rounding
+			// inaccuracies. We only want to error in non-release
+			// builds because in large production installations the
+			// method at least one job uses to calculate process can
+			// result in substantial floating point inaccuracy.
+			if fractionCompleted < 0.0 || fractionCompleted > 1.01 {
+				return errors.Errorf(
+					"fraction completed %f is outside allowable range [0.0, 1.01]",
+					fractionCompleted,
+				)
+			}
+		}
+
+		// Clamp to [0.0, 1.0].
+		if fractionCompleted > 1.0 {
+			log.VInfof(ctx, 1, "clamping fraction completed %f to [0.0, 1.0]", fractionCompleted)
 			fractionCompleted = 1.0
+		} else if fractionCompleted < 0.0 {
+			log.VInfof(ctx, 1, "clamping fraction completed %f to [0.0, 1.0]", fractionCompleted)
+			fractionCompleted = 0
 		}
-		if fractionCompleted < 0.0 || fractionCompleted > 1.0 {
-			return errors.Errorf(
-				"job %d: fractionCompleted %f is outside allowable range [0.0, 1.0]",
-				u.j.ID(), fractionCompleted,
-			)
-		}
+
 		md.Progress.Progress = &jobspb.Progress_FractionCompleted{
 			FractionCompleted: fractionCompleted,
 		}
@@ -492,12 +508,6 @@ func (u Updater) PauseRequested(ctx context.Context, reason string) error {
 func (u Updater) reverted(
 	ctx context.Context, err error, fn func(context.Context, isql.Txn) error,
 ) error {
-	sp := tracing.SpanFromContext(ctx)
-	traceID := tracingpb.TraceID(0)
-	if sp != nil {
-		traceID = sp.TraceID()
-	}
-
 	return u.Update(ctx, func(txn isql.Txn, md JobMetadata, ju *JobUpdater) error {
 		if md.Status != StatusReverting &&
 			md.Status != StatusCancelRequested &&
@@ -540,10 +550,6 @@ func (u Updater) reverted(
 				numRuns = 1
 			}
 			ju.UpdateRunStats(numRuns, u.now())
-		}
-		if traceID != 0 && md.Progress != nil && md.Progress.TraceID != traceID {
-			md.Progress.TraceID = traceID
-			ju.UpdateProgress(md.Progress)
 		}
 		return nil
 	})
@@ -738,28 +744,64 @@ func (j *Job) loadJobPayloadAndProgress(
 
 	payload := &jobspb.Payload{}
 	progress := &jobspb.Progress{}
-	infoStorage := j.InfoStorage(txn)
+	if st.Version.IsActive(ctx, clusterversion.V23_1JobInfoTableIsBackfilled) {
+		infoStorage := j.InfoStorage(txn)
 
-	payloadBytes, exists, err := infoStorage.GetLegacyPayload(ctx)
+		payloadBytes, exists, err := infoStorage.GetLegacyPayload(ctx)
+		if err != nil {
+			return nil, nil, errors.Wrapf(err, "failed to get payload for job %d", j.ID())
+		}
+		if !exists {
+			return nil, nil, errors.Wrap(&JobNotFoundError{jobID: j.ID()}, "job payload not found in system.job_info")
+		}
+		if err := protoutil.Unmarshal(payloadBytes, payload); err != nil {
+			return nil, nil, err
+		}
+
+		progressBytes, exists, err := infoStorage.GetLegacyProgress(ctx)
+		if err != nil {
+			return nil, nil, errors.Wrapf(err, "failed to get progress for job %d", j.ID())
+		}
+		if !exists {
+			return nil, nil, errors.Wrap(&JobNotFoundError{jobID: j.ID()}, "job progress not found in system.job_info")
+		}
+		if err := protoutil.Unmarshal(progressBytes, progress); err != nil {
+			return nil, nil, &JobNotFoundError{jobID: j.ID()}
+		}
+
+		return payload, progress, nil
+	}
+
+	// If V23_1JobInfoTableIsBackfilled is not active we should read the payload
+	// and progress from the system.jobs table.
+	const (
+		queryNoSessionID   = "SELECT payload, progress FROM system.jobs WHERE id = $1"
+		queryWithSessionID = queryNoSessionID + " AND claim_session_id = $2"
+	)
+	sess := sessiondata.RootUserSessionDataOverride
+
+	var err error
+	var row tree.Datums
+	if j.session == nil {
+		row, err = txn.QueryRowEx(ctx, "load-job-payload-progress-query", txn.KV(), sess,
+			queryNoSessionID, j.ID())
+	} else {
+		row, err = txn.QueryRowEx(ctx, "load-job-payload-progress-query", txn.KV(), sess,
+			queryWithSessionID, j.ID(), j.session.ID().UnsafeBytes())
+	}
 	if err != nil {
-		return nil, nil, errors.Wrapf(err, "failed to get payload for job %d", j.ID())
-	}
-	if !exists {
-		return nil, nil, errors.Wrap(&JobNotFoundError{jobID: j.ID()}, "job payload not found in system.job_info")
-	}
-	if err := protoutil.Unmarshal(payloadBytes, payload); err != nil {
 		return nil, nil, err
 	}
-
-	progressBytes, exists, err := infoStorage.GetLegacyProgress(ctx)
-	if err != nil {
-		return nil, nil, errors.Wrapf(err, "failed to get progress for job %d", j.ID())
-	}
-	if !exists {
-		return nil, nil, errors.Wrap(&JobNotFoundError{jobID: j.ID()}, "job progress not found in system.job_info")
-	}
-	if err := protoutil.Unmarshal(progressBytes, progress); err != nil {
+	if row == nil {
 		return nil, nil, &JobNotFoundError{jobID: j.ID()}
+	}
+	payload, err = UnmarshalPayload(row[0])
+	if err != nil {
+		return nil, nil, err
+	}
+	progress, err = UnmarshalProgress(row[1])
+	if err != nil {
+		return nil, nil, err
 	}
 
 	return payload, progress, nil

@@ -1,12 +1,7 @@
 // Copyright 2018 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package tests
 
@@ -43,11 +38,8 @@ func registerDrop(r registry.Registry) {
 		m := c.NewMonitor(ctx, c.Range(1, nodes))
 		m.Go(func(ctx context.Context) error {
 			t.WorkerStatus("importing TPCC fixture")
-			pgurl, err := roachtestutil.DefaultPGUrl(ctx, c, t.L(), c.Nodes(1))
-			if err != nil {
-				t.Fatal(err)
-			}
-			c.Run(ctx, option.WithNodes(c.Node(1)), tpccImportCmd(warehouses, pgurl))
+
+			c.Run(ctx, c.Node(1), tpccImportCmd(warehouses, "{pgurl:1}"))
 
 			// Don't open the DB connection until after the data has been imported.
 			// Otherwise the ALTER TABLE query below might fail to find the

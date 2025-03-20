@@ -1,12 +1,7 @@
 // Copyright 2018 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package rowexec
 
@@ -573,12 +568,14 @@ func (z *zigzagJoiner) matchBase(curRow rowenc.EncDatumRow, side int) (bool, err
 
 	prevEqDatums := z.extractEqDatums(z.baseRow, z.prevSide())
 	curEqDatums := z.extractEqDatums(curRow, side)
-
-	eqColTypes := z.infos[side].eqColTypes
+	prevEqColTypes := z.infos[z.prevSide()].eqColTypes
+	curEqColTypes := z.infos[side].eqColTypes
 	ordering := z.infos[side].eqColOrdering
 
 	// Compare the equality columns of the baseRow to that of the curRow.
-	cmp, err := prevEqDatums.Compare(eqColTypes, &z.infos[side].alloc, ordering, z.FlowCtx.EvalCtx, curEqDatums)
+	cmp, err := prevEqDatums.CompareEx(
+		prevEqColTypes, &z.infos[side].alloc, ordering, z.FlowCtx.EvalCtx, curEqDatums, curEqColTypes,
+	)
 	if err != nil {
 		return false, err
 	}
@@ -718,9 +715,13 @@ func (z *zigzagJoiner) nextRow(ctx context.Context) (rowenc.EncDatumRow, error) 
 
 			prevEqCols := z.extractEqDatums(prevNext, prevSide)
 			currentEqCols := z.extractEqDatums(curNext, z.side)
-			eqColTypes := curInfo.eqColTypes
+			prevEqColTypes := z.infos[prevSide].eqColTypes
+			curEqColTypes := z.infos[z.side].eqColTypes
 			ordering := curInfo.eqColOrdering
-			cmp, err := prevEqCols.Compare(eqColTypes, &z.infos[z.side].alloc, ordering, z.FlowCtx.EvalCtx, currentEqCols)
+			cmp, err := prevEqCols.CompareEx(
+				prevEqColTypes, &z.infos[z.side].alloc, ordering,
+				z.FlowCtx.EvalCtx, currentEqCols, curEqColTypes,
+			)
 			if err != nil {
 				return nil, err
 			}

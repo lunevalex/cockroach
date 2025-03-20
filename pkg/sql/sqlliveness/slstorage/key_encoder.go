@@ -1,12 +1,7 @@
 // Copyright 2022 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package slstorage
 
@@ -75,4 +70,34 @@ func (e *rbrEncoder) decode(key roachpb.Key) (sqlliveness.SessionID, error) {
 
 func (e *rbrEncoder) indexPrefix() roachpb.Key {
 	return e.rbrIndex.Clone()
+}
+
+type rbtEncoder struct {
+	rbtIndex roachpb.Key
+}
+
+func (e *rbtEncoder) encode(id sqlliveness.SessionID) (roachpb.Key, error) {
+	const columnFamilyID = 0
+
+	key := e.indexPrefix()
+	key = encoding.EncodeBytesAscending(key, id.UnsafeBytes())
+	return keys.MakeFamilyKey(key, columnFamilyID), nil
+}
+
+func (e *rbtEncoder) decode(key roachpb.Key) (sqlliveness.SessionID, error) {
+	if !bytes.HasPrefix(key, e.rbtIndex) {
+		return "", errors.Newf("sqlliveness table key has an invalid prefix: %v", key)
+	}
+	rem := key[len(e.rbtIndex):]
+
+	rem, session, err := encoding.DecodeBytesAscending(rem, nil)
+	if err != nil {
+		return "", errors.Wrap(err, "failed to decode region from session key")
+	}
+
+	return sqlliveness.SessionID(session), nil
+}
+
+func (e *rbtEncoder) indexPrefix() roachpb.Key {
+	return e.rbtIndex.Clone()
 }

@@ -1,12 +1,7 @@
 // Copyright 2018 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package tests
 
@@ -31,7 +26,7 @@ func registerReplicaGC(r registry.Registry) {
 	for _, restart := range []bool{true, false} {
 		r.Add(registry.TestSpec{
 			Name:             fmt.Sprintf("replicagc-changed-peers/restart=%t", restart),
-			Owner:            registry.OwnerReplication,
+			Owner:            registry.OwnerKV,
 			Cluster:          r.MakeClusterSpec(6),
 			CompatibleClouds: registry.AllExceptAWS,
 			Suites:           registry.Suites(registry.Nightly),
@@ -86,7 +81,7 @@ func runReplicaGCChangedPeers(
 	}()
 
 	// Fill in a bunch of data.
-	c.Run(ctx, option.WithNodes(c.Node(1)), "./cockroach workload init kv {pgurl:1} --splits 100")
+	c.Run(ctx, c.Node(1), "./cockroach workload init kv {pgurl:1} --splits 100")
 
 	// Kill the third node so it won't know that all of its replicas are moved
 	// elsewhere (we don't use the first because that's what roachprod will

@@ -1,10 +1,7 @@
 // Copyright 2017 The Cockroach Authors.
 //
-// Licensed as a CockroachDB Enterprise file under the Cockroach Community
-// License (the "License"); you may not use this file except in compliance with
-// the License. You may obtain a copy of the License at
-//
-//     https://github.com/cockroachdb/cockroach/blob/master/licenses/CCL.txt
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package backupccl
 
@@ -76,7 +73,7 @@ func slurpSSTablesLatestKey(
 			LowerBound: keys.LocalMax,
 			UpperBound: keys.MaxKey,
 		}
-		sst, err := storage.NewSSTIterator([][]sstable.ReadableFile{{file}}, iterOpts)
+		sst, err := storage.NewSSTIterator([][]sstable.ReadableFile{{file}}, iterOpts, false /* forwardOnly */)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -117,7 +114,7 @@ func slurpSSTablesLatestKey(
 	}
 
 	var kvs []storage.MVCCKeyValue
-	it, err := batch.NewMVCCIterator(context.Background(), storage.MVCCKeyAndIntentsIterKind, storage.IterOptions{UpperBound: roachpb.KeyMax})
+	it, err := batch.NewMVCCIterator(storage.MVCCKeyAndIntentsIterKind, storage.IterOptions{UpperBound: roachpb.KeyMax})
 	require.NoError(t, err)
 	defer it.Close()
 	for it.SeekGE(start); ; it.NextKey() {

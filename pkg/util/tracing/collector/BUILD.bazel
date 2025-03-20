@@ -24,10 +24,7 @@ go_test(
         "collector_test.go",
         "main_test.go",
     ],
-    exec_properties = select({
-        "//build/toolchains:is_heavy": {"Pool": "heavy"},
-        "//conditions:default": {"Pool": "default"},
-    }),
+    args = ["-test.timeout=295s"],
     deps = [
         ":collector",
         "//pkg/base",
@@ -37,7 +34,6 @@ go_test(
         "//pkg/security/securitytest",
         "//pkg/server",
         "//pkg/sql/sqlinstance",
-        "//pkg/testutils",
         "//pkg/testutils/serverutils",
         "//pkg/testutils/testcluster",
         "//pkg/util/leaktest",
@@ -45,7 +41,6 @@ go_test(
         "//pkg/util/randutil",
         "//pkg/util/tracing",
         "//pkg/util/tracing/tracingpb",
-        "@com_github_cockroachdb_errors//:errors",
         "@com_github_gogo_protobuf//types",
         "@com_github_stretchr_testify//require",
     ],

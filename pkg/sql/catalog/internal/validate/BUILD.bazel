@@ -28,11 +28,8 @@ go_test(
         "helpers_test.go",
         "schema_changer_state_test.go",
     ],
+    args = ["-test.timeout=295s"],
     embed = [":validate"],
-    exec_properties = select({
-        "//build/toolchains:is_heavy": {"Pool": "heavy"},
-        "//conditions:default": {"Pool": "default"},
-    }),
     deps = [
         "//pkg/clusterversion",
         "//pkg/sql/catalog",

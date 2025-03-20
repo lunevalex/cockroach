@@ -1,12 +1,7 @@
 // Copyright 2020 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package cloud
 
@@ -23,7 +18,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
 	"github.com/cockroachdb/cockroach/pkg/sql/isql"
 	"github.com/cockroachdb/cockroach/pkg/util/ioctx"
-	"github.com/cockroachdb/cockroach/pkg/util/metric"
 	"github.com/cockroachdb/errors"
 )
 
@@ -119,9 +113,6 @@ type ExternalStorageFactory func(ctx context.Context, dest cloudpb.ExternalStora
 type ExternalStorageFromURIFactory func(ctx context.Context, uri string,
 	user username.SQLUsername, opts ...ExternalStorageOption) (ExternalStorage, error)
 
-// ExternalStorageFromURIFactory describes a factory function for ExternalStorage given a URI.
-type EarlyBootExternalStorageFromURIFactory func(ctx context.Context, uri string, opts ...ExternalStorageOption) (ExternalStorage, error)
-
 // SQLConnI encapsulates the interfaces which will be implemented by the network
 // backed SQLConn which is used to interact with the userfile tables.
 type SQLConnI interface {
@@ -161,29 +152,26 @@ type ExternalStorageURIContext struct {
 // ExternalStorageURIParser functions parses a URL into a structured
 // ExternalStorage configuration.
 type ExternalStorageURIParser func(ExternalStorageURIContext, *url.URL) (cloudpb.ExternalStorage, error)
-type EarlyBootExternalStorageURIParser func(*url.URL) (cloudpb.ExternalStorage, error)
 
 // ExternalStorageContext contains the dependencies passed to external storage
 // implementations during creation.
 type ExternalStorageContext struct {
-	EarlyBootExternalStorageContext
-
+	IOConf            base.ExternalIODirConfig
+	Settings          *cluster.Settings
 	BlobClientFactory blobs.BlobClientFactory
 	DB                isql.DB
+	Options           []ExternalStorageOption
+	Limiters          Limiters
 	MetricsRecorder   *Metrics
 }
 
-// ExternalStorageContext contains the dependencies passed to external storage
-// implementations during creation.
-type EarlyBootExternalStorageContext struct {
-	IOConf base.ExternalIODirConfig
-	// TODO(ssd): We provide settings to early-boot external
-	// storage, but I am rather uncertain it is a good idea. We
-	// may be using this provider before we've even read our
-	// cached settings.
-	Settings *cluster.Settings
-	Options  []ExternalStorageOption
-	Limiters Limiters
+// ExternalStorageOptions rolls up the Options into a struct.
+func (e *ExternalStorageContext) ExternalStorageOptions() ExternalStorageOptions {
+	var options ExternalStorageOptions
+	for _, option := range e.Options {
+		option(&options)
+	}
+	return options
 }
 
 // ExternalStorageOptions holds dependencies and values that can be
@@ -192,6 +180,7 @@ type EarlyBootExternalStorageContext struct {
 type ExternalStorageOptions struct {
 	ioAccountingInterceptor  ReadWriterInterceptor
 	AzureStorageTestingKnobs base.ModuleTestingKnobs
+	ClientName               string
 }
 
 // ExternalStorageConstructor is a function registered to create instances
@@ -200,50 +189,42 @@ type ExternalStorageConstructor func(
 	context.Context, ExternalStorageContext, cloudpb.ExternalStorage,
 ) (ExternalStorage, error)
 
-type EarlyBootExternalStorageConstructor func(
-	context.Context, EarlyBootExternalStorageContext, cloudpb.ExternalStorage,
-) (ExternalStorage, error)
-
-// NewEarlyBootExternalStorageAccessor creates an
-// EarlyBootExternalStorageAccessor
-func NewEarlyBootExternalStorageAccessor(
-	st *cluster.Settings, conf base.ExternalIODirConfig,
-) *EarlyBootExternalStorageAccessor {
-	return &EarlyBootExternalStorageAccessor{
-		conf:     conf,
-		settings: st,
-		limiters: MakeLimiters(&st.SV),
-		metrics:  MakeMetrics(),
-	}
+// NewExternalStorageAccessor creates an uninitialized ExternalStorageAccessor.
+func NewExternalStorageAccessor() *ExternalStorageAccessor {
+	return &ExternalStorageAccessor{ready: make(chan struct{})}
 }
 
-// EarlyBootExternalStorageAccessor provides access to external
-// storage providers that can be accessed from the very start of node
-// startup. Such providers do not depend on SQL access, node IDs, or
-// other dependencies that are only available later in the startup
-// process.
-type EarlyBootExternalStorageAccessor struct {
-	conf     base.ExternalIODirConfig
-	settings *cluster.Settings
-	limiters Limiters
-	metrics  metric.Struct
+// ExternalStorageAccessor is a container for accessing the ExternalStorage
+// factory methods once they are initialized. Attempts to access them prior to
+// initialization will block.
+type ExternalStorageAccessor struct {
+	ready   chan struct{}
+	factory ExternalStorageFactory
+	byURI   ExternalStorageFromURIFactory
 }
 
-// Metrics returns the metrics struct so that it can be consumed by
-// the external storage builder.
-func (a *EarlyBootExternalStorageAccessor) Metrics() metric.Struct {
-	return a.metrics
+// Init initializes the ExternalStorageAccessor with the passed factories.
+func (a *ExternalStorageAccessor) Init(
+	factory ExternalStorageFactory, uriFactory ExternalStorageFromURIFactory,
+) error {
+	a.factory = factory
+	a.byURI = uriFactory
+	close(a.ready)
+	return nil
 }
 
-// Limiters returns the limiters slice so that it can be consumed by
-// the external storage builder.
-func (a *EarlyBootExternalStorageAccessor) Limiters() Limiters {
-	return a.limiters
+// Open opens an ExternalStorage.
+func (a *ExternalStorageAccessor) Open(
+	ctx context.Context, dest cloudpb.ExternalStorage, opts ...ExternalStorageOption,
+) (ExternalStorage, error) {
+	<-a.ready
+	return a.factory(ctx, dest, opts...)
 }
 
 // OpenURL opens an ExternalStorage using a URI spec.
-func (a *EarlyBootExternalStorageAccessor) OpenURL(
-	ctx context.Context, uri string, opts ...ExternalStorageOption,
+func (a *ExternalStorageAccessor) OpenURL(
+	ctx context.Context, uri string, user username.SQLUsername, opts ...ExternalStorageOption,
 ) (ExternalStorage, error) {
-	return EarlyBootExternalStorageFromURI(ctx, uri, a.conf, a.settings, a.limiters, a.metrics, opts...)
+	<-a.ready
+	return a.byURI(ctx, uri, user, opts...)
 }

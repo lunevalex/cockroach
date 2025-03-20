@@ -1,12 +1,7 @@
 // Copyright 2016 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 // Package execinfra contains the common interfaces for colexec and rowexec.
 package execinfra
@@ -40,15 +35,11 @@ type ConsumerStatus uint32
 const (
 	// NeedMoreRows indicates that the consumer is still expecting more rows.
 	NeedMoreRows ConsumerStatus = iota
-	// SwitchToAnotherPortal indicates that we received exec command for a
-	// different portal, and may come back to continue executing the current
+	// SwitchToAnotherPortal indicates that the we received exec command for
+	// a different portal, and may come back to continue executing the current
 	// portal later. If the cluster setting session variable
-	// multiple_active_portals_enabled is set to be true, we do nothing and
-	// return the control to the connExecutor.
-	//
-	// Note that currently multiple active portals don't support the distributed
-	// execution, so this status can only be reached during the local execution.
-	// This is tracked by #100822.
+	// multiple_active_portals_enabled is set to be true, we do nothing and return
+	// the control to the connExecutor.
 	SwitchToAnotherPortal
 	// DrainRequested indicates that the consumer will not process any more data
 	// rows, but will accept trailing metadata from the producer.

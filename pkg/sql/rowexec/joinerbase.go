@@ -1,12 +1,7 @@
 // Copyright 2016 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package rowexec
 
@@ -157,7 +152,7 @@ func shouldEmitUnmatchedRow(side joinSide, joinType descpb.JoinType) bool {
 func (jb *joinerBase) render(lrow, rrow rowenc.EncDatumRow) (rowenc.EncDatumRow, error) {
 	outputRow := jb.renderForOutput(lrow, rrow)
 
-	if jb.onCond.Expr() != nil {
+	if jb.onCond.Expr != nil {
 		// We need to evaluate the ON condition which can refer to the columns
 		// from both sides of the join regardless of the join type, so we need
 		// to have the combined row.

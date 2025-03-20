@@ -1,12 +1,7 @@
 // Copyright 2018 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package rangefeed
 
@@ -16,7 +11,6 @@ import (
 
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/concurrency/isolation"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
-	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
 	"github.com/cockroachdb/cockroach/pkg/util/leaktest"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
@@ -182,7 +176,7 @@ func TestUnresolvedIntentQueue(t *testing.T) {
 func TestResolvedTimestamp(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	ctx := context.Background()
-	rts := makeResolvedTimestamp(cluster.MakeTestingClusterSettings())
+	rts := makeResolvedTimestamp()
 	rts.Init()
 
 	// Test empty resolved timestamp.
@@ -355,7 +349,7 @@ func TestResolvedTimestamp(t *testing.T) {
 func TestResolvedTimestampNoClosedTimestamp(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	ctx := context.Background()
-	rts := makeResolvedTimestamp(cluster.MakeTestingClusterSettings())
+	rts := makeResolvedTimestamp()
 	rts.Init()
 
 	// Add a value. No closed timestamp so no resolved timestamp.
@@ -393,7 +387,7 @@ func TestResolvedTimestampNoClosedTimestamp(t *testing.T) {
 
 func TestResolvedTimestampNoIntents(t *testing.T) {
 	defer leaktest.AfterTest(t)()
-	rts := makeResolvedTimestamp(cluster.MakeTestingClusterSettings())
+	rts := makeResolvedTimestamp()
 	rts.Init()
 
 	// Set a closed timestamp. Resolved timestamp advances.
@@ -428,7 +422,7 @@ func TestResolvedTimestampInit(t *testing.T) {
 	ctx := context.Background()
 
 	t.Run("CT Before Init", func(t *testing.T) {
-		rts := makeResolvedTimestamp(cluster.MakeTestingClusterSettings())
+		rts := makeResolvedTimestamp()
 
 		// Set a closed timestamp. Not initialized so no resolved timestamp.
 		fwd := rts.ForwardClosedTS(hlc.Timestamp{WallTime: 5})
@@ -441,7 +435,7 @@ func TestResolvedTimestampInit(t *testing.T) {
 		require.Equal(t, hlc.Timestamp{WallTime: 5}, rts.Get())
 	})
 	t.Run("No CT Before Init", func(t *testing.T) {
-		rts := makeResolvedTimestamp(cluster.MakeTestingClusterSettings())
+		rts := makeResolvedTimestamp()
 
 		// Add an intent. Not initialized so no resolved timestamp.
 		txn1 := uuid.MakeV4()
@@ -455,7 +449,7 @@ func TestResolvedTimestampInit(t *testing.T) {
 		require.Equal(t, hlc.Timestamp{}, rts.Get())
 	})
 	t.Run("Write Before Init", func(t *testing.T) {
-		rts := makeResolvedTimestamp(cluster.MakeTestingClusterSettings())
+		rts := makeResolvedTimestamp()
 
 		// Add an intent. Not initialized so no resolved timestamp.
 		txn1 := uuid.MakeV4()
@@ -474,7 +468,7 @@ func TestResolvedTimestampInit(t *testing.T) {
 		require.Equal(t, hlc.Timestamp{WallTime: 2}, rts.Get())
 	})
 	t.Run("Abort + Write Before Init", func(t *testing.T) {
-		rts := makeResolvedTimestamp(cluster.MakeTestingClusterSettings())
+		rts := makeResolvedTimestamp()
 
 		// Abort an intent. Not initialized so no resolved timestamp.
 		txn1 := uuid.MakeV4()
@@ -506,7 +500,7 @@ func TestResolvedTimestampInit(t *testing.T) {
 		require.Equal(t, hlc.Timestamp{WallTime: 5}, rts.Get())
 	})
 	t.Run("Abort Before Init, No Write", func(t *testing.T) {
-		rts := makeResolvedTimestamp(cluster.MakeTestingClusterSettings())
+		rts := makeResolvedTimestamp()
 
 		// Abort an intent. Not initialized so no resolved timestamp.
 		txn1 := uuid.MakeV4()
@@ -523,7 +517,7 @@ func TestResolvedTimestampInit(t *testing.T) {
 func TestResolvedTimestampTxnAborted(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	ctx := context.Background()
-	rts := makeResolvedTimestamp(cluster.MakeTestingClusterSettings())
+	rts := makeResolvedTimestamp()
 	rts.Init()
 
 	// Set a closed timestamp. Resolved timestamp advances.
@@ -580,7 +574,7 @@ func TestClosedTimestampLogicalPart(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
 	ctx := context.Background()
-	rts := makeResolvedTimestamp(cluster.MakeTestingClusterSettings())
+	rts := makeResolvedTimestamp()
 	rts.Init()
 
 	// Set a new closed timestamp. Resolved timestamp advances.

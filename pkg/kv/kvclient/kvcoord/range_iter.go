@@ -1,12 +1,7 @@
 // Copyright 2016 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package kvcoord
 
@@ -179,7 +174,7 @@ func (ri *RangeIterator) Next(ctx context.Context) {
 
 // Seek positions the iterator at the specified key.
 func (ri *RangeIterator) Seek(ctx context.Context, key roachpb.RKey, scanDir ScanDirection) {
-	logEvents := log.HasSpan(ctx)
+	logEvents := log.HasSpanOrEvent(ctx)
 	if logEvents {
 		rev := ""
 		if scanDir == Descending {
@@ -230,7 +225,7 @@ func (ri *RangeIterator) Seek(ctx context.Context, key roachpb.RKey, scanDir Sca
 	}
 
 	// Check for an early exit from the retry loop.
-	if deducedErr := ri.ds.deduceRetryEarlyExitError(ctx); deducedErr != nil {
+	if deducedErr := ri.ds.deduceRetryEarlyExitError(ctx, err); deducedErr != nil {
 		ri.err = deducedErr
 	} else {
 		ri.err = errors.Wrapf(err, "RangeIterator failed to seek to %s", key)

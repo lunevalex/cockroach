@@ -1,12 +1,7 @@
 // Copyright 2021 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 import React from "react";
 import { Anchor } from "src/anchor";
@@ -969,6 +964,14 @@ export const statisticsTableTitles: StatisticTableTitleType = {
           <p>
             The 50th latency percentile for sampled {contentModifier} executions
             with this fingerprint.
+            <br />
+            <br />
+            <strong>Warning:</strong> the data source for latency percentiles is
+            different from the source for other execution statistics. These
+            percentiles are not calculated from the same set of executions as
+            the other columns and can be inconsistent. The data is provided for
+            informational purposes here and is not expected to be consistent
+            with max, min, or average latency that is also presented.
           </p>
         }
       >
@@ -995,6 +998,14 @@ export const statisticsTableTitles: StatisticTableTitleType = {
           <p>
             The 90th latency percentile for sampled {contentModifier} executions
             with this fingerprint.
+            <br />
+            <br />
+            <strong>Warning:</strong> the data source for latency percentiles is
+            different from the source for other execution statistics. These
+            percentiles are not calculated from the same set of executions as
+            the other columns and can be inconsistent. The data is provided for
+            informational purposes here and is not expected to be consistent
+            with max, min, or average latency that is also presented.
           </p>
         }
       >
@@ -1021,6 +1032,14 @@ export const statisticsTableTitles: StatisticTableTitleType = {
           <p>
             The 99th latency percentile for sampled {contentModifier} executions
             with this fingerprint.
+            <br />
+            <br />
+            <strong>Warning:</strong> the data source for latency percentiles is
+            different from the source for other execution statistics. These
+            percentiles are not calculated from the same set of executions as
+            the other columns and can be inconsistent. The data is provided for
+            informational purposes here and is not expected to be consistent
+            with max, min, or average latency that is also presented.
           </p>
         }
       >

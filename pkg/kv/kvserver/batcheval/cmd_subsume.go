@@ -1,12 +1,7 @@
 // Copyright 2018 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package batcheval
 
@@ -19,6 +14,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/kv/kvpb"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/batcheval/result"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/lockspanset"
+	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/readsummary/rspb"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/spanset"
 	"github.com/cockroachdb/cockroach/pkg/storage"
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
@@ -103,7 +99,7 @@ func Subsume(
 	// regardless of what timestamp it is written at.
 	descKey := keys.RangeDescriptorKey(desc.StartKey)
 	intentRes, err := storage.MVCCGet(ctx, readWriter, descKey, hlc.MaxTimestamp,
-		storage.MVCCGetOptions{Inconsistent: true, ReadCategory: storage.BatchEvalReadCategory})
+		storage.MVCCGetOptions{Inconsistent: true})
 	if err != nil {
 		return result.Result{}, errors.Wrap(err, "fetching local range descriptor")
 	} else if intentRes.Intent == nil {
@@ -147,7 +143,7 @@ func Subsume(
 	// rather than introducing additional synchronization complexity.
 	ridPrefix := keys.MakeRangeIDReplicatedPrefix(desc.RangeID)
 	reply.RangeIDLocalMVCCStats, err = storage.ComputeStats(
-		ctx, readWriter, ridPrefix, ridPrefix.PrefixEnd(), 0 /* nowNanos */)
+		readWriter, ridPrefix, ridPrefix.PrefixEnd(), 0 /* nowNanos */)
 	if err != nil {
 		return result.Result{}, err
 	}
@@ -157,6 +153,17 @@ func Subsume(
 	// timestamp cache to ensure that no future writes are allowed to invalidate
 	// prior reads performed to this point on the RHS range.
 	priorReadSum := cArgs.EvalCtx.GetCurrentReadSummary(ctx)
+	// For now, forward this summary to the freeze time. This may appear to
+	// undermine the benefit of the read summary, but it doesn't entirely. Until
+	// we ship higher-resolution read summaries, the read summary doesn't
+	// provide much value in avoiding transaction retries, but it is necessary
+	// for correctness if the RHS has served reads at future times above the
+	// freeze time.
+	//
+	// We can remove this in the future when we increase the resolution of read
+	// summaries and have a per-range closed timestamp system that is easier to
+	// think about.
+	priorReadSum.Merge(rspb.FromTimestamp(reply.FreezeStart.ToTimestamp()))
 	reply.ReadSummary = &priorReadSum
 	reply.ClosedTimestamp = cArgs.EvalCtx.GetCurrentClosedTimestamp(ctx)
 

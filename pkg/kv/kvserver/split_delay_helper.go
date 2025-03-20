@@ -1,23 +1,19 @@
 // Copyright 2018 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package kvserver
 
 import (
 	"context"
+	"fmt"
 	"math"
+	"strings"
 	"time"
 
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/util/timeutil"
-	"github.com/cockroachdb/redact"
 	"go.etcd.io/raft/v3"
 	"go.etcd.io/raft/v3/tracker"
 )
@@ -76,15 +72,13 @@ func (sdh *splitDelayHelper) TickDuration() time.Duration {
 	return r.store.cfg.RaftTickInterval
 }
 
-func maybeDelaySplitToAvoidSnapshot(
-	ctx context.Context, sdh splitDelayHelperI,
-) redact.RedactableString {
+func maybeDelaySplitToAvoidSnapshot(ctx context.Context, sdh splitDelayHelperI) string {
 	tickDur := sdh.TickDuration()
 	budget := sdh.MaxDelay()
 
 	var slept time.Duration
-	var problems []redact.RedactableString
-	var lastProblems []redact.RedactableString
+	var problems []string
+	var lastProblems []string
 	var i int
 	for slept < budget {
 		i++
@@ -151,7 +145,7 @@ func maybeDelaySplitToAvoidSnapshot(
 		// See TestSplitBurstWithSlowFollower for end-to-end verification of this
 		// mechanism.
 		if raftStatus.RaftState != raft.StateLeader {
-			problems = append(problems, redact.Sprintf("not leader (%s)", redact.Safe(raftStatus.RaftState)))
+			problems = append(problems, fmt.Sprintf("not leader (%s)", raftStatus.RaftState))
 		}
 
 		for replicaID, pr := range raftStatus.Progress {
@@ -160,11 +154,11 @@ func maybeDelaySplitToAvoidSnapshot(
 				if !pr.RecentActive {
 					if slept < tickDur {
 						// We don't want to delay splits for a follower who hasn't responded within a tick.
-						problems = append(problems, redact.Sprintf("r%d/%d inactive", rangeID, replicaID))
+						problems = append(problems, fmt.Sprintf("r%d/%d inactive", rangeID, replicaID))
 					}
 					continue
 				}
-				problems = append(problems, redact.Sprintf("replica r%d/%d not caught up: %+v", rangeID, replicaID, redact.Safe(&pr)))
+				problems = append(problems, fmt.Sprintf("replica r%d/%d not caught up: %+v", rangeID, replicaID, &pr))
 			}
 		}
 		if len(problems) == 0 {
@@ -184,19 +178,19 @@ func maybeDelaySplitToAvoidSnapshot(
 		slept += sleepDur
 
 		if err := ctx.Err(); err != nil {
-			problems = append(problems, redact.Sprintf("error: %s", err.Error()))
+			problems = append(problems, err.Error())
 			break
 		}
 	}
 
-	var msg redact.RedactableString
+	var msg string
 	// If we exited the loop with problems, use them as lastProblems
 	// and indicate that we did not manage to "delay the problems away".
 	if len(problems) != 0 {
 		lastProblems = problems
 	}
 	if len(lastProblems) != 0 {
-		msg = redact.Sprintf("; delayed by %.1fs to resolve: %s", slept.Seconds(), redact.Join("; ", lastProblems))
+		msg = fmt.Sprintf("; delayed by %.1fs to resolve: %s", slept.Seconds(), strings.Join(lastProblems, "; "))
 		if len(problems) != 0 {
 			msg += " (without success)"
 		}

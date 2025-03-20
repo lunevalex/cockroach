@@ -1,12 +1,7 @@
 // Copyright 2018 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 import _ from "lodash";
 import moment from "moment-timezone";
@@ -23,7 +18,7 @@ import {
   indexUnusedDuration,
 } from "src/util/constants";
 import Severity = protos.cockroach.util.log.Severity;
-import { stubSqlApiCall } from "src/util/fakeApi";
+import { mockExecSQLErrors, stubSqlApiCall } from "src/util/fakeApi";
 
 const { ZoneConfig } = cockroach.config.zonepb;
 const { ZoneConfigurationLevel } = cockroach.server.serverpb;
@@ -122,7 +117,6 @@ describe("rest api", function () {
                 approximate_disk_bytes: 100,
                 live_bytes: 200,
                 total_bytes: 300,
-                range_count: 400,
               },
             ],
           },
@@ -133,7 +127,6 @@ describe("rest api", function () {
         expect(res.results.spanStats.approximate_disk_bytes).toEqual(100);
         expect(res.results.spanStats.live_bytes).toEqual(200);
         expect(res.results.spanStats.total_bytes).toEqual(300);
-        expect(res.results.spanStats.range_count).toEqual(400);
       });
     });
   });
@@ -189,8 +182,7 @@ describe("rest api", function () {
           {
             rows: [
               {
-                replicas: [1, 2, 3],
-                regions: ["gcp-europe-west1", "gcp-europe-west2"],
+                store_ids: [1, 2, 3],
               },
             ],
           },
@@ -303,6 +295,20 @@ describe("rest api", function () {
           done();
         });
     });
+
+    it("should not error when any query fails", async () => {
+      const req = { database, csIndexUnusedDuration: indexUnusedDuration };
+      const mockResults = mockExecSQLErrors<clusterUiApi.DatabaseDetailsRow>(6);
+      stubSqlApiCall<clusterUiApi.DatabaseDetailsRow>(
+        clusterUiApi.createDatabaseDetailsReq(req),
+        mockResults,
+      );
+
+      // This call should not throw.
+      const result = await clusterUiApi.getDatabaseDetails(req);
+      expect(result.results).toBeDefined();
+      expect(result.results.error).toBeDefined();
+    });
   });
 
   describe("table details request", function () {
@@ -383,7 +389,7 @@ describe("rest api", function () {
           },
           // Table replicas query
           {
-            rows: [{ replicas: [1, 2, 3] }],
+            rows: [{ store_ids: [1, 2, 3], replica_count: 400 }],
           },
         ],
       );
@@ -425,9 +431,7 @@ describe("rest api", function () {
           expect(resp.results.zoneConfigResp.zone_config_level).toBe(
             ZoneConfigurationLevel.DATABASE,
           );
-          expect(resp.results.stats.replicaData.replicaCount).toBe(3);
-          expect(resp.results.stats.replicaData.nodeCount).toBe(3);
-          expect(resp.results.stats.replicaData.nodeIDs).toEqual([1, 2, 3]);
+          expect(resp.results.stats.replicaData.storeIDs).toEqual([1, 2, 3]);
         });
     });
 
@@ -498,6 +502,27 @@ describe("rest api", function () {
           expect(_.startsWith(e.message, "Promise timed out")).toBeTruthy();
           done();
         });
+    });
+
+    it("should not error when any query fails", async () => {
+      const mockResults = mockExecSQLErrors<clusterUiApi.TableDetailsRow>(10);
+      stubSqlApiCall<clusterUiApi.TableDetailsRow>(
+        clusterUiApi.createTableDetailsReq(
+          dbName,
+          tableName,
+          indexUnusedDuration,
+        ),
+        mockResults,
+      );
+
+      // This call should not throw.
+      const result = await clusterUiApi.getTableDetails({
+        database: dbName,
+        table: tableName,
+        csIndexUnusedDuration: indexUnusedDuration,
+      });
+      expect(result.results).toBeDefined();
+      expect(result.results.error).toBeDefined();
     });
   });
 

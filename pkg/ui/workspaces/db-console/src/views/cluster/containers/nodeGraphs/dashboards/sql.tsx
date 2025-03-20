@@ -1,12 +1,7 @@
 // Copyright 2018 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 import React from "react";
 import _ from "lodash";
@@ -72,6 +67,23 @@ export default function (props: GraphDashboardProps) {
             nonNegativeRate
           />
         ))}
+      </Axis>
+    </LineGraph>,
+
+    <LineGraph
+      title="Upgrades of SQL Transaction Isolation Level"
+      isKvGraph={false}
+      sources={nodeSources}
+      tenantSource={tenantSource}
+      tooltip={`The total number of times a SQL transaction was upgraded to a stronger isolation level ${tooltipSelection}. If this metric is non-zero, then your application may be affected by the upcoming support of additional isolation levels.`}
+      showMetricsInTooltip={true}
+    >
+      <Axis label="transactions">
+        <Metric
+          name="cr.node.sql.txn.upgraded_iso_level.count"
+          title="Upgrades of Transaction Isolation Level"
+          downsampleMax
+        />
       </Axis>
     </LineGraph>,
 
@@ -196,17 +208,17 @@ export default function (props: GraphDashboardProps) {
       isKvGraph={false}
       sources={nodeSources}
       tenantSource={tenantSource}
-      tooltip={`The total number of full table/index scans ${tooltipSelection}.`}
+      tooltip={`The total number of full table/index scans per second ${tooltipSelection}.`}
       showMetricsInTooltip={true}
     >
-      <Axis label="full scans">
+      <Axis label="full scans per second">
         {_.map(nodeIDs, node => (
           <Metric
             key={node}
             name="cr.node.sql.full.scan.count"
             title={nodeDisplayName(nodeDisplayNameByID, node)}
             sources={[node]}
-            downsampleMax
+            nonNegativeRate
           />
         ))}
       </Axis>

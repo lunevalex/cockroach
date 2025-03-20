@@ -1,12 +1,7 @@
 // Copyright 2021 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package sctestdeps
 
@@ -205,21 +200,6 @@ func (s *TestState) MemberOfWithAdminOption(
 	ctx context.Context, member username.SQLUsername,
 ) (map[username.SQLUsername]bool, error) {
 	return nil, nil
-}
-
-// HasGlobalPrivilegeOrRoleOption implements the scbuild.AuthorizationAccessor interface.
-func (s *TestState) HasGlobalPrivilegeOrRoleOption(
-	ctx context.Context, privilege privilege.Kind,
-) (bool, error) {
-	s.LogSideEffectf("checking current user %q has system privilege %q or the corresponding"+
-		" legacy role option", s.User(), privilege.DisplayName())
-	return true, nil
-}
-
-// CheckRoleExists implements the scbuild.AuthorizationAccessor interface.
-func (s *TestState) CheckRoleExists(ctx context.Context, role username.SQLUsername) error {
-	s.LogSideEffectf("checking role/user %q exists", role)
-	return nil
 }
 
 // IndexPartitioningCCLCallback implements the scbuild.Dependencies interface.
@@ -966,6 +946,11 @@ func (s *TestState) CheckPausepoint(name string) error {
 	return nil
 }
 
+// UseLegacyGCJob is false.
+func (s *TestState) UseLegacyGCJob(ctx context.Context) bool {
+	return false
+}
+
 // UpdateSchemaChangeJob implements the scexec.TransactionalJobRegistry interface.
 func (s *TestState) UpdateSchemaChangeJob(
 	ctx context.Context, id jobspb.JobID, fn scexec.JobUpdateCallback,
@@ -1173,6 +1158,9 @@ func (s *TestState) logEvent(event logpb.EventPayload) error {
 		// Remove common details from text output, they're never decorated.
 		if inM, ok := in.(map[string]interface{}); ok {
 			delete(inM, "common")
+
+			// Also remove latency measurement, since it's not deterministic.
+			delete(inM, "latencyNanos")
 		}
 	})
 	if err != nil {
@@ -1190,7 +1178,7 @@ func (s *TestState) DeleteDatabaseRoleSettings(_ context.Context, dbID descpb.ID
 }
 
 // DeleteSchedule implements scexec.DescriptorMetadataUpdater
-func (s *TestState) DeleteSchedule(ctx context.Context, id jobspb.ScheduleID) error {
+func (s *TestState) DeleteSchedule(ctx context.Context, id int64) error {
 	s.LogSideEffectf("delete job schedule #%d", id)
 	return nil
 }

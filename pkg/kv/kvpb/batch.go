@@ -1,12 +1,7 @@
 // Copyright 2014 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package kvpb
 
@@ -95,7 +90,7 @@ func (ba *BatchRequest) SetActiveTimestamp(clock *hlc.Clock) error {
 // request in the batch operates on a time span such as ExportRequest or
 // RevertRangeRequest, which both specify the start of that span in their
 // arguments while using ba.Timestamp to indicate the upper bound of that span.
-func (ba *BatchRequest) EarliestActiveTimestamp() hlc.Timestamp {
+func (ba BatchRequest) EarliestActiveTimestamp() hlc.Timestamp {
 	ts := ba.Timestamp
 	for _, ru := range ba.Requests {
 		switch t := ru.GetInner().(type) {
@@ -348,12 +343,6 @@ func (ba *BatchRequest) IsSingleCheckConsistencyRequest() bool {
 // request, and that request is an ExportRequest.
 func (ba *BatchRequest) IsSingleExportRequest() bool {
 	return ba.isSingleRequestWithMethod(Export)
-}
-
-// IsSingleAddSSTableRequest returns true iff the batch contains a single
-// request, and that request is an ExportRequest.
-func (ba *BatchRequest) IsSingleAddSSTableRequest() bool {
-	return ba.isSingleRequestWithMethod(AddSSTable)
 }
 
 // RequiresConsensus returns true iff the batch contains a request that should
@@ -714,7 +703,7 @@ func (ba *BatchRequest) Methods() []Method {
 // work for read requests due to how the timestamp-aware latching works (i.e. a
 // read that acquired a latch @ ts10 can't simply be bumped to ts 20 because
 // there might have been overlapping writes in the 10..20 window).
-func (ba *BatchRequest) Split(canSplitET bool) [][]RequestUnion {
+func (ba BatchRequest) Split(canSplitET bool) [][]RequestUnion {
 	compatible := func(exFlags, newFlags flag) bool {
 		// isAlone requests are never compatible.
 		if (exFlags&isAlone) != 0 || (newFlags&isAlone) != 0 {
@@ -750,12 +739,11 @@ func (ba *BatchRequest) Split(canSplitET bool) [][]RequestUnion {
 		}
 		return (mask & exFlags) == (mask & newFlags)
 	}
-	reqs := ba.Requests
 	var parts [][]RequestUnion
-	for len(reqs) > 0 {
-		part := reqs
+	for len(ba.Requests) > 0 {
+		part := ba.Requests
 		var gFlags, hFlags flag = -1, -1
-		for i, union := range reqs {
+		for i, union := range ba.Requests {
 			args := union.GetInner()
 			flags := args.flags()
 			method := args.Method()
@@ -766,7 +754,7 @@ func (ba *BatchRequest) Split(canSplitET bool) [][]RequestUnion {
 				// quadratic behavior for repeat isPrefix requests. We avoid
 				// this by caching first non-header request's flags in hFlags.
 				if hFlags == -1 {
-					for _, nUnion := range reqs[i+1:] {
+					for _, nUnion := range ba.Requests[i+1:] {
 						nArgs := nUnion.GetInner()
 						nFlags := nArgs.flags()
 						nMethod := nArgs.Method()
@@ -794,21 +782,21 @@ func (ba *BatchRequest) Split(canSplitET bool) [][]RequestUnion {
 				gFlags = flags
 			} else {
 				if !compatible(gFlags, cmpFlags) {
-					part = reqs[:i]
+					part = ba.Requests[:i]
 					break
 				}
 				gFlags |= flags
 			}
 		}
 		parts = append(parts, part)
-		reqs = reqs[len(part):]
+		ba.Requests = ba.Requests[len(part):]
 	}
 	return parts
 }
 
 // SafeFormat implements redact.SafeFormatter.
 // It gives a brief summary of the contained requests and keys in the batch.
-func (ba *BatchRequest) SafeFormat(s redact.SafePrinter, verb rune) {
+func (ba BatchRequest) SafeFormat(s redact.SafePrinter, verb rune) {
 	for count, arg := range ba.Requests {
 		// Limit the strings to provide just a summary. Without this limit
 		// a log message with a BatchRequest can be very long.
@@ -870,13 +858,13 @@ func (ba *BatchRequest) SafeFormat(s redact.SafePrinter, verb rune) {
 	}
 }
 
-func (ba *BatchRequest) String() string {
+func (ba BatchRequest) String() string {
 	return redact.StringWithoutMarkers(ba)
 }
 
 // ValidateForEvaluation performs sanity checks on the batch when it's received
 // by the "server" for evaluation.
-func (ba *BatchRequest) ValidateForEvaluation() error {
+func (ba BatchRequest) ValidateForEvaluation() error {
 	if ba.RangeID == 0 {
 		return errors.AssertionFailedf("batch request missing range ID")
 	} else if ba.Replica.StoreID == 0 {

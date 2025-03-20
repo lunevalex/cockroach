@@ -1,12 +1,7 @@
 // Copyright 2015 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package tree
 
@@ -25,7 +20,6 @@ import (
 
 	"github.com/cockroachdb/apd/v3"
 	"github.com/cockroachdb/cockroach/pkg/geo"
-	"github.com/cockroachdb/cockroach/pkg/geo/geopb"
 	"github.com/cockroachdb/cockroach/pkg/sql/lex"
 	"github.com/cockroachdb/cockroach/pkg/sql/lexbase"
 	"github.com/cockroachdb/cockroach/pkg/sql/pgrepl/lsn"
@@ -1585,14 +1579,26 @@ func (d *DBytes) CompareError(ctx CompareContext, other Datum) (int, error) {
 		// NULL is less than any non-NULL value.
 		return 1, nil
 	}
-	v, ok := ctx.UnwrapDatum(other).(*DBytes)
-	if !ok {
+	var o string
+	switch t := ctx.UnwrapDatum(other).(type) {
+	case *DBytes:
+		o = string(*t)
+	case *DEncodedKey:
+		// Allow comparison with DEncodedKeys. This is required for now because
+		// histogram upper-bound values in table statistics are DBytes, but
+		// constraints with DEncodedKeys are built. When row count estimates are
+		// computed, values of these two types are compared.
+		//
+		// TODO(mgartner): We should use DEncodedKeys for histogram
+		// upper-bounds, then we can remove this case.
+		o = string(*t)
+	default:
 		return 0, makeUnsupportedComparisonMessage(d, other)
 	}
-	if *d < *v {
+	if string(*d) < o {
 		return -1, nil
 	}
-	if *d > *v {
+	if string(*d) > o {
 		return 1, nil
 	}
 	return 0, nil
@@ -1694,12 +1700,42 @@ func (*DEncodedKey) ResolvedType() *types.T {
 
 // Compare implements the Datum interface.
 func (d *DEncodedKey) Compare(ctx CompareContext, other Datum) int {
-	panic(errors.AssertionFailedf("not implemented"))
+	res, err := d.CompareError(ctx, other)
+	if err != nil {
+		panic(err)
+	}
+	return res
 }
 
 // CompareError implements the Datum interface.
 func (d *DEncodedKey) CompareError(ctx CompareContext, other Datum) (int, error) {
-	panic(errors.AssertionFailedf("not implemented"))
+	if other == DNull {
+		// NULL is less than any non-NULL value.
+		return 1, nil
+	}
+	var o string
+	switch t := ctx.UnwrapDatum(other).(type) {
+	case *DBytes:
+		// Allow comparison with DBytes. This is required for now because
+		// histogram upper-bound values in table statistics are DBytes, but
+		// constraints with DEncodedKeys are built. When row count estimates are
+		// computed, values of these two types are compared.
+		//
+		// TODO(mgartner): We should use DEncodedKeys for histogram
+		// upper-bounds, then we can remove this case.
+		o = string(*t)
+	case *DEncodedKey:
+		o = string(*t)
+	default:
+		return 0, makeUnsupportedComparisonMessage(d, other)
+	}
+	if string(*d) < o {
+		return -1, nil
+	}
+	if string(*d) > o {
+		return 1, nil
+	}
+	return 0, nil
 }
 
 // Prev implements the Datum interface.
@@ -3495,11 +3531,6 @@ func (d *DGeography) Size() uintptr {
 	return d.Geography.SpatialObjectRef().MemSize()
 }
 
-// ToJSON converts the DGeography to JSON.
-func (d *DGeography) ToJSON() (json.JSON, error) {
-	return spatialObjectToJSON(d.Geography.SpatialObject(), geo.DefaultGeoJSONDecimalDigits)
-}
-
 // DGeometry is the Geometry Datum.
 type DGeometry struct {
 	geo.Geometry
@@ -3620,11 +3651,6 @@ func (d *DGeometry) Format(ctx *FmtCtx) {
 // Size implements the Datum interface.
 func (d *DGeometry) Size() uintptr {
 	return d.Geometry.SpatialObjectRef().MemSize()
-}
-
-// ToJSON converts the DGeometry to JSON.
-func (d *DGeometry) ToJSON() (json.JSON, error) {
-	return spatialObjectToJSON(d.Geometry.SpatialObject(), geo.DefaultGeoJSONDecimalDigits)
 }
 
 type DPGLSN struct {
@@ -4043,9 +4069,9 @@ func AsJSON(
 			AsStringWithFlags(t, FmtBareStrings, FmtDataConversionConfig(dcc), FmtLocation(loc)),
 		), nil
 	case *DGeometry:
-		return t.ToJSON()
+		return json.FromSpatialObject(t.Geometry.SpatialObject(), geo.FullPrecisionGeoJSON)
 	case *DGeography:
-		return t.ToJSON()
+		return json.FromSpatialObject(t.Geography.SpatialObject(), geo.FullPrecisionGeoJSON)
 	case *DVoid:
 		return json.FromString(AsStringWithFlags(t, fmtRawStrings)), nil
 	default:
@@ -4055,14 +4081,6 @@ func AsJSON(
 
 		return nil, errors.AssertionFailedf("unexpected type %T for AsJSON", d)
 	}
-}
-
-func spatialObjectToJSON(so geopb.SpatialObject, numDecimalDigits int) (json.JSON, error) {
-	j, err := geo.SpatialObjectToGeoJSON(so, numDecimalDigits, geo.SpatialObjectToGeoJSONFlagZero)
-	if err != nil {
-		return nil, err
-	}
-	return json.ParseJSON(string(j))
 }
 
 // formatTime formats time with specified layout.
@@ -5545,6 +5563,15 @@ type DOid struct {
 	name string
 }
 
+const (
+	// UnknownOidName represents the 0 oid value as '-' for types other than T_oid
+	// in the oid family, which matches the Postgres representation.
+	UnknownOidName = "-"
+
+	// UnknownOidValue is the 0 (unknown) oid value.
+	UnknownOidValue = oid.Oid(0)
+)
+
 // IntToOid is a helper that turns a DInt into a *DOid and checks that the value
 // is in range.
 func IntToOid(i DInt) (*DOid, error) {
@@ -5567,22 +5594,20 @@ func MakeDOid(d oid.Oid, semanticType *types.T) DOid {
 
 // NewDOidWithType constructs a DOid with the given type and no name.
 func NewDOidWithType(d oid.Oid, semanticType *types.T) *DOid {
-	oid := DOid{Oid: d, semanticType: semanticType}
-	return &oid
+	return &DOid{Oid: d, semanticType: semanticType}
 }
 
 // NewDOidWithTypeAndName constructs a DOid with the given type and name.
 func NewDOidWithTypeAndName(d oid.Oid, semanticType *types.T, name string) *DOid {
-	oid := DOid{Oid: d, semanticType: semanticType, name: name}
-	return &oid
+	return &DOid{Oid: d, semanticType: semanticType, name: name}
 }
 
 // NewDOid is a helper routine to create a *DOid initialized from a DInt.
 func NewDOid(d oid.Oid) *DOid {
 	// TODO(yuzefovich): audit the callers of NewDOid to see whether any want to
 	// create a DOid with a semantic type different from types.Oid.
-	oid := MakeDOid(d, types.Oid)
-	return &oid
+	oidDatum := MakeDOid(d, types.Oid)
+	return &oidDatum
 }
 
 // AsDOid attempts to retrieve a DOid from an Expr, returning a DOid and
@@ -5673,7 +5698,10 @@ func (d *DOid) CompareError(ctx CompareContext, other Datum) (int, error) {
 
 // Format implements the Datum interface.
 func (d *DOid) Format(ctx *FmtCtx) {
-	if d.semanticType.Oid() == oid.T_oid || d.name == "" {
+	if ctx.HasFlags(FmtPgwireText) && d.semanticType.Oid() != oid.T_oid && d.Oid == UnknownOidValue {
+		// Special case for the "unknown" oid.
+		ctx.WriteString(UnknownOidName)
+	} else if d.semanticType.Oid() == oid.T_oid || d.name == "" {
 		ctx.Write(strconv.AppendUint(ctx.scratch[:0], uint64(d.Oid), 10))
 	} else if ctx.HasFlags(fmtDisambiguateDatumTypes) {
 		ctx.WriteString("crdb_internal.create_")
@@ -5757,10 +5785,6 @@ type DOidWrapper struct {
 	Oid     oid.Oid
 }
 
-// ZeroOidValue represents the 0 oid value as '-', which matches the Postgres
-// representation.
-const ZeroOidValue = "-"
-
 // wrapWithOid wraps a Datum with a custom Oid.
 func wrapWithOid(d Datum, oid oid.Oid) Datum {
 	switch v := d.(type) {
@@ -5782,16 +5806,6 @@ func wrapWithOid(d Datum, oid oid.Oid) Datum {
 		Wrapped: d,
 		Oid:     oid,
 	}
-}
-
-// WrapAsZeroOid wraps ZeroOidValue with a custom Oid.
-func WrapAsZeroOid(t *types.T) Datum {
-	tmpOid := NewDOid(0)
-	tmpOid.semanticType = t
-	if t.Oid() != oid.T_oid {
-		tmpOid.name = ZeroOidValue
-	}
-	return tmpOid
 }
 
 // UnwrapDOidWrapper exposes the wrapped datum from a *DOidWrapper.
@@ -6340,32 +6354,13 @@ func AdjustValueToType(typ *types.T, inVal Datum) (outVal Datum, err error) {
 			// bpchar types truncate trailing whitespace.
 			sv = strings.TrimRight(sv, " ")
 		}
-
-		var overlength int
-		// Fast path. Check for skip counting the number of runes through iteration.
-		if typ.Width() > 0 && len(sv) > int(typ.Width()) {
-			overlength = utf8.RuneCountInString(sv) - int(typ.Width())
-		} else {
-			overlength = 0
-		}
-		if typ.Oid() == oid.T_varchar {
-			// varchar types truncate extra trailing whitespace when
-			// more characters than the varchar size are provided.
-			for overlength > 0 {
-				if sv[len(sv)-1] != ' ' {
-					break
-				}
-				sv = sv[:len(sv)-1]
-				overlength--
-			}
-		}
-		if overlength > 0 {
+		if typ.Width() > 0 && utf8.RuneCountInString(sv) > int(typ.Width()) {
 			return nil, pgerror.Newf(pgcode.StringDataRightTruncation,
 				"value too long for type %s",
 				typ.SQLString())
 		}
 
-		if typ.Oid() == oid.T_bpchar || typ.Oid() == oid.T_char || typ.Oid() == oid.T_varchar {
+		if typ.Oid() == oid.T_bpchar || typ.Oid() == oid.T_char {
 			if _, ok := AsDString(inVal); ok {
 				return NewDString(sv), nil
 			} else if _, ok := inVal.(*DCollatedString); ok {

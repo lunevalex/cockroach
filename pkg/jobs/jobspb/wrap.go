@@ -1,12 +1,7 @@
 // Copyright 2018 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package jobspb
 
@@ -16,11 +11,18 @@ import (
 	"strings"
 
 	"github.com/cockroachdb/cockroach/pkg/base"
+	"github.com/cockroachdb/cockroach/pkg/sql/catalog/catpb"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/descpb"
 	"github.com/cockroachdb/cockroach/pkg/sql/protoreflect"
 	"github.com/cockroachdb/errors"
 	"github.com/gogo/protobuf/jsonpb"
 )
+
+// JobID is the ID of a job.
+type JobID = catpb.JobID
+
+// InvalidJobID is the zero value for JobID corresponding to no job.
+const InvalidJobID = catpb.InvalidJobID
 
 // Details is a marker interface for job details proto structs.
 type Details interface{}
@@ -98,7 +100,6 @@ type ReplicationStatus uint8
 
 const (
 	InitializingReplication   ReplicationStatus = 0
-	CreatingInitialSplits     ReplicationStatus = 6
 	Replicating               ReplicationStatus = 1
 	ReplicationPaused         ReplicationStatus = 2
 	ReplicationPendingCutover ReplicationStatus = 3
@@ -121,8 +122,6 @@ func (rs ReplicationStatus) String() string {
 		return "replication cutting over"
 	case ReplicationError:
 		return "replication error"
-	case CreatingInitialSplits:
-		return "creating initial splits"
 	default:
 		return fmt.Sprintf("unimplemented-%d", int(rs))
 	}

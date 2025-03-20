@@ -1,12 +1,7 @@
 // Copyright 2023 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package gce
 
@@ -19,23 +14,26 @@ import (
 	"strconv"
 	"strings"
 
+	rperrors "github.com/cockroachdb/cockroach/pkg/roachprod/errors"
 	"github.com/cockroachdb/cockroach/pkg/roachprod/vm"
 	"github.com/cockroachdb/cockroach/pkg/util/syncutil"
 	"github.com/cockroachdb/errors"
 	"golang.org/x/exp/maps"
-	"golang.org/x/sync/errgroup"
 )
 
 const (
-	dnsManagedZone           = "roachprod-managed"
-	dnsDomain                = "roachprod-managed.crdb.io"
-	dnsMaxResults            = 1000
-	dnsMaxConcurrentRequests = 4
+	dnsManagedZone = "roachprod-managed"
+	dnsDomain      = "roachprod-managed.crdb.io"
+	dnsMaxResults  = 10000
+
+	// dnsProblemLabel is the label used when we see transient DNS
+	// errors while making API calls to Cloud DNS.
+	dnsProblemLabel = "dns_problem"
 )
 
-var ErrDNSOperation = fmt.Errorf("error during Google Cloud DNS operation")
-
 var _ vm.DNSProvider = &dnsProvider{}
+
+type ExecFn func(cmd *exec.Cmd) ([]byte, error)
 
 // dnsProvider implements the vm.DNSProvider interface.
 type dnsProvider struct {
@@ -43,14 +41,29 @@ type dnsProvider struct {
 		mu      syncutil.Mutex
 		records map[string][]vm.DNSRecord
 	}
+	execFn ExecFn
 }
 
 func NewDNSProvider() vm.DNSProvider {
+	var gcloudMu syncutil.Mutex
+	return NewDNSProviderWithExec(func(cmd *exec.Cmd) ([]byte, error) {
+		// Limit to one gcloud command at a time. At this time we are unsure if it's
+		// safe to make concurrent calls to the `gcloud` CLI to mutate DNS records
+		// in the same zone. We don't mutate the same record in parallel, but we do
+		// mutate different records in the same zone. See: #122180 for more details.
+		gcloudMu.Lock()
+		defer gcloudMu.Unlock()
+		return cmd.CombinedOutput()
+	})
+}
+
+func NewDNSProviderWithExec(execFn ExecFn) vm.DNSProvider {
 	return &dnsProvider{
 		recordsCache: struct {
 			mu      syncutil.Mutex
 			records map[string][]vm.DNSRecord
 		}{records: make(map[string][]vm.DNSRecord)},
+		execFn: execFn,
 	}
 }
 
@@ -95,9 +108,12 @@ func (n *dnsProvider) CreateRecords(ctx context.Context, records ...vm.DNSRecord
 			"--rrdatas", strings.Join(data, ","),
 		}
 		cmd := exec.CommandContext(ctx, "gcloud", args...)
-		out, err := cmd.CombinedOutput()
+		out, err := n.execFn(cmd)
 		if err != nil {
-			return markDNSOperationError(errors.Wrapf(err, "output: %s", out))
+			// Clear the cache entry if the operation failed, as the records may
+			// have been partially updated.
+			n.clearCacheEntry(name)
+			return rperrors.TransientFailure(errors.Wrapf(err, "output: %s", out), dnsProblemLabel)
 		}
 		n.updateCache(name, maps.Values(combinedRecords))
 	}
@@ -116,26 +132,21 @@ func (n *dnsProvider) ListRecords(ctx context.Context) ([]vm.DNSRecord, error) {
 
 // DeleteRecordsByName implements the vm.DNSProvider interface.
 func (n *dnsProvider) DeleteRecordsByName(ctx context.Context, names ...string) error {
-	var g errgroup.Group
-	g.SetLimit(dnsMaxConcurrentRequests)
 	for _, name := range names {
-		// capture loop variable
-		name := name
-		g.Go(func() error {
-			args := []string{"--project", dnsProject, "dns", "record-sets", "delete", name,
-				"--type", string(vm.SRV),
-				"--zone", dnsManagedZone,
-			}
-			cmd := exec.CommandContext(ctx, "gcloud", args...)
-			out, err := cmd.CombinedOutput()
-			if err != nil {
-				return markDNSOperationError(errors.Wrapf(err, "output: %s", out))
-			}
-			n.clearCacheEntry(name)
-			return nil
-		})
+		args := []string{"--project", dnsProject, "dns", "record-sets", "delete", name,
+			"--type", string(vm.SRV),
+			"--zone", dnsManagedZone,
+		}
+		cmd := exec.CommandContext(ctx, "gcloud", args...)
+		out, err := n.execFn(cmd)
+		// Clear the cache entry regardless of the outcome. As the records may
+		// have been partially deleted.
+		n.clearCacheEntry(name)
+		if err != nil {
+			return rperrors.TransientFailure(errors.Wrapf(err, "output: %s", out), dnsProblemLabel)
+		}
 	}
-	return g.Wait()
+	return nil
 }
 
 // DeleteRecordsBySubdomain implements the vm.DNSProvider interface.
@@ -179,10 +190,10 @@ func (n *dnsProvider) lookupSRVRecords(ctx context.Context, name string) ([]vm.D
 	}
 	// Lookup the records, if no records are found in the cache.
 	records, err := n.listSRVRecords(ctx, name, dnsMaxResults)
-	filteredRecords := make([]vm.DNSRecord, 0, len(records))
 	if err != nil {
 		return nil, err
 	}
+	filteredRecords := make([]vm.DNSRecord, 0, len(records))
 	for _, record := range records {
 		// Filter out records that do not match the full normalised target name.
 		// This is necessary because the gcloud command does partial matching.
@@ -211,9 +222,9 @@ func (n *dnsProvider) listSRVRecords(
 		args = append(args, "--filter", filter)
 	}
 	cmd := exec.CommandContext(ctx, "gcloud", args...)
-	res, err := cmd.CombinedOutput()
+	res, err := n.execFn(cmd)
 	if err != nil {
-		return nil, markDNSOperationError(errors.Wrapf(err, "output: %s", res))
+		return nil, rperrors.TransientFailure(errors.Wrapf(err, "output: %s", res), dnsProblemLabel)
 	}
 	var jsonList []struct {
 		Name       string   `json:"name"`
@@ -225,7 +236,7 @@ func (n *dnsProvider) listSRVRecords(
 
 	err = json.Unmarshal(res, &jsonList)
 	if err != nil {
-		return nil, markDNSOperationError(errors.Wrapf(err, "error unmarshalling output: %s", res))
+		return nil, rperrors.TransientFailure(errors.Wrapf(err, "error unmarshaling output: %s", res), dnsProblemLabel)
 	}
 
 	records := make([]vm.DNSRecord, 0)
@@ -267,10 +278,4 @@ func (n *dnsProvider) clearCacheEntry(name string) {
 // may or may not have a trailing dot.
 func (n *dnsProvider) normaliseName(name string) string {
 	return strings.TrimSuffix(name, ".")
-}
-
-// markDNSOperationError should be used to mark any external DNS API or Google
-// Cloud DNS CLI errors as DNS operation errors.
-func markDNSOperationError(err error) error {
-	return errors.Mark(err, ErrDNSOperation)
 }

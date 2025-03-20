@@ -1,12 +1,7 @@
 // Copyright 2021 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package scbuildstmt
 
@@ -55,23 +50,21 @@ func alterTableAddColumn(
 	fallbackIfAddColDropColAlterPKInOneAlterTableStmtBeforeV232(b, tbl.TableID, t)
 
 	// Check column non-existence.
-	{
-		elts := b.ResolveColumn(tbl.TableID, d.Name, ResolveParams{
-			IsExistenceOptional: true,
-			RequiredPrivilege:   privilege.CREATE,
-		})
-		_, _, col := scpb.FindColumn(elts)
-		if col != nil {
-			if t.IfNotExists {
-				return
-			}
-			if col.IsSystemColumn {
-				panic(pgerror.Newf(pgcode.DuplicateColumn,
-					"column name %q conflicts with a system column name",
-					d.Name))
-			}
-			panic(sqlerrors.NewColumnAlreadyExistsInRelationError(string(d.Name), tn.Object()))
+	elts := b.ResolveColumn(tbl.TableID, d.Name, ResolveParams{
+		IsExistenceOptional: true,
+		RequiredPrivilege:   privilege.CREATE,
+	})
+	_, colTargetStatus, col := scpb.FindColumn(elts)
+	columnAlreadyExists := col != nil && colTargetStatus != scpb.ToAbsent
+	// If the column exists and IF NOT EXISTS is specified, continue parsing
+	// to ensure there are no other errors before treating the operation as a no-op.
+	if columnAlreadyExists && !t.IfNotExists {
+		if col.IsSystemColumn {
+			panic(pgerror.Newf(pgcode.DuplicateColumn,
+				"column name %q conflicts with a system column name",
+				d.Name))
 		}
+		panic(sqlerrors.NewColumnAlreadyExistsError(string(d.Name), tn.Object()))
 	}
 	if d.IsSerial {
 		panic(scerrors.NotImplementedErrorf(d, "contains serial data type"))
@@ -119,6 +112,13 @@ func alterTableAddColumn(
 	if err != nil {
 		panic(err)
 	}
+
+	// Parsing of the ALTER statement is complete, and no further errors are possible.
+	// If the column already exists, exit here to make the operation a no-op.
+	if columnAlreadyExists {
+		return
+	}
+
 	desc := cdd.ColumnDescriptor
 	desc.ID = b.NextTableColumnID(tbl)
 	spec := addColumnSpec{
@@ -160,9 +160,11 @@ func alterTableAddColumn(
 		maybeFailOnCrossDBTypeReference(b, typeID, tableNamespace.DatabaseID)
 	}
 	// Block unique indexes on unsupported types.
+	version := b.EvalCtx().Settings.Version.ActiveVersion(b)
 	if d.Unique.IsUnique &&
 		!d.Unique.WithoutIndex &&
-		!colinfo.ColumnTypeIsIndexable(spec.colType.Type) {
+		(!colinfo.ColumnTypeIsIndexable(spec.colType.Type) ||
+			(spec.colType.Type.Family() == types.JsonFamily && !version.IsActive(clusterversion.V23_2))) {
 		typInfo := spec.colType.Type.DebugString()
 		panic(unimplemented.NewWithIssueDetailf(35730, typInfo,
 			"column %s is of type %s and thus is not indexable",

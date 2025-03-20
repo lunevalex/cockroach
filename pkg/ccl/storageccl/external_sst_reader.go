@@ -1,10 +1,7 @@
 // Copyright 2021 The Cockroach Authors.
 //
-// Licensed as a CockroachDB Enterprise file under the Cockroach Community
-// License (the "License"); you may not use this file except in compliance with
-// the License. You may obtain a copy of the License at
-//
-//     https://github.com/cockroachdb/cockroach/blob/master/licenses/CCL.txt
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package storageccl
 
@@ -168,7 +165,10 @@ func ExternalSSTReader(
 		}
 		readerLevels = append(readerLevels, []sstable.ReadableFile{reader})
 	}
-	return storage.NewSSTIterator(readerLevels, iterOpts)
+	// NB: It's okay to pass forwardOnly=true, because this function returns a
+	// SimpleMVCCIterator which does not provide an interface for reverse
+	// iteration.
+	return storage.NewSSTIterator(readerLevels, iterOpts, true /* forwardOnly */)
 }
 
 type sstReader struct {

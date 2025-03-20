@@ -23,6 +23,12 @@ func (m *NodeRecommissioned) LoggingChannel() logpb.Channel { return logpb.Chann
 func (m *NodeRestart) LoggingChannel() logpb.Channel { return logpb.Channel_OPS }
 
 // LoggingChannel implements the EventPayload interface.
+func (m *NodeShutdownConnectionTimeout) LoggingChannel() logpb.Channel { return logpb.Channel_OPS }
+
+// LoggingChannel implements the EventPayload interface.
+func (m *NodeShutdownTransactionTimeout) LoggingChannel() logpb.Channel { return logpb.Channel_OPS }
+
+// LoggingChannel implements the EventPayload interface.
 func (m *TenantSharedServiceStart) LoggingChannel() logpb.Channel { return logpb.Channel_OPS }
 
 // LoggingChannel implements the EventPayload interface.
@@ -44,10 +50,10 @@ func (m *Import) LoggingChannel() logpb.Channel { return logpb.Channel_OPS }
 func (m *Restore) LoggingChannel() logpb.Channel { return logpb.Channel_OPS }
 
 // LoggingChannel implements the EventPayload interface.
-func (m *SetClusterSetting) LoggingChannel() logpb.Channel { return logpb.Channel_OPS }
+func (m *SetClusterSetting) LoggingChannel() logpb.Channel { return logpb.Channel_DEV }
 
 // LoggingChannel implements the EventPayload interface.
-func (m *SetTenantClusterSetting) LoggingChannel() logpb.Channel { return logpb.Channel_OPS }
+func (m *SetTenantClusterSetting) LoggingChannel() logpb.Channel { return logpb.Channel_DEV }
 
 // LoggingChannel implements the EventPayload interface.
 func (m *AdminQuery) LoggingChannel() logpb.Channel { return logpb.Channel_SENSITIVE_ACCESS }
@@ -116,6 +122,9 @@ func (m *CommentOnSchema) LoggingChannel() logpb.Channel { return logpb.Channel_
 
 // LoggingChannel implements the EventPayload interface.
 func (m *CommentOnTable) LoggingChannel() logpb.Channel { return logpb.Channel_SQL_SCHEMA }
+
+// LoggingChannel implements the EventPayload interface.
+func (m *ConvertToSchema) LoggingChannel() logpb.Channel { return logpb.Channel_SQL_SCHEMA }
 
 // LoggingChannel implements the EventPayload interface.
 func (m *CreateDatabase) LoggingChannel() logpb.Channel { return logpb.Channel_SQL_SCHEMA }

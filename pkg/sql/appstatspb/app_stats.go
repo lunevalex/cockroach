@@ -1,17 +1,13 @@
 // Copyright 2017 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package appstatspb
 
 import (
 	"math"
+	"strconv"
 
 	"github.com/cockroachdb/cockroach/pkg/util"
 )
@@ -19,11 +15,15 @@ import (
 // StmtFingerprintID is the type of a Statement's fingerprint ID.
 type StmtFingerprintID uint64
 
+func (s StmtFingerprintID) String() string {
+	return strconv.FormatUint(uint64(s), 10)
+}
+
 // ConstructStatementFingerprintID constructs an ID by hashing query with
 // constants redacted, its database and failure status, and if it was part of an
 // implicit txn. At the time of writing, these are the axis' we use to bucket
 // queries for stats collection (see stmtKey).
-func ConstructStatementFingerprintID(
+var ConstructStatementFingerprintID = func(
 	stmtNoConstants string, failed bool, implicitTxn bool, database string,
 ) StmtFingerprintID {
 	fnv := util.MakeFNV64()
@@ -49,6 +49,10 @@ func ConstructStatementFingerprintID(
 // TransactionFingerprintID is the hashed string constructed using the
 // individual statement fingerprint IDs that comprise the transaction.
 type TransactionFingerprintID uint64
+
+func (t TransactionFingerprintID) String() string {
+	return strconv.FormatUint(uint64(t), 10)
+}
 
 // InvalidTransactionFingerprintID denotes an invalid transaction fingerprint ID.
 const InvalidTransactionFingerprintID = TransactionFingerprintID(0)
@@ -285,25 +289,5 @@ func (s *LatencyInfo) Add(other LatencyInfo) {
 	}
 	if other.Max > s.Max {
 		s.Max = other.Max
-	}
-	s.checkPercentiles()
-}
-
-// checkPercentiles is a patchy solution and not ideal.
-// When the execution count for a period is smaller than 500,
-// the percentiles sample is including previous aggregation periods,
-// making the p99 possible be greater than the max.
-// For now, we just do a check and update the percentiles to the max
-// possible size.
-// TODO(maryliag): use a proper sample size (#99070)
-func (s *LatencyInfo) checkPercentiles() {
-	if s.P99 > s.Max {
-		s.P99 = s.Max
-	}
-	if s.P90 > s.Max {
-		s.P90 = s.Max
-	}
-	if s.P50 > s.Max {
-		s.P50 = s.Max
 	}
 }

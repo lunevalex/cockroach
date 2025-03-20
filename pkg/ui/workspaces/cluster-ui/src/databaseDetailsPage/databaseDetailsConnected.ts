@@ -1,12 +1,7 @@
 // Copyright 2023 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 import { connect } from "react-redux";
 import { withRouter, RouteComponentProps } from "react-router-dom";
@@ -43,6 +38,7 @@ import {
   selectDropUnusedIndexDuration,
   selectIndexRecommendationsEnabled,
 } from "../store/clusterSettings/clusterSettings.selectors";
+import { actions as nodesActions } from "../store/nodes/nodes.reducer";
 
 const mapStateToProps = (
   state: AppState,
@@ -54,6 +50,7 @@ const mapStateToProps = (
     databaseDetails[database]?.data?.results.tablesResp.tables || [];
   const nodeRegions = nodeRegionsByIDSelector(state);
   const isTenant = selectIsTenant(state);
+  const nodeStatuses = state.adminUI?.nodes.data;
   return {
     loading: !!databaseDetails[database]?.inFlight,
     loaded: !!databaseDetails[database]?.valid,
@@ -74,6 +71,7 @@ const mapStateToProps = (
       tableDetails: state.adminUI?.tableDetails,
       nodeRegions,
       isTenant,
+      nodeStatuses,
     }),
     showIndexRecommendations: selectIndexRecommendationsEnabled(state),
     csIndexUnusedDuration: selectDropUnusedIndexDuration(state),
@@ -173,6 +171,9 @@ const mapDispatchToProps = (
         value: filters,
       }),
     );
+  },
+  refreshNodes: () => {
+    dispatch(nodesActions.refresh());
   },
 });
 

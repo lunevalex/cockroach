@@ -1,12 +1,7 @@
 // Copyright 2018 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package sql_test
 
@@ -211,14 +206,14 @@ func TestOldBitColumnMetadata(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
 
-	// The descriptor changes made must have an immediate effect
-	// so disable leases on tables.
-	defer lease.TestingDisableTableLeases()()
-
 	ctx := context.Background()
 	params, _ := createTestServerParams()
 	s, sqlDB, kvDB := serverutils.StartServer(t, params)
 	defer s.Stopper().Stop(ctx)
+
+	// The descriptor changes made must have an immediate effect
+	// so disable leases on tables.
+	defer lease.TestingDisableTableLeases()()
 
 	if _, err := sqlDB.Exec(`
 CREATE DATABASE t;
@@ -432,10 +427,6 @@ func TestInvalidObjects(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
 
-	// The descriptor changes made must have an immediate effect
-	// so disable leases on tables.
-	defer lease.TestingDisableTableLeases()()
-
 	ctx := context.Background()
 	params, _ := createTestServerParams()
 	params.Knobs = base.TestingKnobs{
@@ -445,6 +436,10 @@ func TestInvalidObjects(t *testing.T) {
 	}
 	s, sqlDB, _ := serverutils.StartServer(t, params)
 	defer s.Stopper().Stop(ctx)
+
+	// The descriptor changes made must have an immediate effect
+	// so disable leases on tables.
+	defer lease.TestingDisableTableLeases()()
 
 	tdb := sqlutils.MakeSQLRunner(sqlDB)
 
@@ -876,10 +871,14 @@ func TestIsAtLeastVersion(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
 
-	s, conn, _ := serverutils.StartServer(t, base.TestServerArgs{})
-	defer s.Stopper().Stop(ctx)
+	tc := testcluster.StartTestCluster(t, 1, base.TestClusterArgs{
+		ServerArgs: base.TestServerArgs{
+			Settings: cluster.MakeTestingClusterSettings(),
+		},
+	})
+	defer tc.Stopper().Stop(context.Background())
 
-	db := sqlutils.MakeSQLRunner(conn)
+	db := sqlutils.MakeSQLRunner(tc.ServerConn(0))
 	for _, tc := range []struct {
 		version  string
 		expected string
@@ -902,12 +901,15 @@ func TestTxnContentionEventsTable(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
 
-	// Start the server. (One node is sufficient; the outliers system
+	// Start the cluster. (One node is sufficient; the outliers system
 	// is currently in-memory only.)
 	ctx := context.Background()
-	s, conn, _ := serverutils.StartServer(t, base.TestServerArgs{})
-	defer s.Stopper().Stop(ctx)
-	sqlDB := sqlutils.MakeSQLRunner(conn)
+	settings := cluster.MakeTestingClusterSettings()
+	args := base.TestClusterArgs{ServerArgs: base.TestServerArgs{Settings: settings}}
+	tc := testcluster.StartTestCluster(t, 1, args)
+	defer tc.Stopper().Stop(ctx)
+	conn := tc.ServerConn(0)
+	sqlDB := sqlutils.MakeSQLRunner(tc.ServerConn(0))
 	testTxnContentionEventsTableHelper(t, ctx, conn, sqlDB)
 	testTxnContentionEventsTableWithDroppedInfo(t, ctx, conn, sqlDB)
 }
@@ -917,13 +919,16 @@ func TestTxnContentionEventsTableWithRangeDescriptor(t *testing.T) {
 	defer log.Scope(t).Close(t)
 
 	ctx := context.Background()
-	s, sqlDB, _ := serverutils.StartServer(t, base.TestServerArgs{})
-	defer s.Stopper().Stop(ctx)
+	settings := cluster.MakeTestingClusterSettings()
+	args := base.TestClusterArgs{ServerArgs: base.TestServerArgs{Settings: settings}}
+	tc := testcluster.StartTestCluster(t, 1, args)
+	defer tc.Stopper().Stop(ctx)
+	sqlDB := tc.ServerConn(0)
 	_, err := sqlDB.Exec("SET CLUSTER SETTING sql.contention.event_store.resolution_interval = '10ms'")
 	require.NoError(t, err)
 	rangeKey := "/Local/Range/Table/106/1/-1704619207610523008/RangeDescriptor"
 	rangeKeyEscaped := fmt.Sprintf("\"%s\"", rangeKey)
-	s.ApplicationLayer().ExecutorConfig().(sql.ExecutorConfig).ContentionRegistry.AddContentionEvent(contentionpb.ExtendedContentionEvent{
+	tc.Server(0).SQLServer().(*sql.Server).GetExecutorConfig().ContentionRegistry.AddContentionEvent(contentionpb.ExtendedContentionEvent{
 		BlockingEvent: kvpb.ContentionEvent{
 			Key: roachpb.Key(rangeKey),
 			TxnMeta: enginepb.TxnMeta{
@@ -941,8 +946,7 @@ func TestTxnContentionEventsTableWithRangeDescriptor(t *testing.T) {
 		ContentionType:           contentionpb.ContentionType_LOCK_WAIT,
 	})
 
-	// Contention flush can take some time to flush
-	// the events
+	// Contention flush can take some time to flush the events.
 	testutils.SucceedsSoon(t, func() error {
 		row := sqlDB.QueryRow(`SELECT
     database_name, 
@@ -957,10 +961,11 @@ func TestTxnContentionEventsTableWithRangeDescriptor(t *testing.T) {
 		if err != nil {
 			return err
 		}
-		require.Equal(t, "", db)
-		require.Equal(t, "", schema)
-		require.Equal(t, "", table)
-		require.Equal(t, "", index)
+		if db != "" || schema != "" || table != rangeKeyEscaped || index != "" {
+			return errors.Newf(
+				"unexpected row: db=%s, schema=%s, table=%s, index=%s", db, schema, table, index,
+			)
+		}
 		return nil
 	})
 }
@@ -1004,22 +1009,35 @@ func causeContention(
 			insertValue)
 		require.NoError(t, errTxn)
 		wgTxnStarted.Done()
+		// Wait for the update to show up in cluster_queries.
+		testutils.SucceedsSoon(t, func() error {
+			row := tx.QueryRowContext(
+				ctx, "SELECT EXISTS (SELECT * FROM crdb_internal.cluster_queries WHERE query LIKE '%/* shuba */')",
+			)
+			var seen bool
+			if err := row.Scan(&seen); err != nil {
+				return err
+			}
+			if !seen {
+				return errors.Errorf("did not see update statement")
+			}
+			return nil
+		})
 		_, errTxn = tx.ExecContext(ctx, "select pg_sleep(.5);")
 		require.NoError(t, errTxn)
 		errTxn = tx.Commit()
 		require.NoError(t, errTxn)
 	}()
 
-	start := timeutil.Now()
-
 	// Need to wait for the txn to start to ensure lock contention.
 	wgTxnStarted.Wait()
-	// This will be blocked until the updateRowWithDelay finishes.
+	// This will be blocked until the insert txn finishes.
+	start := timeutil.Now()
 	_, errUpdate := conn.ExecContext(
-		ctx, fmt.Sprintf("UPDATE %s SET s = $1 where id = 'test';", table), updateValue)
+		ctx, fmt.Sprintf("UPDATE %s SET s = $1 where id = 'test' /* shuba */;", table), updateValue)
 	require.NoError(t, errUpdate)
 	end := timeutil.Now()
-	require.GreaterOrEqual(t, end.Sub(start), 499*time.Millisecond)
+	require.GreaterOrEqual(t, end.Sub(start), 500*time.Millisecond)
 
 	wgTxnDone.Wait()
 }
@@ -1659,18 +1677,18 @@ func TestVirtualPTSTableDeprecated(t *testing.T) {
 	ptsKnobs := &protectedts.TestingKnobs{}
 	ptsKnobs.DisableProtectedTimestampForMultiTenant = true
 	testServerArgs.Knobs.ProtectedTS = ptsKnobs
-	srv, conn, _ := serverutils.StartServer(t, testServerArgs)
-	defer srv.Stopper().Stop(ctx2)
-	s := srv.ApplicationLayer()
+	tc := testcluster.StartTestCluster(t, 1, base.TestClusterArgs{ServerArgs: testServerArgs})
+	defer tc.Stopper().Stop(ctx2)
 
-	sqlDB := sqlutils.MakeSQLRunner(conn)
+	s := tc.Server(0)
+	sqlDB := sqlutils.MakeSQLRunner(tc.Conns[0])
 	internalDB := s.InternalDB().(isql.DB)
 	ptm := ptstorage.New(s.ClusterSettings(), ptsKnobs)
 
 	t.Run("nil-targets", func(t *testing.T) {
 		rec := &ptpb.Record{
 			ID:        uuid.MakeV4().GetBytes(),
-			Timestamp: s.Clock().Now(),
+			Timestamp: tc.Server(0).Clock().Now(),
 			Mode:      ptpb.PROTECT_AFTER,
 			DeprecatedSpans: []roachpb.Span{
 				{
@@ -1699,11 +1717,11 @@ func TestVirtualPTSTable(t *testing.T) {
 
 	ctx2 := context.Background()
 
-	srv, conn, _ := serverutils.StartServer(t, base.TestServerArgs{})
-	defer srv.Stopper().Stop(ctx2)
-	s := srv.ApplicationLayer()
+	tc := testcluster.StartTestCluster(t, 1, base.TestClusterArgs{})
+	defer tc.Stopper().Stop(ctx2)
 
-	sqlDB := sqlutils.MakeSQLRunner(conn)
+	s := tc.Server(0)
+	sqlDB := sqlutils.MakeSQLRunner(tc.Conns[0])
 	internalDB := s.InternalDB().(isql.DB)
 	ptm := ptstorage.New(s.ClusterSettings(), nil)
 
@@ -1749,7 +1767,7 @@ func TestVirtualPTSTable(t *testing.T) {
 		rec := jobsprotectedts.MakeRecord(
 			uuid.MakeV4(),
 			int64(job.ID()),
-			s.Clock().Now(),
+			tc.Server(0).Clock().Now(),
 			[]roachpb.Span{},
 			jobsprotectedts.Jobs,
 			tableTargets(),
@@ -1792,8 +1810,8 @@ func TestVirtualPTSTable(t *testing.T) {
 
 		rec := jobsprotectedts.MakeRecord(
 			uuid.MakeV4(),
-			int64(sj.ScheduleID()),
-			s.Clock().Now(),
+			sj.ScheduleID(),
+			tc.Server(0).Clock().Now(),
 			[]roachpb.Span{},
 			jobsprotectedts.Schedules,
 			tableTargets(),
@@ -1830,7 +1848,7 @@ func TestVirtualPTSTable(t *testing.T) {
 
 		rec := ptpb.Record{
 			ID:        uuid.MakeV4().GetBytes(),
-			Timestamp: s.Clock().Now(),
+			Timestamp: tc.Server(0).Clock().Now(),
 			Mode:      ptpb.PROTECT_AFTER,
 			MetaType:  "foo",
 			Meta:      []byte("bar"),
@@ -1849,7 +1867,7 @@ func TestVirtualPTSTable(t *testing.T) {
 	t.Run("last-updated", func(t *testing.T) {
 		rec := ptpb.Record{
 			ID:        uuid.MakeV4().GetBytes(),
-			Timestamp: s.Clock().Now(),
+			Timestamp: tc.Server(0).Clock().Now(),
 			Mode:      ptpb.PROTECT_AFTER,
 			MetaType:  "foo",
 			Meta:      []byte("bar"),

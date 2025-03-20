@@ -1,10 +1,7 @@
 // Copyright 2018 The Cockroach Authors.
 //
-// Licensed as a CockroachDB Enterprise file under the Cockroach Community
-// License (the "License"); you may not use this file except in compliance with
-// the License. You may obtain a copy of the License at
-//
-//     https://github.com/cockroachdb/cockroach/blob/master/licenses/CCL.txt
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package changefeedccl
 
@@ -132,7 +129,7 @@ func changefeedTypeCheck(
 	return true, withSinkHeader, nil
 }
 
-// changefeedPlanHook implements sql.PlanHookFn.
+// changefeedPlanHook implements sql.planHookFn.
 func changefeedPlanHook(
 	ctx context.Context, stmt tree.Statement, p sql.PlanHookState,
 ) (sql.PlanHookRowFn, colinfo.ResultColumns, []sql.PlanNode, bool, error) {
@@ -144,7 +141,7 @@ func changefeedPlanHook(
 	exprEval := p.ExprEvaluator("CREATE CHANGEFEED")
 	var sinkURI string
 	unspecifiedSink := changefeedStmt.SinkURI == nil
-	avoidBuffering := unspecifiedSink
+	var avoidBuffering bool
 	var header colinfo.ResultColumns
 	if unspecifiedSink {
 		// An unspecified sink triggers a fairly radical change in behavior.
@@ -162,6 +159,10 @@ func changefeedPlanHook(
 		if err != nil {
 			return nil, nil, nil, false, changefeedbase.MarkTaggedError(err, changefeedbase.UserInput)
 		}
+		if sinkURI == `` {
+			// Error if someone specifies an INTO with the empty string.
+			return nil, nil, nil, false, errors.New(`omit the SINK clause for inline results`)
+		}
 		header = withSinkHeader
 	}
 
@@ -171,12 +172,17 @@ func changefeedPlanHook(
 	if err != nil {
 		return nil, nil, nil, false, err
 	}
+	opts := changefeedbase.MakeStatementOptions(rawOpts)
 
-	// rowFn impements sql.PlanHookRowFn
+	description, err := makeChangefeedDescription(ctx, changefeedStmt.CreateChangefeed, sinkURI, opts)
+	if err != nil {
+		return nil, nil, nil, false, err
+	}
+
+	// rowFn implements sql.PlanHookRowFn.
 	rowFn := func(ctx context.Context, _ []sql.PlanNode, resultsCh chan<- tree.Datums) error {
 		ctx, span := tracing.ChildSpan(ctx, stmt.StatementTag())
 		defer span.Finish()
-		opts := changefeedbase.MakeStatementOptions(rawOpts)
 		st, err := opts.GetInitialScanType()
 		if err != nil {
 			return err
@@ -185,16 +191,11 @@ func changefeedPlanHook(
 			return err
 		}
 
-		if !unspecifiedSink && sinkURI == `` {
-			// Error if someone specifies an INTO with the empty string. We've
-			// already sent the wrong result column headers.
-			return errors.New(`omit the SINK clause for inline results`)
-		}
-
 		jr, err := createChangefeedJobRecord(
 			ctx,
 			p,
 			changefeedStmt,
+			description,
 			sinkURI,
 			opts,
 			jobspb.InvalidJobID,
@@ -323,7 +324,7 @@ func changefeedPlanHook(
 	rowFnLogErrors := func(ctx context.Context, pn []sql.PlanNode, resultsCh chan<- tree.Datums) error {
 		err := rowFn(ctx, pn, resultsCh)
 		if err != nil {
-			logChangefeedFailedTelemetry(ctx, nil, failureTypeForStartupError(err))
+			logChangefeedFailedTelemetryDuringStartup(ctx, description, failureTypeForStartupError(err))
 		}
 		return err
 	}
@@ -341,13 +342,19 @@ func coreChangefeed(
 	p.ExtendedEvalContext().ChangefeedState = localState
 	knobs, _ := p.ExecCfg().DistSQLSrv.TestingKnobs.Changefeed.(*TestingKnobs)
 
-	for r := getRetry(ctx); r.Next(); {
+	for r := getRetry(ctx); ; {
+		if !r.Next() {
+			log.Infof(ctx, "core changefeed retry loop exiting: %s", ctx.Err())
+			break
+		}
+
 		if knobs != nil && knobs.BeforeDistChangefeed != nil {
 			knobs.BeforeDistChangefeed()
 		}
 
 		err := distChangefeedFlow(ctx, p, 0 /* jobID */, details, localState, resultsCh)
 		if err == nil {
+			log.Infof(ctx, "core changefeed completed with no error")
 			return nil
 		}
 
@@ -355,12 +362,14 @@ func coreChangefeed(
 			err = knobs.HandleDistChangefeedError(err)
 		}
 
-		if err = changefeedbase.AsTerminalError(ctx, p.ExecCfg().LeaseManager, err); err != nil {
+		if err := changefeedbase.AsTerminalError(ctx, p.ExecCfg().LeaseManager, err); err != nil {
+			log.Infof(ctx, "core changefeed failed due to error: %s", err)
 			return err
 		}
 
 		// All other errors retry; but we'll use an up-to-date progress
 		// information which is saved in the localState.
+		log.Infof(ctx, "core changefeed retrying due to transient error: %s", err)
 	}
 	return ctx.Err() // retry loop exits when context cancels.
 }
@@ -369,6 +378,7 @@ func createChangefeedJobRecord(
 	ctx context.Context,
 	p sql.PlanHookState,
 	changefeedStmt *annotatedChangefeedStatement,
+	description string,
 	sinkURI string,
 	opts changefeedbase.StatementOptions,
 	jobID jobspb.JobID,
@@ -378,11 +388,6 @@ func createChangefeedJobRecord(
 
 	for _, warning := range opts.DeprecationWarnings() {
 		p.BufferClientNotice(ctx, pgnotice.Newf("%s", warning))
-	}
-
-	jobDescription, err := changefeedJobDescription(ctx, changefeedStmt.CreateChangefeed, sinkURI, opts)
-	if err != nil {
-		return nil, err
 	}
 
 	statementTime := hlc.Timestamp{
@@ -403,6 +408,7 @@ func createChangefeedJobRecord(
 		return asOf.Timestamp, nil
 	}
 	if opts.HasStartCursor() {
+		var err error
 		initialHighWater, err = evalTimestamp(opts.GetCursor())
 		if err != nil {
 			return nil, err
@@ -512,6 +518,16 @@ func createChangefeedJobRecord(
 			return nil, err
 		}
 		if withDiff {
+			if !p.ExecCfg().Settings.Version.IsActive(ctx, clusterversion.V23_1_ChangefeedExpressionProductionReady) {
+				return nil,
+					pgerror.Newf(
+						pgcode.FeatureNotSupported,
+						"cannot create new changefeed with CDC expression <%s>, "+
+							"which requires access to cdc_prev until cluster upgrade to %s finalized.",
+						tree.AsString(normalized),
+						clusterversion.V23_1_ChangefeedExpressionProductionReady.String,
+					)
+			}
 			opts.ForceDiff()
 		} else if opts.IsSet(changefeedbase.OptDiff) {
 			// Expression didn't reference cdc_prev, but the diff option was specified.
@@ -605,7 +621,7 @@ func createChangefeedJobRecord(
 
 	if scope, ok := opts.GetMetricScope(); ok {
 		if err := utilccl.CheckEnterpriseEnabled(
-			p.ExecCfg().Settings, "CHANGEFEED",
+			p.ExecCfg().Settings, p.ExecCfg().NodeInfo.LogicalClusterID(), "CHANGEFEED",
 		); err != nil {
 			return nil, errors.Wrapf(err,
 				"use of %q option requires an enterprise license.", changefeedbase.OptMetricsScope)
@@ -634,7 +650,7 @@ func createChangefeedJobRecord(
 
 		if details.Select != `` {
 			if err := utilccl.CheckEnterpriseEnabled(
-				p.ExecCfg().Settings, "CHANGEFEED",
+				p.ExecCfg().Settings, p.ExecCfg().NodeInfo.LogicalClusterID(), "CHANGEFEED",
 			); err != nil {
 				return nil, errors.Wrap(err, "use of AS SELECT requires an enterprise license.")
 			}
@@ -643,18 +659,19 @@ func createChangefeedJobRecord(
 		details.Opts = opts.AsMap()
 		// Jobs should not be created for sinkless changefeeds. However, note that
 		// we create and return a job record for sinkless changefeeds below. This is
-		// because we need the details field to create our sinkless changefeed.
+		// because we need the job description and details to create our sinkless changefeed.
 		// After this job record is returned, we create our forever running sinkless
 		// changefeed, thus ensuring that no job is created for this changefeed as
 		// desired.
 		sinklessRecord := &jobs.Record{
-			Details: details,
+			Description: description,
+			Details:     details,
 		}
 		return sinklessRecord, nil
 	}
 
 	if err := utilccl.CheckEnterpriseEnabled(
-		p.ExecCfg().Settings, "CHANGEFEED",
+		p.ExecCfg().Settings, p.ExecCfg().NodeInfo.LogicalClusterID(), "CHANGEFEED",
 	); err != nil {
 		return nil, err
 	}
@@ -691,7 +708,7 @@ func createChangefeedJobRecord(
 			)
 		}
 		if err := utilccl.CheckEnterpriseEnabled(
-			p.ExecCfg().Settings, changefeedbase.OptExecutionLocality,
+			p.ExecCfg().Settings, p.ExecCfg().NodeInfo.LogicalClusterID(), changefeedbase.OptExecutionLocality,
 		); err != nil {
 			return nil, err
 		}
@@ -735,7 +752,7 @@ Few hours to a few days range are appropriate values for this option.`
 	}
 
 	jr := &jobs.Record{
-		Description: jobDescription,
+		Description: description,
 		Username:    p.User(),
 		DescriptorIDs: func() (sqlDescIDs []descpb.ID) {
 			for _, desc := range targetDescs {
@@ -765,7 +782,7 @@ func validateSettings(ctx context.Context, needsRangeFeed bool, execCfg *sql.Exe
 	// requires the `kv.rangefeed.enabled` setting to be true.
 	if needsRangeFeed && !kvserver.RangefeedEnabled.Get(&execCfg.Settings.SV) {
 		return errors.Errorf("rangefeeds require the kv.rangefeed.enabled setting. See %s",
-			docs.URL(`change-data-capture.html#enable-rangefeeds-to-reduce-latency`))
+			docs.URL(`create-and-configure-changefeeds.html#enable-rangefeeds`))
 	}
 
 	return nil
@@ -799,8 +816,7 @@ func getTableDescriptors(
 	if err != nil {
 		var m *backupresolver.MissingTableErr
 		if errors.As(err, &m) {
-			tableName := m.GetTableName()
-			err = errors.Errorf("table %q does not exist", tableName)
+			err = errors.Wrapf(m.Unwrap(), "table %q does not exist", m.GetTableName())
 		}
 		err = errors.Wrap(err, "failed to resolve targets in the CHANGEFEED stmt")
 		if !initialHighWater.IsEmpty() {
@@ -972,36 +988,41 @@ func requiresTopicInValue(s Sink) bool {
 	return s.getConcreteType() == sinkTypeWebhook
 }
 
-func changefeedJobDescription(
+func makeChangefeedDescription(
 	ctx context.Context,
 	changefeed *tree.CreateChangefeed,
 	sinkURI string,
 	opts changefeedbase.StatementOptions,
 ) (string, error) {
-	// Redacts user sensitive information from job description.
-	cleanedSinkURI, err := cloud.SanitizeExternalStorageURI(sinkURI, []string{
-		changefeedbase.SinkParamSASLPassword,
-		changefeedbase.SinkParamCACert,
-		changefeedbase.SinkParamClientCert,
-		changefeedbase.SinkParamConfluentAPISecret,
-	})
-	if err != nil {
-		return "", err
-	}
-
-	cleanedSinkURI, err = changefeedbase.RedactUserFromURI(cleanedSinkURI)
-	if err != nil {
-		return "", err
-	}
-
-	logSanitizedChangefeedDestination(ctx, cleanedSinkURI)
-
 	c := &tree.CreateChangefeed{
 		Targets: changefeed.Targets,
-		SinkURI: tree.NewDString(cleanedSinkURI),
 		Select:  changefeed.Select,
 	}
-	if err = opts.ForEachWithRedaction(func(k string, v string) {
+
+	if sinkURI != "" {
+		// Redacts user sensitive information from description.
+		cleanedSinkURI, err := cloud.SanitizeExternalStorageURI(sinkURI, []string{
+			changefeedbase.SinkParamSASLPassword,
+			changefeedbase.SinkParamCACert,
+			changefeedbase.SinkParamClientCert,
+			changefeedbase.SinkParamClientKey,
+			changefeedbase.SinkParamConfluentAPISecret,
+		})
+		if err != nil {
+			return "", err
+		}
+
+		cleanedSinkURI, err = changefeedbase.RedactUserFromURI(cleanedSinkURI)
+		if err != nil {
+			return "", err
+		}
+
+		logSanitizedChangefeedDestination(ctx, cleanedSinkURI)
+
+		c.SinkURI = tree.NewDString(cleanedSinkURI)
+	}
+
+	if err := opts.ForEachWithRedaction(func(k string, v string) {
 		opt := tree.KVOption{Key: tree.Name(k)}
 		if len(v) > 0 {
 			opt.Value = tree.NewDString(v)
@@ -1011,7 +1032,8 @@ func changefeedJobDescription(
 		return "", err
 	}
 	sort.Slice(c.Options, func(i, j int) bool { return c.Options[i].Key < c.Options[j].Key })
-	return tree.AsString(c), nil
+
+	return tree.AsStringWithFlags(c, tree.FmtShowFullURIs), nil
 }
 
 func logSanitizedChangefeedDestination(ctx context.Context, destination string) {
@@ -1095,7 +1117,11 @@ func (b *changefeedResumer) setJobRunningStatus(
 	}
 
 	status := jobs.RunningStatus(fmt.Sprintf(fmtOrMsg, args...))
-	if err := b.job.NoTxn().RunningStatus(ctx, status); err != nil {
+	if err := b.job.NoTxn().RunningStatus(ctx,
+		func(_ context.Context, _ jobspb.Details) (jobs.RunningStatus, error) {
+			return status, nil
+		},
+	); err != nil {
 		log.Warningf(ctx, "failed to set running status: %v", err)
 	}
 
@@ -1193,16 +1219,19 @@ func (b *changefeedResumer) handleChangefeedError(
 	// Execution relocation errors just get returned immediately, as they indicate
 	// another node has taken over execution and this execution should end now.
 	if jobs.IsLeaseRelocationError(changefeedErr) {
+		log.Warningf(ctx, "job lease relocated (%v)", changefeedErr)
 		return changefeedErr
 	}
 	opts := changefeedbase.MakeStatementOptions(details.Opts)
 	onError, errErr := opts.GetOnError()
 	if errErr != nil {
+		log.Warningf(ctx, "job failed (%v) but was unable to get on error option (%v)", changefeedErr, errErr)
 		return errors.CombineErrors(changefeedErr, errErr)
 	}
 	switch onError {
 	// default behavior
 	case changefeedbase.OptOnErrorFail:
+		log.Warningf(ctx, "job failed (%v)", changefeedErr)
 		return changefeedErr
 	// pause instead of failing
 	case changefeedbase.OptOnErrorPause:
@@ -1220,6 +1249,7 @@ func (b *changefeedResumer) handleChangefeedError(
 			return nil
 		}, errorMessage)
 	default:
+		log.Warningf(ctx, "job failed (%v) but has unrecognized option value %s=%s", changefeedErr, changefeedbase.OptOnError, details.Opts[changefeedbase.OptOnError])
 		return errors.Wrapf(changefeedErr, "unrecognized option value: %s=%s for handling error",
 			changefeedbase.OptOnError, details.Opts[changefeedbase.OptOnError])
 	}
@@ -1552,6 +1582,17 @@ func logChangefeedFailedTelemetry(
 	log.StructuredEvent(ctx, changefeedFailedEvent)
 }
 
+func logChangefeedFailedTelemetryDuringStartup(
+	ctx context.Context, description string, failureType changefeedbase.FailureType,
+) {
+	changefeedFailedEvent := &eventpb.ChangefeedFailed{
+		CommonChangefeedEventDetails: eventpb.CommonChangefeedEventDetails{Description: description},
+		FailureType:                  failureType,
+	}
+
+	log.StructuredEvent(ctx, changefeedFailedEvent)
+}
+
 func getCommonChangefeedEventDetails(
 	ctx context.Context, details jobspb.ChangefeedDetails, description string,
 ) eventpb.CommonChangefeedEventDetails {
@@ -1566,13 +1607,11 @@ func getCommonChangefeedEventDetails(
 		sinkType = parsedSink.Scheme
 	}
 
-	var initialScan string
 	initialScanType, initialScanSet := opts[changefeedbase.OptInitialScan]
 	_, initialScanOnlySet := opts[changefeedbase.OptInitialScanOnly]
 	_, noInitialScanSet := opts[changefeedbase.OptNoInitialScan]
-	if initialScanSet && initialScanType == `` {
-		initialScan = `yes`
-	} else if initialScanSet && initialScanType != `` {
+	initialScan := `yes`
+	if initialScanSet && initialScanType != `` {
 		initialScan = initialScanType
 	} else if initialScanOnlySet {
 		initialScan = `only`
@@ -1613,8 +1652,9 @@ func failureTypeForStartupError(err error) changefeedbase.FailureType {
 }
 
 // maybeUpgradePreProductionReadyExpression updates job record for the
-// changefeed using CDC transformation, created prior to 23.1. The update
-// happens once cluster version finalized.
+// changefeed using CDC transformation, created prior to
+// clusterversion.V23_1_ChangefeedExpressionProductionReady. The update happens
+// once cluster version finalized.
 // Returns nil when nothing needs to be done.
 // Returns fatal error message, causing changefeed to fail, if automatic upgrade
 // cannot for some reason. Returns a transient error to cause job retry/reload
@@ -1635,9 +1675,18 @@ func maybeUpgradePreProductionReadyExpression(
 		return nil
 	}
 
-	// Expressions prior to 23.1 were rewritten to fully qualify all
-	// columns/types. Furthermore, those expressions couldn't use any functions
-	// that depend on session data. Thus, it is safe to use minimal session data.
+	if !jobExec.ExecCfg().Settings.Version.IsActive(
+		ctx, clusterversion.V23_1_ChangefeedExpressionProductionReady,
+	) {
+		// Can't upgrade job record yet -- wait until upgrade finalized.
+		return nil
+	}
+
+	// Expressions prior to
+	// clusterversion.V23_1_ChangefeedExpressionProductionReady were rewritten to
+	// fully qualify all columns/types.  Furthermore, those expressions couldn't
+	// use any functions that depend on session data.  Thus, it is safe to use
+	// minimal session data.
 	sd := sessiondatapb.SessionData{
 		Database:   "",
 		UserProto:  jobExec.User().EncodeProto(),
@@ -1661,7 +1710,8 @@ func maybeUpgradePreProductionReadyExpression(
 	}
 	details.Select = cdceval.AsStringUnredacted(newExpression)
 
-	if err := jobExec.ExecCfg().JobRegistry.UpdateJobWithTxn(ctx, jobID, nil, /* txn */
+	const useReadLock = false
+	if err := jobExec.ExecCfg().JobRegistry.UpdateJobWithTxn(ctx, jobID, nil, useReadLock,
 		func(txn isql.Txn, md jobs.JobMetadata, ju *jobs.JobUpdater) error {
 			payload := md.Payload
 			payload.Details = jobspb.WrapPayloadDetails(details)

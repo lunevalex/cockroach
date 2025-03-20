@@ -1,10 +1,7 @@
 // Copyright 2022 The Cockroach Authors.
 //
-// Licensed as a CockroachDB Enterprise file under the Cockroach Community
-// License (the "License"); you may not use this file except in compliance with
-// the License. You may obtain a copy of the License at
-//
-//     https://github.com/cockroachdb/cockroach/blob/master/licenses/CCL.txt
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package tenantcostclient_test
 
@@ -138,11 +135,11 @@ func TestEstimateQueryRUConsumption(t *testing.T) {
 	}
 
 	var err error
-	var tenantEstimatedRUs float64
+	var tenantEstimatedRUs int
 	for _, tc := range testCases {
 		for i := 0; i < tc.count; i++ {
 			output := tdb.QueryStr(t, "EXPLAIN ANALYZE "+tc.sql)
-			var estimatedRU float64
+			var estimatedRU int
 			for _, row := range output {
 				if len(row) != 1 {
 					t.Fatalf("expected one column")
@@ -152,7 +149,7 @@ func TestEstimateQueryRUConsumption(t *testing.T) {
 					substr := strings.Split(val, " ")
 					require.Equalf(t, 4, len(substr), "expected RU consumption message to have four words")
 					ruCountStr := strings.Replace(strings.TrimSpace(substr[3]), ",", "", -1)
-					estimatedRU, err = strconv.ParseFloat(ruCountStr, 64)
+					estimatedRU, err = strconv.Atoi(ruCountStr)
 					require.NoError(t, err, "failed to retrieve estimated RUs")
 					break
 				}

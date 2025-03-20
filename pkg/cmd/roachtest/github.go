@@ -1,12 +1,7 @@
 // Copyright 2022 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package main
 
@@ -26,14 +21,13 @@ import (
 	rperrors "github.com/cockroachdb/cockroach/pkg/roachprod/errors"
 	"github.com/cockroachdb/cockroach/pkg/roachprod/logger"
 	"github.com/cockroachdb/cockroach/pkg/roachprod/vm"
-	"github.com/cockroachdb/cockroach/pkg/roachprod/vm/gce"
 )
 
 type githubIssues struct {
 	disable      bool
 	cluster      *clusterImpl
 	vmCreateOpts *vm.CreateOpts
-	issuePoster  func(context.Context, issues.Logger, issues.IssueFormatter, issues.PostRequest, *issues.Options) error
+	issuePoster  func(context.Context, issues.Logger, issues.IssueFormatter, issues.PostRequest, *issues.Options) (*issues.TestFailureIssue, error)
 	teamLoader   func() (team.Map, error)
 }
 
@@ -81,6 +75,26 @@ func generateHelpCommand(
 			}
 		}
 	}
+}
+
+func failuresAsErrorWithOwnership(failures []failure) *registry.ErrorWithOwnership {
+	var transientError rperrors.TransientError
+	var err registry.ErrorWithOwnership
+	if failuresMatchingError(failures, &transientError) {
+		err = registry.ErrorWithOwner(
+			registry.OwnerTestEng, transientError,
+			registry.WithTitleOverride(transientError.Cause),
+			registry.InfraFlake,
+		)
+
+		return &err
+	}
+
+	if errWithOwner := failuresSpecifyOwner(failures); errWithOwner != nil {
+		return errWithOwner
+	}
+
+	return nil
 }
 
 // postIssueCondition encapsulates a condition that causes issue
@@ -147,37 +161,33 @@ func (g *githubIssues) createPostRequest(
 	var mention []string
 	var projColID int
 
-	issueOwner := spec.Owner
-	issueName := testName
-	issueClusterName := ""
+	var (
+		issueOwner    = spec.Owner
+		issueName     = testName
+		messagePrefix string
+		infraFlake    bool
+	)
 
-	messagePrefix := ""
-	var infraFlake bool
-	firstFailure := failures[0]
-	// Overrides to shield eng teams from potential flakes
-	switch {
-	case failuresContainsError(failures, errVMPreemption):
-		issueOwner = registry.OwnerTestEng
-		issueName = "vm_preemption"
-		messagePrefix = fmt.Sprintf("test %s failed due to ", testName)
-		infraFlake = true
-	case failureContainsError(firstFailure, errClusterProvisioningFailed):
-		issueOwner = registry.OwnerTestEng
-		issueName = "cluster_creation"
-		messagePrefix = fmt.Sprintf("test %s was skipped due to ", testName)
-		infraFlake = true
-	case failureContainsError(firstFailure, rperrors.ErrSSH255):
-		issueOwner = registry.OwnerTestEng
-		issueName = "ssh_problem"
-		messagePrefix = fmt.Sprintf("test %s failed due to ", testName)
-		infraFlake = true
-	case failureContainsError(firstFailure, gce.ErrDNSOperation):
-		issueOwner = registry.OwnerTestEng
-		issueName = "dns_problem"
-		messagePrefix = fmt.Sprintf("test %s failed due to ", testName)
-		infraFlake = true
-	case failureContainsError(firstFailure, errDuringPostAssertions):
-		messagePrefix = fmt.Sprintf("test %s failed during post test assertions (see test-post-assertions.log) due to ", testName)
+	// handleErrorWithOwnership updates the local variables in this
+	// function that contain the name of the issue being created,
+	// message prefix, and team that will own it.
+	handleErrorWithOwnership := func(err registry.ErrorWithOwnership) {
+		issueOwner = err.Owner
+		infraFlake = err.InfraFlake
+
+		if err.TitleOverride != "" {
+			issueName = err.TitleOverride
+			messagePrefix = fmt.Sprintf("test %s failed: ", testName)
+		}
+	}
+
+	issueClusterName := ""
+	// If we find a failure that was labeled as a roachprod transient
+	// error, redirect that to Test Eng with the corresponding label as
+	// title override.
+	errWithOwner := failuresAsErrorWithOwnership(failures)
+	if errWithOwner != nil {
+		handleErrorWithOwnership(*errWithOwner)
 	}
 
 	// Issues posted from roachtest are identifiable as such, and they are also release blockers
@@ -211,8 +221,11 @@ func (g *githubIssues) createPostRequest(
 	}
 
 	if sl, ok := teams.GetAliasesForPurpose(issueOwner.ToTeamAlias(), team.PurposeRoachtest); ok {
+		mentionTeam := !teams[sl[0]].SilenceMentions
 		for _, alias := range sl {
-			mention = append(mention, "@"+string(alias))
+			if mentionTeam {
+				mention = append(mention, "@"+string(alias))
+			}
 			if label := teams[alias].Label; label != "" {
 				labels = append(labels, label)
 			}
@@ -290,11 +303,13 @@ func (g *githubIssues) createPostRequest(
 	}, nil
 }
 
-func (g *githubIssues) MaybePost(t *testImpl, l *logger.Logger, message string) error {
+func (g *githubIssues) MaybePost(
+	t *testImpl, l *logger.Logger, message string,
+) (*issues.TestFailureIssue, error) {
 	doPost, skipReason := g.shouldPost(t)
 	if !doPost {
 		l.Printf("skipping GitHub issue posting (%s)", skipReason)
-		return nil
+		return nil, nil
 	}
 
 	var metamorphicBuild bool
@@ -308,7 +323,7 @@ func (g *githubIssues) MaybePost(t *testImpl, l *logger.Logger, message string) 
 	}
 	postRequest, err := g.createPostRequest(t.Name(), t.start, t.end, t.spec, t.failures(), message, metamorphicBuild, t.goCoverEnabled)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	opts := issues.DefaultOptionsFromEnv()
 

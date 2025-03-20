@@ -1,22 +1,19 @@
 // Copyright 2020 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 // Package team involves processing team information based on a yaml
 // file containing team metadata.
 package team
 
 import (
-	_ "embed"
 	"io"
-	"strings"
+	"os"
+	"path/filepath"
 
+	"github.com/cockroachdb/cockroach/pkg/build/bazel"
+	"github.com/cockroachdb/cockroach/pkg/internal/reporoot"
 	"github.com/cockroachdb/errors"
 	"gopkg.in/yaml.v2"
 )
@@ -39,6 +36,8 @@ type Team struct {
 	Label string `yaml:"label"`
 	// TriageColumnID is the GitHub Column ID to assign issues to.
 	TriageColumnID int `yaml:"triage_column_id"`
+	// SilenceMentions is true if @-mentions should be supressed for this team.
+	SilenceMentions bool `yaml:"silence_mentions"`
 	// Email is the email address for this team.
 	//
 	// Currently unused.
@@ -81,14 +80,28 @@ func (m Map) GetAliasesForPurpose(alias Alias, purpose Purpose) ([]Alias, bool) 
 	return sl, true
 }
 
-//go:generate cp ../../../TEAMS.yaml TEAMS.yaml
-
-//go:embed TEAMS.yaml
-var teamsYaml string
-
 // DefaultLoadTeams loads teams from the repo root's TEAMS.yaml.
 func DefaultLoadTeams() (Map, error) {
-	return LoadTeams(strings.NewReader(teamsYaml))
+	var path string
+	if os.Getenv("BAZEL_TEST") != "" {
+		runfiles, err := bazel.RunfilesPath()
+		if err != nil {
+			return nil, err
+		}
+		path = filepath.Join(runfiles, "TEAMS.yaml")
+	} else {
+		root := reporoot.GetFor(".", "TEAMS.yaml")
+		if root == "" {
+			return nil, errors.New("TEAMS.yaml not found")
+		}
+		path = filepath.Join(root, "TEAMS.yaml")
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = f.Close() }()
+	return LoadTeams(f)
 }
 
 // Purpose determines which alias to return for a given team via

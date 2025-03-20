@@ -1,10 +1,7 @@
 // Copyright 2023 The Cockroach Authors.
 //
-// Licensed as a CockroachDB Enterprise file under the Cockroach Community
-// License (the "License"); you may not use this file except in compliance with
-// the License. You may obtain a copy of the License at
-//
-//     https://github.com/cockroachdb/cockroach/blob/master/licenses/CCL.txt
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 // package sharedtestutil contains util shared between upgradeinterlockccl and testgen.
 // The goal of this util split is minimizing the dependencies of testgen.
@@ -47,7 +44,7 @@ var Tests = map[string]TestConfig{
 		ExpUpgradeErr: [NumConfigs][]string{
 			{""},
 			{"pq: upgrade failed due to active SQL servers with incompatible binary version",
-				fmt.Sprintf("sql server 2 is running a binary version %s which is less than the attempted upgrade version", clusterversion.MinSupported.String())},
+				fmt.Sprintf("sql server 2 is running a binary version %s which is less than the attempted upgrade version", clusterversion.TestingBinaryMinSupportedVersion.String())},
 		},
 		ExpStartupErr: [NumConfigs]string{
 			"",

@@ -1,12 +1,7 @@
 // Copyright 2023 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 import React, { useContext } from "react";
 import {
@@ -33,7 +28,7 @@ import * as format from "../util/format";
 import { Breadcrumbs } from "../breadcrumbs";
 import { CaretRight } from "../icon/caretRight";
 import { CockroachCloudContext } from "../contexts";
-import { checkInfoAvailable, getNetworkErrorMessage } from "../databases";
+import { LoadingCell, getNetworkErrorMessage } from "../databases";
 
 const cx = classNames.bind(styles);
 
@@ -44,13 +39,18 @@ export const DiskSizeCell = ({
 }): JSX.Element => {
   return (
     <>
-      {checkInfoAvailable(
-        table.requestError,
-        table.details?.spanStats?.error,
-        table.details?.spanStats?.approximate_disk_bytes
-          ? format.Bytes(table.details?.spanStats?.approximate_disk_bytes)
-          : null,
-      )}
+      {
+        <LoadingCell
+          requestError={table.requestError}
+          queryError={table.details?.spanStats?.error}
+          loading={table.loading}
+          errorClassName={cx("database-table__cell-error")}
+        >
+          {table.details?.spanStats?.approximate_disk_bytes
+            ? format.Bytes(table.details?.spanStats?.approximate_disk_bytes)
+            : null}
+        </LoadingCell>
+      }
     </>
   );
 };
@@ -67,12 +67,15 @@ export const TableNameCell = ({
   if (isCockroachCloud) {
     linkURL = `${location.pathname}/${EncodeUriName(
       getMatchParamByName(dbDetails.match, schemaNameAttr),
-    )}/${EncodeUriName(table.name)}`;
+    )}/${EncodeUriName(table.name.qualifiedNameWithSchemaAndTable)}`;
     if (dbDetails.viewMode === ViewMode.Grants) {
       linkURL += `?viewMode=${ViewMode.Grants}`;
     }
   } else {
-    linkURL = EncodeDatabaseTableUri(dbDetails.name, table.name);
+    linkURL = EncodeDatabaseTableUri(
+      dbDetails.name,
+      table.name.qualifiedNameWithSchemaAndTable,
+    );
     if (dbDetails.viewMode === ViewMode.Grants) {
       linkURL += `?tab=grants`;
     }
@@ -96,7 +99,8 @@ export const TableNameCell = ({
   return (
     <Link to={linkURL} className={cx("icon__container")}>
       {icon}
-      {table.name}
+      <span className={cx("schema-name")}>{table.name.schema}.</span>
+      <span>{table.name.table}</span>
     </Link>
   );
 };
@@ -110,11 +114,16 @@ export const IndexesCell = ({
 }): JSX.Element => {
   const elem = (
     <>
-      {checkInfoAvailable(
-        table.requestError,
-        table.details?.schemaDetails?.error,
-        table.details?.schemaDetails?.indexes?.length,
-      )}
+      {
+        <LoadingCell
+          requestError={table.requestError}
+          queryError={table.details?.schemaDetails?.error}
+          loading={table.loading}
+          errorClassName={cx("database-table__cell-error")}
+        >
+          {table.details?.schemaDetails?.indexes?.length}
+        </LoadingCell>
+      }
     </>
   );
   // If index recommendations are not enabled or we don't have any index recommendations,

@@ -1,10 +1,7 @@
 // Copyright 2022 The Cockroach Authors.
 //
-// Licensed as a CockroachDB Enterprise file under the Cockroach Community
-// License (the "License"); you may not use this file except in compliance with
-// the License. You may obtain a copy of the License at
-//
-//     https://github.com/cockroachdb/cockroach/blob/master/licenses/CCL.txt
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package cdceval
 
@@ -45,12 +42,14 @@ func NormalizeExpression(
 ) (norm *NormalizedSelectClause, withDiff bool, _ error) {
 	// Even though we have a job exec context, we shouldn't muck with it.
 	// Make our own copy of the planner instead.
-	if err := withPlanner(ctx, execCtx.ExecCfg(), schemaTS, execCtx.User(), schemaTS, execCtx.SessionData(),
+	if err := withPlanner(
+		ctx, execCtx.ExecCfg(), execCtx.User(), schemaTS, execCtx.SessionData(),
 		func(ctx context.Context, execCtx sql.JobExecContext, cleanup func()) (err error) {
 			defer cleanup()
 			norm, withDiff, err = normalizeExpression(ctx, execCtx, descr, schemaTS, target, sc, splitFams)
 			return err
-		}); err != nil {
+		},
+	); err != nil {
 		return nil, false, withErrorHint(err, target.FamilyName, descr.NumFamilies() > 1)
 	}
 	return
@@ -70,6 +69,8 @@ func normalizeExpression(
 	if err != nil {
 		return nil, false, changefeedbase.WithTerminalError(err)
 	}
+
+	defer configSemaForCDC(execCtx.SemaCtx())()
 
 	// Add cdc_prev column; we may or may not need it, but we'll check below.
 	prevCol, err := newPrevColumnForDesc(norm.desc)
@@ -115,9 +116,10 @@ func SpansForExpression(
 	}
 
 	var plan sql.CDCExpressionPlan
-	if err := withPlanner(ctx, execCfg, hlc.Timestamp{}, user, schemaTS, sd,
+	if err := withPlanner(ctx, execCfg, user, schemaTS, sd,
 		func(ctx context.Context, execCtx sql.JobExecContext, cleanup func()) error {
 			defer cleanup()
+			defer configSemaForCDC(execCtx.SemaCtx())()
 			norm := &NormalizedSelectClause{SelectClause: sc, desc: d}
 
 			// Add cdc_prev column; we may or may not need it, add it just in case
@@ -131,11 +133,20 @@ func SpansForExpression(
 				norm.SelectStatementForFamily(), sql.WithExtraColumn(prevCol))
 			return err
 
-		}); err != nil {
+		},
+	); err != nil {
 		return nil, withErrorHint(err, d.FamilyName, d.HasOtherFamilies)
 	}
 
-	return plan.Spans, nil
+	// Make sure any single-key spans are expanded to have end keys.
+	spans := plan.Spans
+	for i := range spans {
+		if len(spans[i].EndKey) == 0 {
+			spans[i].EndKey = spans[i].Key.Clone().Next()
+		}
+	}
+
+	return spans, nil
 }
 
 // withErrorHint wraps error with error hints.
@@ -158,7 +169,6 @@ func withErrorHint(err error, targetFamily string, multiFamily bool) error {
 func withPlanner(
 	ctx context.Context,
 	execCfg *sql.ExecutorConfig,
-	statementTS hlc.Timestamp,
 	user username.SQLUsername,
 	schemaTS hlc.Timestamp,
 	sd *sessiondata.SessionData,
@@ -172,7 +182,7 @@ func withPlanner(
 		// Current implementation relies on row-by-row evaluation;
 		// so, ensure vectorized engine is off.
 		sd.VectorizeMode = sessiondatapb.VectorizeOff
-		planner, plannerCleanup := sql.NewInternalPlanner(
+		planner, cleanup := sql.NewInternalPlanner(
 			"cdc-expr", txn.KV(),
 			user,
 			&sql.MemoryMetrics{}, // TODO(yevgeniy): Use appropriate metrics.
@@ -180,14 +190,6 @@ func withPlanner(
 			sd,
 			sql.WithDescCollection(col),
 		)
-
-		execCtx := planner.(sql.JobExecContext)
-		semaCleanup := configSemaForCDC(execCtx.SemaCtx(), statementTS)
-		cleanup := func() {
-			semaCleanup()
-			plannerCleanup()
-		}
-
-		return fn(ctx, execCtx, cleanup)
+		return fn(ctx, planner.(sql.JobExecContext), cleanup)
 	})
 }

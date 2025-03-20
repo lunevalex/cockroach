@@ -1,12 +1,7 @@
 // Copyright 2018 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package workload
 
@@ -93,10 +88,6 @@ type MultiConnPoolCfg struct {
 
 	// Duration between refreshes of the DNS cache
 	DNSRefreshInterval time.Duration
-
-	// QueryTracer is an optional tracer to attach to the pgx connections from
-	// this pool. See [pgx.ConnConfig] for details.
-	QueryTracer pgx.QueryTracer
 }
 
 // NewMultiConnPoolCfgFromFlags constructs a new MultiConnPoolCfg object based
@@ -243,9 +234,6 @@ func NewMultiConnPool(
 				}
 				return true
 			}
-
-			// Attach the supplied tracer to the ConnConfig.
-			poolCfg.ConnConfig.Tracer = cfg.QueryTracer
 
 			connCfg := poolCfg.ConnConfig
 			if m.resolver != nil {

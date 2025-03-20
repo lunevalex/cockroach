@@ -24,11 +24,8 @@ go_test(
     name = "querycache_test",
     size = "small",
     srcs = ["query_cache_test.go"],
+    args = ["-test.timeout=55s"],
     embed = [":querycache"],
-    exec_properties = select({
-        "//build/toolchains:is_heavy": {"Pool": "heavy"},
-        "//conditions:default": {"Pool": "default"},
-    }),
     deps = [
         "//pkg/sql/opt/memo",
         "//pkg/util/randutil",

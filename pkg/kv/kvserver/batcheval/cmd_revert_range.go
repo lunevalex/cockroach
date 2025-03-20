@@ -1,12 +1,7 @@
 // Copyright 2017 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package batcheval
 
@@ -76,22 +71,18 @@ func declareKeysRevertRange(
 
 // isEmptyKeyTimeRange checks if the span has no writes in (since,until].
 func isEmptyKeyTimeRange(
-	ctx context.Context,
-	readWriter storage.ReadWriter,
-	from, to roachpb.Key,
-	since, until hlc.Timestamp,
+	readWriter storage.ReadWriter, from, to roachpb.Key, since, until hlc.Timestamp,
 ) (bool, error) {
 	// Use a TBI to check if there is anything to delete -- the first key Seek hits
 	// may not be in the time range but the fact the TBI found any key indicates
 	// that there is *a* key in the SST that is in the time range. Thus we should
 	// proceed to iteration that actually checks timestamps on each key.
-	iter, err := readWriter.NewMVCCIterator(ctx, storage.MVCCKeyIterKind, storage.IterOptions{
+	iter, err := readWriter.NewMVCCIterator(storage.MVCCKeyIterKind, storage.IterOptions{
 		KeyTypes:     storage.IterKeyTypePointsAndRanges,
 		LowerBound:   from,
 		UpperBound:   to,
 		MinTimestamp: since.Next(), // make exclusive
 		MaxTimestamp: until,
-		ReadCategory: storage.BatchEvalReadCategory,
 	})
 	if err != nil {
 		return false, err
@@ -130,7 +121,7 @@ func RevertRange(
 	}
 
 	if empty, err := isEmptyKeyTimeRange(
-		ctx, readWriter, args.Key, args.EndKey, args.TargetTime, cArgs.Header.Timestamp,
+		readWriter, args.Key, args.EndKey, args.TargetTime, cArgs.Header.Timestamp,
 	); err != nil {
 		return result.Result{}, err
 	} else if empty {

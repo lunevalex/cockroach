@@ -1,12 +1,7 @@
 // Copyright 2019 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package azure
 
@@ -122,7 +117,9 @@ func azureAuthMethod(uri *url.URL, consumeURI *cloud.ConsumeURL) (cloudpb.AzureA
 
 }
 
-func parseAzureURL(uri *url.URL) (cloudpb.ExternalStorage, error) {
+func parseAzureURL(
+	_ cloud.ExternalStorageURIContext, uri *url.URL,
+) (cloudpb.ExternalStorage, error) {
 	azureURL := cloud.ConsumeURL{URL: uri}
 	conf := cloudpb.ExternalStorage{}
 	conf.Provider = cloudpb.ExternalStorageProvider_azure
@@ -209,7 +206,7 @@ type azureStorage struct {
 var _ cloud.ExternalStorage = &azureStorage{}
 
 func makeAzureStorage(
-	_ context.Context, args cloud.EarlyBootExternalStorageContext, dest cloudpb.ExternalStorage,
+	_ context.Context, args cloud.ExternalStorageContext, dest cloudpb.ExternalStorage,
 ) (cloud.ExternalStorage, error) {
 	telemetry.Count("external-io.azure")
 	conf := dest.AzureConfig
@@ -225,6 +222,14 @@ func makeAzureStorage(
 		return nil, errors.Wrap(err, "azure: account name is not valid")
 	}
 
+	options := args.ExternalStorageOptions()
+	t, err := cloud.MakeHTTPClient(args.Settings, args.MetricsRecorder, "azure", dest.AzureConfig.Container, options.ClientName)
+	if err != nil {
+		return nil, errors.Wrap(err, "azure: unable to create transport")
+	}
+	var opts service.ClientOptions
+	opts.Transport = t
+
 	var azClient *service.Client
 	switch conf.Auth {
 	case cloudpb.AzureAuth_LEGACY:
@@ -232,7 +237,7 @@ func makeAzureStorage(
 		if err != nil {
 			return nil, errors.Wrap(err, "azure shared key credential")
 		}
-		azClient, err = service.NewClientWithSharedKeyCredential(u.String(), credential, nil)
+		azClient, err = service.NewClientWithSharedKeyCredential(u.String(), credential, &opts)
 		if err != nil {
 			return nil, err
 		}
@@ -241,7 +246,7 @@ func makeAzureStorage(
 		if err != nil {
 			return nil, errors.Wrap(err, "azure client secret credential")
 		}
-		azClient, err = service.NewClient(u.String(), credential, nil)
+		azClient, err = service.NewClient(u.String(), credential, &opts)
 		if err != nil {
 			return nil, err
 		}
@@ -249,11 +254,6 @@ func makeAzureStorage(
 		if args.IOConf.DisableImplicitCredentials {
 			return nil, errors.New(
 				"implicit credentials disallowed for azure due to --external-io-disable-implicit-credentials flag")
-		}
-
-		options := cloud.ExternalStorageOptions{}
-		for _, o := range args.Options {
-			o(&options)
 		}
 
 		defaultCredentialsOptions := &DefaultAzureCredentialWithFileOptions{}
@@ -265,7 +265,7 @@ func makeAzureStorage(
 		if err != nil {
 			return nil, errors.Wrap(err, "azure default credential")
 		}
-		azClient, err = service.NewClient(u.String(), credential, nil)
+		azClient, err = service.NewClient(u.String(), credential, &opts)
 		if err != nil {
 			return nil, err
 		}
@@ -421,10 +421,5 @@ var _ base.ModuleTestingKnobs = &TestingKnobs{}
 
 func init() {
 	cloud.RegisterExternalStorageProvider(cloudpb.ExternalStorageProvider_azure,
-		cloud.RegisteredProvider{
-			EarlyBootConstructFn: makeAzureStorage,
-			EarlyBootParseFn:     parseAzureURL,
-			RedactedParams:       cloud.RedactedParams(AzureAccountKeyParam),
-			Schemes:              []string{scheme, deprecatedScheme, deprecatedExternalConnectionScheme},
-		})
+		parseAzureURL, makeAzureStorage, cloud.RedactedParams(AzureAccountKeyParam), scheme, deprecatedScheme, deprecatedExternalConnectionScheme)
 }

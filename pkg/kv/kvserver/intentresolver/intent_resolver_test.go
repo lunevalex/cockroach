@@ -1,12 +1,7 @@
 // Copyright 2016 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package intentresolver
 
@@ -76,8 +71,8 @@ func TestCleanupTxnIntentsOnGCAsync(t *testing.T) {
 	txn0 := newTransaction("txn0", key, 1, clock)
 	// Txn1 is in the pending state but is expired.
 	txn1 := newTransaction("txn1", key, 1, clock)
-	txn1.MinTimestamp.WallTime -= int64(100 * time.Second)
-	txn1.LastHeartbeat = txn1.MinTimestamp
+	txn1.ReadTimestamp.WallTime -= int64(100 * time.Second)
+	txn1.LastHeartbeat = txn1.ReadTimestamp
 	// Txn2 is in the staging state and is not old enough to have expired so the
 	// code ought to send nothing.
 	txn2 := newTransaction("txn2", key, 1, clock)
@@ -85,8 +80,8 @@ func TestCleanupTxnIntentsOnGCAsync(t *testing.T) {
 	// Txn3 is in the staging state but is expired.
 	txn3 := newTransaction("txn3", key, 1, clock)
 	txn3.Status = roachpb.STAGING
-	txn3.MinTimestamp.WallTime -= int64(100 * time.Second)
-	txn3.LastHeartbeat = txn3.MinTimestamp
+	txn3.ReadTimestamp.WallTime -= int64(100 * time.Second)
+	txn3.LastHeartbeat = txn3.ReadTimestamp
 	// Txn4 is in the committed state.
 	txn4 := newTransaction("txn4", key, 1, clock)
 	txn4.Status = roachpb.COMMITTED

@@ -1,12 +1,7 @@
 // Copyright 2019 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package colbuilder
 
@@ -15,6 +10,7 @@ import (
 	"reflect"
 	"strings"
 
+	"github.com/cockroachdb/cockroach/pkg/clusterversion"
 	"github.com/cockroachdb/cockroach/pkg/col/coldata"
 	"github.com/cockroachdb/cockroach/pkg/col/coldataext"
 	"github.com/cockroachdb/cockroach/pkg/col/typeconv"
@@ -38,6 +34,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/colfetcher"
 	"github.com/cockroachdb/cockroach/pkg/sql/colmem"
 	"github.com/cockroachdb/cockroach/pkg/sql/execinfra"
+	"github.com/cockroachdb/cockroach/pkg/sql/execinfra/execagg"
 	"github.com/cockroachdb/cockroach/pkg/sql/execinfra/execreleasable"
 	"github.com/cockroachdb/cockroach/pkg/sql/execinfrapb"
 	"github.com/cockroachdb/cockroach/pkg/sql/row"
@@ -49,7 +46,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/types"
 	"github.com/cockroachdb/cockroach/pkg/util/buildutil"
 	"github.com/cockroachdb/cockroach/pkg/util/errorutil/unimplemented"
-	"github.com/cockroachdb/cockroach/pkg/util/intsets"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/cockroach/pkg/util/mon"
 	"github.com/cockroachdb/errors"
@@ -130,23 +126,6 @@ func wrapRowSources(
 
 type opResult struct {
 	*colexecargs.NewColOperatorResult
-}
-
-func needHashAggregator(aggSpec *execinfrapb.AggregatorSpec) (bool, error) {
-	var groupCols, orderedCols intsets.Fast
-	for _, col := range aggSpec.OrderedGroupCols {
-		orderedCols.Add(int(col))
-	}
-	for _, col := range aggSpec.GroupCols {
-		if !orderedCols.Contains(int(col)) {
-			return true, nil
-		}
-		groupCols.Add(int(col))
-	}
-	if !orderedCols.SubsetOf(groupCols) {
-		return false, errors.AssertionFailedf("ordered cols must be a subset of grouping cols")
-	}
-	return false, nil
 }
 
 // IsSupported returns an error if the given spec is not supported by the
@@ -834,6 +813,9 @@ func NewColOperator(
 			var resultTypes []*types.T
 			if flowCtx.EvalCtx.SessionData().DirectColumnarScansEnabled {
 				canUseDirectScan := func() bool {
+					if !flowCtx.EvalCtx.Settings.Version.IsActive(ctx, clusterversion.V23_1_KVDirectColumnarScans) {
+						return false
+					}
 					// We currently don't use the direct scans if TraceKV is
 					// enabled (due to not being able to tell the KV server
 					// about it). One idea would be to include this boolean into
@@ -967,7 +949,7 @@ func NewColOperator(
 			}
 
 			var needHash bool
-			needHash, err = needHashAggregator(aggSpec)
+			needHash, err = execagg.NeedHashAggregator(aggSpec)
 			if err != nil {
 				return r, err
 			}

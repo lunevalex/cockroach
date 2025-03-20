@@ -1,12 +1,7 @@
 // Copyright 2018 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package spanlatch
 
@@ -18,10 +13,8 @@ import (
 	"strings"
 	"testing"
 	"time"
-	"unsafe"
 
 	"github.com/cockroachdb/cockroach/pkg/keys"
-	"github.com/cockroachdb/cockroach/pkg/kv/kvpb"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/concurrency/poison"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/spanset"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
@@ -29,7 +22,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
 	"github.com/cockroachdb/cockroach/pkg/util/leaktest"
 	"github.com/cockroachdb/errors"
-	"github.com/cockroachdb/redact"
 	"github.com/stretchr/testify/require"
 )
 
@@ -97,7 +89,7 @@ func testLatchBlocks(t *testing.T, a Attempt) {
 // MustAcquire is like Acquire, except it can't return context cancellation
 // errors.
 func (m *Manager) MustAcquire(spans *spanset.SpanSet) *Guard {
-	lg, err := m.Acquire(context.Background(), spans, poison.Policy_Error, nil)
+	lg, err := m.Acquire(context.Background(), spans, poison.Policy_Error)
 	if err != nil {
 		panic(err)
 	}
@@ -125,7 +117,7 @@ func (m *Manager) MustAcquireChExt(
 	ctx context.Context, spans *spanset.SpanSet, pp poison.Policy,
 ) Attempt {
 	errCh := make(chan error, 1)
-	lg, snap := m.sequence(spans, pp, nil)
+	lg, snap := m.sequence(spans, pp)
 	go func() {
 		err := m.wait(ctx, lg, snap)
 		if err != nil {
@@ -610,13 +602,13 @@ func TestLatchManagerOptimistic(t *testing.T) {
 	var m Manager
 
 	// Acquire latches, no conflict.
-	lg1 := m.AcquireOptimistic(spans("d", "f", write, zeroTS), poison.Policy_Error, nil)
+	lg1 := m.AcquireOptimistic(spans("d", "f", write, zeroTS), poison.Policy_Error)
 	require.True(t, m.CheckOptimisticNoConflicts(lg1, spans("d", "f", write, zeroTS)), poison.Policy_Error)
 	lg1, err := m.WaitUntilAcquired(context.Background(), lg1)
 	require.NoError(t, err)
 
 	// Optimistic acquire encounters conflict in some cases.
-	lg2 := m.AcquireOptimistic(spans("a", "e", read, zeroTS), poison.Policy_Error, nil)
+	lg2 := m.AcquireOptimistic(spans("a", "e", read, zeroTS), poison.Policy_Error)
 	require.False(t, m.CheckOptimisticNoConflicts(lg2, spans("a", "e", read, zeroTS)))
 	require.True(t, m.CheckOptimisticNoConflicts(lg2, spans("a", "d", read, zeroTS)))
 	waitUntilAcquiredCh := func(g *Guard) Attempt {
@@ -633,7 +625,7 @@ func TestLatchManagerOptimistic(t *testing.T) {
 	testLatchSucceeds(t, a2)
 
 	// Optimistic acquire encounters conflict.
-	lg3 := m.AcquireOptimistic(spans("a", "e", write, zeroTS), poison.Policy_Error, nil)
+	lg3 := m.AcquireOptimistic(spans("a", "e", write, zeroTS), poison.Policy_Error)
 	require.False(t, m.CheckOptimisticNoConflicts(lg3, spans("a", "e", write, zeroTS)))
 	m.Release(lg2)
 	// There is still a conflict even though lg2 has been released.
@@ -645,7 +637,7 @@ func TestLatchManagerOptimistic(t *testing.T) {
 	// Optimistic acquire for read below write encounters no conflict.
 	oneTS, twoTS := hlc.Timestamp{WallTime: 1}, hlc.Timestamp{WallTime: 2}
 	lg4 := m.MustAcquire(spans("c", "e", write, twoTS))
-	lg5 := m.AcquireOptimistic(spans("a", "e", read, oneTS), poison.Policy_Error, nil)
+	lg5 := m.AcquireOptimistic(spans("a", "e", read, oneTS), poison.Policy_Error)
 	require.True(t, m.CheckOptimisticNoConflicts(lg5, spans("a", "e", read, oneTS)))
 	require.True(t, m.CheckOptimisticNoConflicts(lg5, spans("a", "c", read, oneTS)))
 	lg5, err = m.WaitUntilAcquired(context.Background(), lg5)
@@ -659,14 +651,14 @@ func TestLatchManagerWaitFor(t *testing.T) {
 	var m Manager
 
 	// Acquire latches, no conflict.
-	lg1, err := m.Acquire(context.Background(), spans("d", "f", write, zeroTS), poison.Policy_Error, nil)
+	lg1, err := m.Acquire(context.Background(), spans("d", "f", write, zeroTS), poison.Policy_Error)
 	require.NoError(t, err)
 
 	// See if WaitFor waits for above latch.
 	waitForCh := func() Attempt {
 		errCh := make(chan error)
 		go func() {
-			errCh <- m.WaitFor(context.Background(), spans("a", "e", read, zeroTS), poison.Policy_Error, nil)
+			errCh <- m.WaitFor(context.Background(), spans("a", "e", read, zeroTS), poison.Policy_Error)
 		}()
 		return Attempt{errCh: errCh}
 	}
@@ -677,7 +669,7 @@ func TestLatchManagerWaitFor(t *testing.T) {
 
 	// Optimistic acquire should _not_ encounter conflict - as WaitFor should
 	// not lay any latches.
-	lg3 := m.AcquireOptimistic(spans("a", "e", write, zeroTS), poison.Policy_Error, nil)
+	lg3 := m.AcquireOptimistic(spans("a", "e", write, zeroTS), poison.Policy_Error)
 	require.True(t, m.CheckOptimisticNoConflicts(lg3, spans("a", "e", write, zeroTS)))
 	lg3, err = m.WaitUntilAcquired(context.Background(), lg3)
 	require.NoError(t, err)
@@ -725,7 +717,7 @@ func BenchmarkLatchManagerReadWriteMix(b *testing.B) {
 
 			b.ResetTimer()
 			for i := range spans {
-				lg, snap := m.sequence(&spans[i], poison.Policy_Error, nil)
+				lg, snap := m.sequence(&spans[i], poison.Policy_Error)
 				snap.close()
 				if len(lgBuf) == cap(lgBuf) {
 					m.Release(<-lgBuf)
@@ -743,41 +735,4 @@ func randBytes(n int) []byte {
 		panic(err)
 	}
 	return b
-}
-
-// TestSizeOfLatch tests the size of the latch struct.
-func TestSizeOfLatch(t *testing.T) {
-	var la latch
-	size := int(unsafe.Sizeof(la))
-	require.Equal(t, 96, size)
-}
-
-// TestSizeOfLatchGuard tests the size of the latch Guard struct.
-func TestSizeOfLatchGuard(t *testing.T) {
-	var lg Guard
-	size := int(unsafe.Sizeof(lg))
-	require.Equal(t, 112, size)
-}
-
-// TestLatchStringAndSafeformat tests the output of latch.SafeFormat.
-func TestLatchStringAndSafeformat(t *testing.T) {
-	gr := &kvpb.GetRequest{
-		RequestHeader: kvpb.RequestHeader{
-			Key: roachpb.Key("a"),
-		},
-	}
-	ba := &kvpb.BatchRequest{}
-	ba.Add(gr)
-	guard := new(Guard)
-	guard.baFmt = ba
-	la := &latch{
-		g:    guard,
-		span: span(11),
-		ts:   hlc.Timestamp{WallTime: 10},
-		next: nil,
-		prev: nil,
-	}
-	require.EqualValues(t, `00011{-\x00}@0.000000010,0 for request Get ["a"]`, la.String())
-	require.EqualValues(t, `‹00011{-\x00}›@0.000000010,0 for request Get [‹"a"›]`, redact.Sprint(la))
-	require.EqualValues(t, `‹×›@0.000000010,0 for request Get [‹×›]`, redact.Sprint(la).Redact())
 }

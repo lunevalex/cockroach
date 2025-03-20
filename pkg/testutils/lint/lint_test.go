@@ -1,12 +1,7 @@
 // Copyright 2016 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 //go:build lint
 // +build lint
@@ -175,7 +170,7 @@ func TestLint(t *testing.T) {
 
 		cmd, stderr, filter, err := dirCmd(crdbDir,
 			"git", "grep", "-nE", fmt.Sprintf(`[^_a-zA-Z](%s)\(`, strings.Join(names, "|")),
-			"--", "pkg", ":!pkg/cmd/roachtest/testdata/regression.diffs")
+			"--", "pkg")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -206,44 +201,25 @@ func TestLint(t *testing.T) {
 		}
 	})
 
-	t.Run("TestCopyrightHeaders", func(t *testing.T) {
+	t.Run("TestCopyrightHeadersWithSlash", func(t *testing.T) {
 		t.Parallel()
 
-		bslHeader := regexp.MustCompile(`// Copyright 20\d\d The Cockroach Authors.
+		cslHeader := regexp.MustCompile(`// Copyright 20\d\d The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 `)
-
-		cclHeader := regexp.MustCompile(`// Copyright 20\d\d The Cockroach Authors.
-//
-// Licensed as a CockroachDB Enterprise file under the Cockroach Community
-// License \(the "License"\); you may not use this file except in compliance with
-// the License. You may obtain a copy of the License at
-//
-//     https://github.com/cockroachdb/cockroach/blob/master/licenses/CCL.txt
-`)
-
-		apacheHeader := regexp.MustCompile(`// Copyright 20\d\d The Cockroach Authors.
-//
-// Licensed under the Apache License, Version 2.0 \(the "License"\);
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-`)
-
 		// These extensions identify source files that should have copyright headers.
 		extensions := []string{
-			"*.go", "*.cc", "*.h", "*.js", "*.ts", "*.tsx", "*.s", "*.S", "*.styl", "*.proto", "*.rl",
+			"*.go", "*.cc", "*.h", "*.js", "*.ts", "*.tsx", "*.s", "*.S", "*.scss", "*.styl", "*.proto", "*.rl",
+		}
+		fullExtensions := make([]string, len(extensions)*2)
+		for i, extension := range extensions {
+			fullExtensions[i*2] = "build/**/" + extension
+			fullExtensions[i*2+1] = "pkg/**/" + extension
 		}
 
-		cmd, stderr, filter, err := dirCmd(pkgDir, "git", append([]string{"ls-files"}, extensions...)...)
+		cmd, stderr, filter, err := dirCmd(crdbDir, "git", append([]string{"ls-files"}, fullExtensions...)...)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -262,15 +238,12 @@ func TestLint(t *testing.T) {
 			stream.GrepNot(`/embedded.go`),
 			stream.GrepNot(`geo/geographiclib/geodesic\.c$`),
 			stream.GrepNot(`geo/geographiclib/geodesic\.h$`),
-			// The opentelemetry-proto files are copied from otel with their own
-			// license.
-			stream.GrepNot(`opentelemetry-proto/.*.proto$`),
 			// These files are copied from bazel upstream with its own license.
 			stream.GrepNot(`build/bazel/bes/.*.proto$`),
 			// Generated files for plpgsql.
 			stream.GrepNot(`sql/plpgsql/parser/plpgsqllexbase/.*.go`),
 		), func(filename string) {
-			file, err := os.Open(filepath.Join(pkgDir, filename))
+			file, err := os.Open(filepath.Join(crdbDir, filename))
 			if err != nil {
 				t.Error(err)
 				return
@@ -283,21 +256,61 @@ func TestLint(t *testing.T) {
 			}
 			data = data[0:n]
 
-			isCCL := strings.Contains(filename, "ccl/")
-			isApache := strings.HasPrefix(filename, "obsservice")
-			switch {
-			case isCCL:
-				if cclHeader.Find(data) == nil {
-					t.Errorf("did not find expected CCL license header in %s", filename)
-				}
-			case isApache:
-				if apacheHeader.Find(data) == nil {
-					t.Errorf("did not find expected Apache license header in %s", filename)
-				}
-			default:
-				if bslHeader.Find(data) == nil {
-					t.Errorf("did not find expected BSL license header in %s", filename)
-				}
+			if cslHeader.Find(data) == nil {
+				t.Errorf("did not find expected CSL license header in %s", filename)
+			}
+		}); err != nil {
+			t.Fatal(err)
+		}
+
+		if err := cmd.Wait(); err != nil {
+			if out := stderr.String(); len(out) > 0 {
+				t.Fatalf("err=%s, stderr=%s", err, out)
+			}
+		}
+	})
+
+	t.Run("TestCopyrightHeadersWithHash", func(t *testing.T) {
+		t.Parallel()
+
+		cslHeaderHash := regexp.MustCompile(`# Copyright 20\d\d The Cockroach Authors.
+#
+# Use of this software is governed by the CockroachDB Software License
+# included in the /LICENSE file.
+`)
+
+		// These extensions identify source files that should have copyright headers.
+		extensions := []string{"GNUmakefile", "Makefile", "*.py", "*.sh"}
+
+		cmd, stderr, filter, err := dirCmd(crdbDir, "git", append([]string{"ls-files"}, extensions...)...)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		if err := cmd.Start(); err != nil {
+			t.Fatal(err)
+		}
+
+		if err := stream.ForEach(stream.Sequence(filter,
+			stream.GrepNot(`^c-deps/.*`),
+			// These files are copied from raft upstream with its own license.
+			stream.GrepNot(`^raft/.*`),
+		), func(filename string) {
+			file, err := os.Open(filepath.Join(crdbDir, filename))
+			if err != nil {
+				t.Error(err)
+				return
+			}
+			defer file.Close()
+			data := make([]byte, 1024)
+			n, err := file.Read(data)
+			if err != nil {
+				t.Errorf("reading start of %s: %s", filename, err)
+			}
+			data = data[0:n]
+
+			if cslHeaderHash.Find(data) == nil {
+				t.Errorf("did not find expected CSL license header in %s", filename)
 			}
 		}); err != nil {
 			t.Fatal(err)
@@ -515,7 +528,6 @@ func TestLint(t *testing.T) {
 					":!testutils/datapathutils/data_path.go", // For TEST_UNDECLARED_OUTPUT_DIR, REMOTE_EXEC
 					":!testutils/backup.go",                  // For BACKUP_TESTING_BUCKET
 					":!compose/compose_test.go",              // For PATH.
-					":!testutils/skip/skip.go",               // For REMOTE_EXEC.
 				},
 			},
 		} {
@@ -881,9 +893,8 @@ func TestLint(t *testing.T) {
 			`\btime\.(Now|Since|Unix|LoadLocation)\(`,
 			"--",
 			"*.go",
-			":!*_test.go",
+			":!acceptance/compose/gss/psql/gss_test.go",
 			":!**/embedded.go",
-			":!util/syncutil/mutex_tracing.go",
 			":!util/timeutil/time.go",
 			":!util/timeutil/zoneinfo.go",
 			":!cmd/roachtest/tests/gorm_helpers.go",
@@ -1043,8 +1054,6 @@ func TestLint(t *testing.T) {
 			":!ccl/sqlproxyccl/tenantdirsvr/test_directory_svr.go",
 			":!ccl/sqlproxyccl/tenantdirsvr/test_simple_directory_svr.go",
 			":!ccl/sqlproxyccl/tenantdirsvr/test_static_directory_svr.go",
-			":!obsservice/cmd/obsservice/main.go",
-			":!obsservice/obslib/ingest/ingest_test.go",
 			":!cmd/bazci/*.go",
 		)
 		if err != nil {
@@ -1237,7 +1246,6 @@ func TestLint(t *testing.T) {
 			":!storage/enginepb/mvcc3_valueheader.go",
 			":!sql/types/types_jsonpb.go",
 			":!sql/schemachanger/scplan/scviz/maps.go",
-			":!workload/schemachange/tracing.go",
 		)
 		if err != nil {
 			t.Fatal(err)
@@ -1625,6 +1633,7 @@ func TestLint(t *testing.T) {
 			"syscall":                                     "sysutil",
 			"errors":                                      "github.com/cockroachdb/errors",
 			"oserror":                                     "github.com/cockroachdb/errors/oserror",
+			"go.uber.org/atomic":                          "sync/atomic",
 			"github.com/pkg/errors":                       "github.com/cockroachdb/errors",
 			"github.com/cockroachdb/errors/assert":        "github.com/cockroachdb/errors",
 			"github.com/cockroachdb/errors/barriers":      "github.com/cockroachdb/errors",
@@ -1655,11 +1664,18 @@ func TestLint(t *testing.T) {
 			pkgs, err := packages.Load(
 				&packages.Config{
 					Mode: packages.NeedImports | packages.NeedName,
+					Dir:  crdbDir,
 				},
 				pkgPath,
 			)
 			if err != nil {
 				return errors.Wrapf(err, "error loading package %s", pkgPath)
+			}
+			// NB: if no packages were found, this API confusingly
+			// returns no error, so we need to explicitly check that
+			// something was returned.
+			if len(pkgs) == 0 {
+				return errors.Newf("could not list packages under %s", pkgPath)
 			}
 			for _, pkg := range pkgs {
 				for _, s := range pkg.Imports {
@@ -1679,7 +1695,6 @@ func TestLint(t *testing.T) {
 			stream.GrepNot(`cockroach/pkg/testutils/lint: log$`),
 			stream.GrepNot(`cockroach/pkg/util/sysutil: syscall$`),
 			stream.GrepNot(`cockroachdb/cockroach/pkg/build/bazel/util/tinystringer: errors$`),
-			stream.GrepNot(`cockroachdb/cockroach/pkg/build/engflow: github\.com/golang/protobuf/proto$`),
 			stream.GrepNot(`cockroachdb/cockroach/pkg/util/grpcutil: github\.com/cockroachdb\/errors\/errbase$`),
 			stream.GrepNot(`cockroachdb/cockroach/pkg/util/future: github\.com/cockroachdb\/errors\/errbase$`),
 			stream.GrepNot(`cockroach/pkg/roachprod/install: syscall$`), // TODO: switch to sysutil
@@ -1693,6 +1708,7 @@ func TestLint(t *testing.T) {
 			stream.GrepNot(`cockroachdb/cockroach/pkg/kv/kvpb/gen: log$`),
 			stream.GrepNot(`cockroachdb/cockroach/pkg/util/log/gen: log$`),
 			stream.GrepNot(`cockroach/pkg/util/uuid: github\.com/satori/go\.uuid$`),
+			stream.GrepNot(`github.com/cockroachdb/cockroach/pkg/workload/debug: log$`),
 		), func(s string) {
 			pkgStr := strings.Split(s, ": ")
 			importingPkg, importedPkg := pkgStr[0], pkgStr[1]
@@ -1922,7 +1938,7 @@ func TestLint(t *testing.T) {
 			// engine, don't forget to "register" the newly added package in
 			// sql/colexecerror/error.go file.
 			"sql/col*",
-			":!sql/colexecerror/error.go",
+			":!sql/colexecerror/error*.go",
 			// This exception is because execgen itself uses panics during code
 			// generation - not at execution time. The (glob,exclude) directive
 			// (see git help gitglossary) makes * behave like a normal, single dir
@@ -2476,7 +2492,6 @@ func TestLint(t *testing.T) {
 			// instead of ...interface{}.
 			stream.GrepNot(`pkg/util/log/channels\.go:\d+:\d+: logfDepth\(\): format argument is not a constant expression`),
 			stream.GrepNot(`pkg/util/log/channels\.go:\d+:\d+: logfDepthInternal\(\): format argument is not a constant expression`),
-			stream.GrepNot(`pkg/util/log/channels\.go:\d+:\d+: untypedVEventfDepth\(\): format argument is not a constant expression`),
 			// roachprod/logger is not collecting redactable logs so we don't care
 			// about printf hygiene there as much.
 			stream.GrepNot(`pkg/roachprod/logger/log\.go:.*format argument is not a constant expression`),

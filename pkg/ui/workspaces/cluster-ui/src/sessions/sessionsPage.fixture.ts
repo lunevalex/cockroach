@@ -1,12 +1,7 @@
 // Copyright 2020 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 import { SessionsPageProps } from "./sessionsPage";
 import { createMemoryHistory } from "history";
@@ -50,8 +45,6 @@ export const idleSession: SessionInfo = {
     num_txns_executed: 1,
     txn_fingerprint_ids: [],
     status: Status.IDLE,
-    pg_backend_pid: 123,
-    trace_id: Long.fromNumber(123),
   },
 };
 
@@ -91,8 +84,6 @@ export const idleTransactionSession: SessionInfo = {
     num_txns_executed: 1,
     txn_fingerprint_ids: [],
     status: Status.IDLE,
-    pg_backend_pid: 123,
-    trace_id: Long.fromNumber(123),
   },
 };
 
@@ -146,8 +137,6 @@ export const activeSession: SessionInfo = {
     status: Status.ACTIVE,
     num_txns_executed: 1,
     txn_fingerprint_ids: [],
-    pg_backend_pid: 123,
-    trace_id: Long.fromNumber(123),
   },
 };
 
@@ -174,8 +163,6 @@ export const closedSession: SessionInfo = {
     status: Status.CLOSED,
     num_txns_executed: 1,
     txn_fingerprint_ids: [],
-    pg_backend_pid: 123,
-    trace_id: Long.fromNumber(123),
   },
 };
 

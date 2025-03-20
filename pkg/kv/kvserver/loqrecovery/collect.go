@@ -1,12 +1,7 @@
 // Copyright 2021 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package loqrecovery
 
@@ -14,6 +9,7 @@ import (
 	"context"
 	"io"
 	"math"
+	"sort"
 
 	"github.com/cockroachdb/cockroach/pkg/clusterversion"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvpb"
@@ -35,54 +31,65 @@ type CollectionStats struct {
 	Descriptors int
 }
 
+// CollectRemoteReplicaInfo retrieves information about:
+//  1. range descriptors contained in cluster meta ranges if meta ranges
+//     are readable;
+//  2. replica information from all live nodes that have connection to
+//     the target node.
+//
+// maxConcurrency is the maximum parallelism that will be used when fanning out
+// RPCs to nodes in the cluster. A value of 0 disables concurrency. A negative
+// value configures no limit for concurrency.
 func CollectRemoteReplicaInfo(
-	ctx context.Context, c serverpb.AdminClient,
+	ctx context.Context, c serverpb.AdminClient, maxConcurrency int,
 ) (loqrecoverypb.ClusterReplicaInfo, CollectionStats, error) {
-	cc, err := c.RecoveryCollectReplicaInfo(ctx, &serverpb.RecoveryCollectReplicaInfoRequest{})
+	cc, err := c.RecoveryCollectReplicaInfo(ctx, &serverpb.RecoveryCollectReplicaInfoRequest{
+		MaxConcurrency: int32(maxConcurrency),
+	})
 	if err != nil {
 		return loqrecoverypb.ClusterReplicaInfo{}, CollectionStats{}, err
 	}
 	stores := make(map[roachpb.StoreID]struct{})
 	nodes := make(map[roachpb.NodeID]struct{})
+	replInfoMap := make(map[roachpb.NodeID][]loqrecoverypb.ReplicaInfo)
 	var descriptors []roachpb.RangeDescriptor
-	var clusterReplInfo []loqrecoverypb.NodeReplicaInfo
-	var nodeReplicas []loqrecoverypb.ReplicaInfo
-	var currentNode roachpb.NodeID
 	var metadata loqrecoverypb.ClusterMetadata
 	for {
 		info, err := cc.Recv()
 		if err != nil {
 			if errors.Is(err, io.EOF) {
-				if len(nodeReplicas) > 0 {
-					clusterReplInfo = append(clusterReplInfo, loqrecoverypb.NodeReplicaInfo{Replicas: nodeReplicas})
-				}
 				break
 			}
 			return loqrecoverypb.ClusterReplicaInfo{}, CollectionStats{}, err
 		}
 		if r := info.GetReplicaInfo(); r != nil {
-			if currentNode != r.NodeID {
-				currentNode = r.NodeID
-				if len(nodeReplicas) > 0 {
-					clusterReplInfo = append(clusterReplInfo, loqrecoverypb.NodeReplicaInfo{Replicas: nodeReplicas})
-					nodeReplicas = nil
-				}
-			}
-			nodeReplicas = append(nodeReplicas, *r)
 			stores[r.StoreID] = struct{}{}
 			nodes[r.NodeID] = struct{}{}
+			replInfoMap[r.NodeID] = append(replInfoMap[r.NodeID], *r)
 		} else if d := info.GetRangeDescriptor(); d != nil {
 			descriptors = append(descriptors, *d)
 		} else if s := info.GetNodeStreamRestarted(); s != nil {
 			// If server had to restart a fan-out work because of error and retried,
 			// then we discard partial data for the node.
-			if s.NodeID == currentNode {
-				nodeReplicas = nil
-			}
+			delete(replInfoMap, s.NodeID)
 		} else if m := info.GetMetadata(); m != nil {
 			metadata = *m
+		} else {
+			return loqrecoverypb.ClusterReplicaInfo{}, CollectionStats{}, errors.AssertionFailedf(
+				"unknown info type: %T", info.GetInfo())
 		}
 	}
+	// Collapse the ReplicaInfos map into a slice, sorted by node ID.
+	replInfos := make([]loqrecoverypb.NodeReplicaInfo, 0, len(replInfoMap))
+	for _, replInfo := range replInfoMap {
+		if len(replInfo) == 0 {
+			continue
+		}
+		replInfos = append(replInfos, loqrecoverypb.NodeReplicaInfo{Replicas: replInfo})
+	}
+	sort.Slice(replInfos, func(i, j int) bool {
+		return replInfos[i].Replicas[0].NodeID < replInfos[j].Replicas[0].NodeID
+	})
 	// We don't want to process data outside of safe version range for this CLI
 	// binary. RPC allows us to communicate with a cluster that is newer than
 	// the binary, but it will not version gate the data to binary version so we
@@ -94,7 +101,7 @@ func CollectRemoteReplicaInfo(
 	return loqrecoverypb.ClusterReplicaInfo{
 			ClusterID:   metadata.ClusterID,
 			Descriptors: descriptors,
-			LocalInfo:   clusterReplInfo,
+			LocalInfo:   replInfos,
 			Version:     metadata.Version,
 		}, CollectionStats{
 			Nodes:       len(nodes),
@@ -113,8 +120,8 @@ func CollectStoresReplicaInfo(
 
 	// Synthesizing version from engine ensures that binary is compatible with
 	// the store, so we don't need to do any extra checks.
-	binaryVersion := clusterversion.Latest.Version()
-	binaryMinSupportedVersion := clusterversion.MinSupported.Version()
+	binaryVersion := clusterversion.ByKey(clusterversion.BinaryVersionKey)
+	binaryMinSupportedVersion := clusterversion.ByKey(clusterversion.BinaryMinSupportedVersionKey)
 	version, err := kvstorage.SynthesizeClusterVersionFromEngines(
 		ctx, stores, binaryVersion, binaryMinSupportedVersion,
 	)
@@ -179,8 +186,8 @@ func visitStoreReplicas(
 		// at potentially uncommitted entries as we have no way to determine their
 		// outcome, and they will become committed as soon as the replica is
 		// designated as a survivor.
-		rangeUpdates, err := GetDescriptorChangesFromRaftLog(
-			ctx, desc.RangeID, rstate.RaftAppliedIndex+1, math.MaxInt64, reader)
+		rangeUpdates, err := GetDescriptorChangesFromRaftLog(desc.RangeID,
+			rstate.RaftAppliedIndex+1, math.MaxInt64, reader)
 		if err != nil {
 			return err
 		}
@@ -209,10 +216,10 @@ func visitStoreReplicas(
 // lo (inclusive) and hi (exclusive) and searches for changes to range
 // descriptors, as identified by presence of a commit trigger.
 func GetDescriptorChangesFromRaftLog(
-	ctx context.Context, rangeID roachpb.RangeID, lo, hi kvpb.RaftIndex, reader storage.Reader,
+	rangeID roachpb.RangeID, lo, hi kvpb.RaftIndex, reader storage.Reader,
 ) ([]loqrecoverypb.DescriptorChangeInfo, error) {
 	var changes []loqrecoverypb.DescriptorChangeInfo
-	if err := raftlog.Visit(ctx, reader, rangeID, lo, hi, func(ent raftpb.Entry) error {
+	if err := raftlog.Visit(reader, rangeID, lo, hi, func(ent raftpb.Entry) error {
 		e, err := raftlog.NewEntry(ent)
 		if err != nil {
 			return err

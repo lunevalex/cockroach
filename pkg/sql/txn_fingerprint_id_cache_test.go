@@ -1,19 +1,13 @@
 // Copyright 2022 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package sql
 
 import (
 	"context"
 	"fmt"
-	"math"
 	"sort"
 	"strconv"
 	"testing"
@@ -28,7 +22,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/testutils/sqlutils"
 	"github.com/cockroachdb/cockroach/pkg/util/leaktest"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
-	"github.com/cockroachdb/cockroach/pkg/util/mon"
 	"github.com/cockroachdb/cockroach/pkg/util/uuid"
 	"github.com/cockroachdb/datadriven"
 	"github.com/stretchr/testify/require"
@@ -46,17 +39,8 @@ func TestTxnFingerprintIDCacheDataDriven(t *testing.T) {
 				var capacity int
 				d.ScanArgs(t, "capacity", &capacity)
 
-				st := &cluster.Settings{}
-				monitor := mon.NewUnlimitedMonitor(
-					ctx,
-					"test",
-					mon.MemoryResource,
-					nil, /* currCount */
-					nil, /* maxHist */
-					math.MaxInt64,
-					st,
-				)
-				txnFingerprintIDCache = NewTxnFingerprintIDCache(st, monitor)
+				st := cluster.MakeTestingClusterSettings()
+				txnFingerprintIDCache = NewTxnFingerprintIDCache(st)
 
 				TxnFingerprintIDCacheCapacity.Override(ctx, &st.SV, int64(capacity))
 
@@ -77,9 +61,7 @@ func TestTxnFingerprintIDCacheDataDriven(t *testing.T) {
 				require.NoError(t, err)
 				txnFingerprintID := appstatspb.TransactionFingerprintID(id)
 
-				err = txnFingerprintIDCache.Add(txnFingerprintID)
-				require.NoError(t, err)
-
+				txnFingerprintIDCache.Add(txnFingerprintID)
 				return fmt.Sprintf("size: %d", txnFingerprintIDCache.size())
 
 			case "show":

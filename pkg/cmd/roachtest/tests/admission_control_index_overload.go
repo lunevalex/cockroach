@@ -1,12 +1,7 @@
 // Copyright 2022 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package tests
 
@@ -47,7 +42,10 @@ func registerIndexOverload(r registry.Registry) {
 			crdbNodes := c.Spec().NodeCount - 1
 			workloadNode := c.Spec().NodeCount
 
-			c.Start(ctx, t.L(), option.DefaultStartOptsNoBackups(), install.MakeClusterSettings(), c.Range(1, crdbNodes))
+			c.Start(
+				ctx, t.L(), option.NewStartOpts(option.NoBackupSchedule),
+				install.MakeClusterSettings(), c.Range(1, crdbNodes),
+			)
 
 			{
 				promCfg := &prometheus.Config{}
@@ -73,12 +71,12 @@ func registerIndexOverload(r registry.Registry) {
 			if !t.SkipInit() {
 				t.Status("initializing kv dataset ", time.Minute)
 				splits := ifLocal(c, " --splits=3", " --splits=100")
-				c.Run(ctx, option.WithNodes(c.Node(workloadNode)), "./cockroach workload init kv "+splits+" {pgurl:1}")
+				c.Run(ctx, c.Node(workloadNode), "./cockroach workload init kv "+splits+" {pgurl:1}")
 
 				// We need a big enough size so index creation will take enough time.
 				t.Status("initializing tpcc dataset ", duration)
 				warehouses := ifLocal(c, " --warehouses=1", " --warehouses=2000")
-				c.Run(ctx, option.WithNodes(c.Node(workloadNode)), "./cockroach workload fixtures import tpcc --checks=false"+warehouses+" {pgurl:1}")
+				c.Run(ctx, c.Node(workloadNode), "./cockroach workload fixtures import tpcc --checks=false"+warehouses+" {pgurl:1}")
 
 				// Setting this low allows us to hit overload. In a larger cluster with
 				// more nodes and larger tables, it will hit the unmodified 1000 limit.
@@ -96,7 +94,7 @@ func registerIndexOverload(r registry.Registry) {
 			m.Go(func(ctx context.Context) error {
 				testDurationStr := " --duration=" + testDuration.String()
 				concurrency := ifLocal(c, "  --concurrency=8", " --concurrency=2048")
-				c.Run(ctx, option.WithNodes(c.Node(crdbNodes+1)),
+				c.Run(ctx, c.Node(crdbNodes+1),
 					"./cockroach workload run kv --read-percent=50 --max-rate=1000 --max-block-bytes=4096"+
 						testDurationStr+concurrency+fmt.Sprintf(" {pgurl:1-%d}", crdbNodes),
 				)

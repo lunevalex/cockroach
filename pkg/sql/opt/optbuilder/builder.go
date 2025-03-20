@@ -1,12 +1,7 @@
 // Copyright 2018 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package optbuilder
 
@@ -188,6 +183,10 @@ func New(
 	factory *norm.Factory,
 	stmt tree.Statement,
 ) *Builder {
+	// NOTE: This is a hack to get a session setting plumbed into the
+	// type-checker without plumbing evalCtx. This pattern should probably not
+	// be repeated.
+	semaCtx.Properties.IgnoreUnpreferredOverloads = evalCtx.SessionData().LegacyVarcharTyping
 	return &Builder{
 		factory: factory,
 		stmt:    stmt,

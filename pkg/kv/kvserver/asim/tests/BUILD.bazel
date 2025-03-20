@@ -35,12 +35,9 @@ go_test(
         "helpers_test.go",
         "rand_test.go",
     ],
+    args = ["-test.timeout=295s"],
     data = glob(["testdata/**"]),
     embed = [":tests"],
-    exec_properties = select({
-        "//build/toolchains:is_heavy": {"Pool": "heavy"},
-        "//conditions:default": {"Pool": "default"},
-    }),
     deps = [
         "//pkg/kv/kvserver/allocator/allocatorimpl",
         "//pkg/kv/kvserver/asim/assertion",

@@ -1,12 +1,7 @@
 // Copyright 2022 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package logictestbase
 
@@ -481,29 +476,8 @@ var LogicTestConfigs = []TestClusterConfig{
 		DeclarativeCorpusCollection: true,
 	},
 	{
-		// This config runs tests using 23.2 cluster version, simulating a node that
-		// is operating in a mixed-version cluster.
-		Name:                        "local-mixed-23.2",
-		NumNodes:                    1,
-		OverrideDistSQLMode:         "off",
-		BootstrapVersion:            clusterversion.V23_2,
-		DisableUpgrade:              true,
-		DeclarativeCorpusCollection: true,
-	},
-	{
-		// This config runs a cluster with 3 nodes, with a separate process per
-		// node. The nodes initially start on v23.1.
-		Name:                     "cockroach-go-testserver-23.1",
+		Name:                     "cockroach-go-testserver-upgrade-to-master",
 		UseCockroachGoTestserver: true,
-		BootstrapVersion:         clusterversion.V23_1,
-		NumNodes:                 3,
-	},
-	{
-		// This config runs a cluster with 3 nodes, with a separate process per
-		// node. The nodes initially start on v23.2.
-		Name:                     "cockroach-go-testserver-23.2",
-		UseCockroachGoTestserver: true,
-		BootstrapVersion:         clusterversion.V23_2,
 		NumNodes:                 3,
 	},
 }
@@ -574,7 +548,6 @@ var (
 		"fakedist-vec-off",
 		"fakedist-disk",
 		"local-mixed-23.1",
-		"local-mixed-23.2",
 	}
 	// FiveNodeDefaultConfigName is a special alias for all 5 node configs.
 	FiveNodeDefaultConfigName = "5node-default-configs"

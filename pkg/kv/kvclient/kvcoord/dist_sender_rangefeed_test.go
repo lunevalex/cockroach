@@ -1,12 +1,7 @@
 // Copyright 2021 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package kvcoord_test
 
@@ -27,6 +22,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/rpc"
+	"github.com/cockroachdb/cockroach/pkg/rpc/nodedialer"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/desctestutils"
 	"github.com/cockroachdb/cockroach/pkg/testutils"
 	"github.com/cockroachdb/cockroach/pkg/testutils/sqlutils"
@@ -167,21 +163,23 @@ func (c *countConnectionsTransport) Release() {
 
 func makeTransportFactory(
 	rfStreamEnabled bool, counts *internalClientCounts, wrapFn wrapRangeFeedClientFn,
-) func(kvcoord.TransportFactory) kvcoord.TransportFactory {
-	return func(factory kvcoord.TransportFactory) kvcoord.TransportFactory {
-		return func(options kvcoord.SendOptions, slice kvcoord.ReplicaSlice) (kvcoord.Transport, error) {
-			transport, err := factory(options, slice)
-			if err != nil {
-				return nil, err
-			}
-			countingTransport := &countConnectionsTransport{
-				wrapped:             transport,
-				rfStreamEnabled:     rfStreamEnabled,
-				counts:              counts,
-				wrapRangeFeedClient: wrapFn,
-			}
-			return countingTransport, nil
+) kvcoord.TransportFactory {
+	return func(
+		options kvcoord.SendOptions,
+		dialer *nodedialer.Dialer,
+		slice kvcoord.ReplicaSlice,
+	) (kvcoord.Transport, error) {
+		transport, err := kvcoord.GRPCTransportFactory(options, dialer, slice)
+		if err != nil {
+			return nil, err
 		}
+		countingTransport := &countConnectionsTransport{
+			wrapped:             transport,
+			rfStreamEnabled:     rfStreamEnabled,
+			counts:              counts,
+			wrapRangeFeedClient: wrapFn,
+		}
+		return countingTransport, nil
 	}
 }
 
@@ -204,9 +202,8 @@ func rangeFeed(
 	g := ctxgroup.WithContext(ctx)
 	g.GoCtx(func(ctx context.Context) (err error) {
 		if useMuxRangeFeed {
+			opts = append(opts, kvcoord.WithMuxRangeFeed())
 			ctx = context.WithValue(ctx, useMuxRangeFeedCtxKey{}, struct{}{})
-		} else {
-			opts = append(opts, kvcoord.WithoutMuxRangeFeed())
 		}
 		return ds.RangeFeed(ctx, []roachpb.Span{sp}, startFrom, events, opts...)
 	})
@@ -496,7 +493,7 @@ func TestRestartsStuckRangeFeedsSecondImplementation(t *testing.T) {
 		g := ctxgroup.WithContext(ctx)
 		g.GoCtx(func(ctx context.Context) error {
 			defer close(events)
-			err := ds.RangeFeed(ctx, []roachpb.Span{sp}, startFrom, events, kvcoord.WithoutMuxRangeFeed())
+			err := ds.RangeFeed(ctx, []roachpb.Span{sp}, startFrom, events)
 			t.Logf("from RangeFeed: %v", err)
 			return err
 		})
@@ -622,7 +619,6 @@ func TestRangeFeedMetricsManagement(t *testing.T) {
 		defer func() {
 			require.EqualValues(t, 0, metrics.RangefeedRanges.Value())
 			require.EqualValues(t, 0, metrics.Errors.Stuck.Count())
-			require.EqualValues(t, 0, metrics.RangefeedLocalRanges.Value())
 
 			// We injected numRangesToRetry transient errors during catchup scan.
 			// It is possible however, that we will observe key-mismatch error when restarting
@@ -637,12 +633,10 @@ func TestRangeFeedMetricsManagement(t *testing.T) {
 			// Even though numCatchupToBlock ranges were blocked in the catchup scan phase,
 			// the counter should be 0 once rangefeed is done.
 			require.EqualValues(t, 0, metrics.RangefeedCatchupRanges.Value())
-
 		}()
 
 		frontier, err := span.MakeFrontier(fooSpan)
 		require.NoError(t, err)
-		frontier = span.MakeConcurrentFrontier(frontier)
 
 		// This error causes rangefeed to restart.
 		transientErrEvent := kvpb.RangeFeedEvent{
@@ -741,9 +735,6 @@ func TestRangeFeedMetricsManagement(t *testing.T) {
 
 		// At this point, we know the rangefeed for all ranges are running.
 		require.EqualValues(t, numRanges, metrics.RangefeedRanges.Value(), frontier.String())
-
-		// All ranges expected to be local.
-		require.EqualValues(t, numRanges, metrics.RangefeedLocalRanges.Value(), frontier.String())
 
 		// We also know that we have blocked numCatchupToBlock ranges in their catchup scan.
 		require.EqualValues(t, numCatchupToBlock, metrics.RangefeedCatchupRanges.Value())
@@ -891,7 +882,6 @@ func TestMuxRangeFeedCanCloseStream(t *testing.T) {
 
 	frontier, err := span.MakeFrontier(fooSpan)
 	require.NoError(t, err)
-	frontier = span.MakeConcurrentFrontier(frontier)
 
 	expectFrontierAdvance := func() {
 		t.Helper()
@@ -913,6 +903,7 @@ func TestMuxRangeFeedCanCloseStream(t *testing.T) {
 	var numRestartStreams atomic.Int32
 
 	closeFeed := rangeFeed(ts.DistSenderI(), fooSpan, ts.Clock().Now(), ignoreValues, true,
+		kvcoord.WithMuxRangeFeed(),
 		kvcoord.TestingWithMuxRangeFeedRequestSenderCapture(
 			// We expect a single mux sender since we have 1 node in this test.
 			func(nodeID roachpb.NodeID, capture func(request *kvpb.RangeFeedRequest) error) {
@@ -1042,6 +1033,7 @@ func TestMuxRangeFeedDoesNotDeadlockWithLocalStreams(t *testing.T) {
 
 	allSeen, onValue := observeNValues(1000)
 	closeFeed := rangeFeed(ts.DistSenderI(), fooSpan, startFrom, onValue, true,
+		kvcoord.WithMuxRangeFeed(),
 		kvcoord.TestingWithBeforeSendRequest(func() {
 			// Prior to sending rangefeed request, block for just a bit
 			// to make deadlock more likely.

@@ -1,12 +1,7 @@
 // Copyright 2019 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package colrpc
 
@@ -442,7 +437,9 @@ func (i *Inbox) GetNumMessages() int64 {
 func (i *Inbox) sendDrainSignal(ctx context.Context) error {
 	log.VEvent(ctx, 2, "Inbox sending drain signal to Outbox")
 	if err := i.stream.Send(&execinfrapb.ConsumerSignal{DrainRequest: &execinfrapb.DrainRequest{}}); err != nil {
-		log.VWarningf(ctx, 1, "Inbox unable to send drain signal to Outbox: %+v", err)
+		if log.V(1) {
+			log.Warningf(ctx, "Inbox unable to send drain signal to Outbox: %+v", err)
+		}
 		return err
 	}
 	return nil

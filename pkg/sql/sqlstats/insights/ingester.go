@@ -1,12 +1,7 @@
 // Copyright 2022 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package insights
 
@@ -69,7 +64,7 @@ func (i *concurrentBufferIngester) Start(ctx context.Context, stopper *stop.Stop
 		for {
 			select {
 			case events := <-i.eventBufferCh:
-				i.ingest(ctx, events) // note that injest clears the buffer
+				i.ingest(events) // note that injest clears the buffer
 				eventBufferPool.Put(events)
 			case <-stopper.ShouldQuiesce():
 				atomic.StoreUint64(&i.running, 0)
@@ -95,7 +90,7 @@ func (i *concurrentBufferIngester) Start(ctx context.Context, stopper *stop.Stop
 	})
 }
 
-func (i *concurrentBufferIngester) ingest(ctx context.Context, events *eventBuffer) {
+func (i *concurrentBufferIngester) ingest(events *eventBuffer) {
 	for idx, e := range events {
 		// Because an eventBuffer is a fixed-size array, rather than a slice,
 		// we do not know how full it is until we hit a nil entry.
@@ -104,8 +99,8 @@ func (i *concurrentBufferIngester) ingest(ctx context.Context, events *eventBuff
 		}
 		if e.statement != nil {
 			i.registry.ObserveStatement(e.sessionID, e.statement)
-		} else {
-			i.registry.ObserveTransaction(ctx, e.sessionID, e.transaction)
+		} else if e.transaction != nil {
+			i.registry.ObserveTransaction(e.sessionID, e.transaction)
 		}
 		events[idx] = event{}
 	}
@@ -126,7 +121,7 @@ func (i *concurrentBufferIngester) ObserveStatement(
 }
 
 func (i *concurrentBufferIngester) ObserveTransaction(
-	_ context.Context, sessionID clusterunique.ID, transaction *Transaction,
+	sessionID clusterunique.ID, transaction *Transaction,
 ) {
 	if !i.registry.enabled() {
 		return

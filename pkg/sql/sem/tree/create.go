@@ -7,13 +7,8 @@
 //
 // Copyright 2015 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 // This code was derived from https://github.com/youtube/vitess.
 
@@ -1441,7 +1436,7 @@ func (node *RangePartition) Format(ctx *FmtCtx) {
 
 // StorageParam is a key-value parameter for table storage.
 type StorageParam struct {
-	Key   Name
+	Key   string
 	Value Expr
 }
 
@@ -1450,14 +1445,13 @@ type StorageParams []StorageParam
 
 // Format implements the NodeFormatter interface.
 func (o *StorageParams) Format(ctx *FmtCtx) {
+	buf, f := &ctx.Buffer, ctx.flags
 	for i := range *o {
 		n := &(*o)[i]
 		if i > 0 {
 			ctx.WriteString(", ")
 		}
-		// TODO(knz): the key may need to be formatted differently
-		// if we want to de-anonymize it.
-		ctx.FormatNode(&n.Key)
+		lexbase.EncodeSQLStringWithFlags(buf, n.Key, f.EncodeFlags())
 		if n.Value != nil {
 			ctx.WriteString(` = `)
 			ctx.FormatNode(n.Value)
@@ -1468,9 +1462,8 @@ func (o *StorageParams) Format(ctx *FmtCtx) {
 // GetVal returns corresponding value if a key exists, otherwise nil is
 // returned.
 func (o *StorageParams) GetVal(key string) Expr {
-	k := Name(key)
 	for _, param := range *o {
-		if param.Key == k {
+		if param.Key == key {
 			return param.Value
 		}
 	}
@@ -2178,7 +2171,7 @@ func (node *CreateExternalConnection) Format(ctx *FmtCtx) {
 	ctx.WriteString("CREATE EXTERNAL CONNECTION")
 	ctx.FormatNode(&node.ConnectionLabelSpec)
 	ctx.WriteString(" AS ")
-	ctx.FormatNode(node.As)
+	ctx.FormatURI(node.As)
 }
 
 // CreateTenant represents a CREATE VIRTUAL CLUSTER statement.
@@ -2233,10 +2226,10 @@ type CreateTenantFromReplication struct {
 	Like *LikeTenantSpec
 }
 
-// TenantReplicationOptions  options for the CREATE/ALTER VIRTUAL CLUSTER FROM REPLICATION command.
+// TenantReplicationOptions  options for the CREATE VIRTUAL CLUSTER FROM REPLICATION command.
 type TenantReplicationOptions struct {
-	Retention        Expr
-	ExpirationWindow Expr
+	Retention       Expr
+	ResumeTimestamp Expr
 }
 
 var _ NodeFormatter = &TenantReplicationOptions{}
@@ -2250,9 +2243,7 @@ func (node *CreateTenantFromReplication) Format(ctx *FmtCtx) {
 	// NB: we do not anonymize the tenant name because we assume that tenant names
 	// do not contain sensitive information.
 	ctx.FormatNode(node.TenantSpec)
-	if node.Like != nil {
-		ctx.FormatNode(node.Like)
-	}
+	ctx.FormatNode(node.Like)
 
 	if node.ReplicationSourceAddress != nil {
 		ctx.WriteString(" FROM REPLICATION OF ")
@@ -2295,14 +2286,14 @@ func (o *TenantReplicationOptions) Format(ctx *FmtCtx) {
 			ctx.WriteByte(')')
 		}
 	}
-	if o.ExpirationWindow != nil {
+	if o.ResumeTimestamp != nil {
 		maybeAddSep()
-		ctx.WriteString("EXPIRATION WINDOW = ")
-		_, canOmitParentheses := o.ExpirationWindow.(alreadyDelimitedAsSyntacticDExpr)
+		ctx.WriteString("RESUME TIMESTAMP = ")
+		_, canOmitParentheses := o.ResumeTimestamp.(alreadyDelimitedAsSyntacticDExpr)
 		if !canOmitParentheses {
 			ctx.WriteByte('(')
 		}
-		ctx.FormatNode(o.ExpirationWindow)
+		ctx.FormatNode(o.ResumeTimestamp)
 		if !canOmitParentheses {
 			ctx.WriteByte(')')
 		}
@@ -2320,12 +2311,12 @@ func (o *TenantReplicationOptions) CombineWith(other *TenantReplicationOptions) 
 		o.Retention = other.Retention
 	}
 
-	if o.ExpirationWindow != nil {
-		if other.ExpirationWindow != nil {
-			return errors.New("EXPIRATION WINDOW option specified multiple times")
+	if o.ResumeTimestamp != nil {
+		if other.ResumeTimestamp != nil {
+			return errors.New("RESUME TIMESTAMP option specified multiple times")
 		}
 	} else {
-		o.ExpirationWindow = other.ExpirationWindow
+		o.ResumeTimestamp = other.ResumeTimestamp
 	}
 
 	return nil
@@ -2335,12 +2326,7 @@ func (o *TenantReplicationOptions) CombineWith(other *TenantReplicationOptions) 
 func (o TenantReplicationOptions) IsDefault() bool {
 	options := TenantReplicationOptions{}
 	return o.Retention == options.Retention &&
-		o.ExpirationWindow == options.ExpirationWindow
-}
-
-func (o TenantReplicationOptions) ExpirationWindowSet() bool {
-	options := TenantReplicationOptions{}
-	return o.ExpirationWindow != options.ExpirationWindow
+		o.ResumeTimestamp == options.ResumeTimestamp
 }
 
 type SuperRegion struct {

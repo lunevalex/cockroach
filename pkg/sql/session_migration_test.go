@@ -1,12 +1,7 @@
 // Copyright 2021 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package sql_test
 
@@ -21,8 +16,8 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/base"
 	"github.com/cockroachdb/cockroach/pkg/security/username"
 	"github.com/cockroachdb/cockroach/pkg/testutils/datapathutils"
-	"github.com/cockroachdb/cockroach/pkg/testutils/serverutils"
 	"github.com/cockroachdb/cockroach/pkg/testutils/sqlutils"
+	"github.com/cockroachdb/cockroach/pkg/testutils/testcluster"
 	"github.com/cockroachdb/cockroach/pkg/util/leaktest"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/cockroach/pkg/util/stop"
@@ -45,12 +40,12 @@ func TestSessionMigration(t *testing.T) {
 
 	ctx := context.Background()
 	datadriven.Walk(t, datapathutils.TestDataPath(t, "session_migration"), func(t *testing.T, path string) {
-		s := serverutils.StartServerOnly(t, base.TestServerArgs{})
-		defer s.Stopper().Stop(ctx)
+		tc := testcluster.StartTestCluster(t, 1, base.TestClusterArgs{})
+		defer tc.Stopper().Stop(ctx)
 
 		openConnFunc := func() *pgx.Conn {
 			pgURL, cleanupGoDB, err := sqlutils.PGUrlE(
-				s.AdvSQLAddr(),
+				tc.Server(0).AdvSQLAddr(),
 				"StartServer", /* prefix */
 				url.User(username.RootUser),
 			)
@@ -63,7 +58,7 @@ func TestSessionMigration(t *testing.T) {
 			conn, err := pgx.ConnectConfig(ctx, config)
 			require.NoError(t, err)
 
-			s.Stopper().AddCloser(
+			tc.Server(0).Stopper().AddCloser(
 				stop.CloserFn(func() {
 					cleanupGoDB()
 				}))
@@ -79,7 +74,7 @@ func TestSessionMigration(t *testing.T) {
 
 		openUserConnFunc := func(user string) *pgx.Conn {
 			pgURL, cleanupGoDB, err := sqlutils.PGUrlE(
-				s.AdvSQLAddr(),
+				tc.Server(0).AdvSQLAddr(),
 				"StartServer", /* prefix */
 				url.User(user),
 			)
@@ -92,7 +87,7 @@ func TestSessionMigration(t *testing.T) {
 			conn, err := pgx.ConnectConfig(ctx, config)
 			require.NoError(t, err)
 
-			s.Stopper().AddCloser(
+			tc.Server(0).Stopper().AddCloser(
 				stop.CloserFn(func() {
 					cleanupGoDB()
 				}))

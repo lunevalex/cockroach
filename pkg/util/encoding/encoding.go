@@ -1,12 +1,7 @@
 // Copyright 2014 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 // Package encoding exposes some utilities for encoding data as bytes.
 package encoding
@@ -3132,6 +3127,9 @@ func DecodeUUIDValue(b []byte) (remaining []byte, u uuid.UUID, err error) {
 
 // DecodeUntaggedUUIDValue decodes a value encoded by EncodeUntaggedUUIDValue.
 func DecodeUntaggedUUIDValue(b []byte) (remaining []byte, u uuid.UUID, err error) {
+	if len(b) < uuidValueEncodedLength {
+		return b, uuid.UUID{}, errors.Errorf("invalid uuid length of %d", len(b))
+	}
 	u, err = uuid.FromBytes(b[:uuidValueEncodedLength])
 	if err != nil {
 		return b, uuid.UUID{}, err

@@ -1,12 +1,7 @@
 // Copyright 2021 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package upgrade
 
@@ -87,18 +82,13 @@ var NoPrecondition PreconditionFunc = nil
 
 // NewTenantUpgrade constructs a TenantUpgrade.
 func NewTenantUpgrade(
-	description string,
-	v roachpb.Version,
-	precondition PreconditionFunc,
-	fn TenantUpgradeFunc,
-	restore RestoreBehavior,
+	description string, v roachpb.Version, precondition PreconditionFunc, fn TenantUpgradeFunc,
 ) *TenantUpgrade {
 	m := &TenantUpgrade{
 		upgrade: upgrade{
 			description: description,
 			v:           v,
 			permanent:   false,
-			restore:     restore,
 		},
 		fn:           fn,
 		precondition: precondition,
@@ -110,11 +100,7 @@ func NewTenantUpgrade(
 // an upgrade that will run regardless of the cluster's bootstrap version.
 // Note however that the upgrade will still run at most once.
 func NewPermanentTenantUpgrade(
-	description string,
-	v roachpb.Version,
-	fn TenantUpgradeFunc,
-	v22_2StartupMigrationName string,
-	restore RestoreBehavior,
+	description string, v roachpb.Version, fn TenantUpgradeFunc, v22_2StartupMigrationName string,
 ) *TenantUpgrade {
 	m := &TenantUpgrade{
 		upgrade: upgrade{
@@ -122,7 +108,6 @@ func NewPermanentTenantUpgrade(
 			v:                         v,
 			permanent:                 true,
 			v22_2StartupMigrationName: v22_2StartupMigrationName,
-			restore:                   restore,
 		},
 		fn:           fn,
 		precondition: nil,

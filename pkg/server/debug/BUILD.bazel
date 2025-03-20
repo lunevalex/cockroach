@@ -54,11 +54,8 @@ go_test(
         "logspy_test.go",
         "main_test.go",
     ],
+    args = ["-test.timeout=55s"],
     embed = [":debug"],
-    exec_properties = select({
-        "//build/toolchains:is_heavy": {"Pool": "heavy"},
-        "//conditions:default": {"Pool": "default"},
-    }),
     deps = [
         "//pkg/base",
         "//pkg/kv/kvclient/kvtenant",

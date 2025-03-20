@@ -1,16 +1,12 @@
 // Copyright 2020 The Cockroach Authors.
 //
-// Licensed as a CockroachDB Enterprise file under the Cockroach Community
-// License (the "License"); you may not use this file except in compliance with
-// the License. You may obtain a copy of the License at
-//
-//     https://github.com/cockroachdb/cockroach/blob/master/licenses/CCL.txt
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package backupccl
 
 import (
 	"context"
-	"fmt"
 	"io"
 	"time"
 
@@ -333,8 +329,7 @@ func runBackupProcessor(
 			remainingSpan := fullSpan
 
 			if rangeSizedSpans {
-				const pageSize = 100
-				rdi, err := flowCtx.Cfg.ExecutorConfig.(*sql.ExecutorConfig).RangeDescIteratorFactory.NewLazyIterator(ctx, fullSpan, pageSize)
+				rdi, err := flowCtx.Cfg.ExecutorConfig.(*sql.ExecutorConfig).RangeDescIteratorFactory.NewIterator(ctx, fullSpan)
 				if err != nil {
 					return err
 				}
@@ -347,9 +342,6 @@ func runBackupProcessor(
 					}
 					requestSpans = append(requestSpans, spanAndTime{span: subspan, start: start, end: end})
 					remainingSpan.Key = subspan.EndKey
-				}
-				if err := rdi.Error(); err != nil {
-					return err
 				}
 			}
 
@@ -414,7 +406,7 @@ func runBackupProcessor(
 		progCh:   progCh,
 		settings: &flowCtx.Cfg.Settings.SV,
 	}
-	storage, err := flowCtx.Cfg.ExternalStorage(ctx, dest)
+	storage, err := flowCtx.Cfg.ExternalStorage(ctx, dest, cloud.WithClientName("backup"))
 	if err != nil {
 		return err
 	}
@@ -556,7 +548,7 @@ func runBackupProcessor(
 						var pErr *kvpb.Error
 						requestSentAt := timeutil.Now()
 						exportRequestErr := timeutil.RunWithTimeout(ctx,
-							fmt.Sprintf("ExportRequest for span %s", span.span),
+							redact.Sprintf("ExportRequest for span %s", span.span),
 							timeoutPerAttempt.Get(&clusterSettings.SV), func(ctx context.Context) error {
 								sp := tracing.SpanFromContext(ctx)
 								opts := make([]tracing.SpanOption, 0)
@@ -627,12 +619,13 @@ func runBackupProcessor(
 								resumeTS = resp.Files[fileCount-1].EndKeyTS
 							}
 							resumeSpan = spanAndTime{
-								span:       *resp.ResumeSpan,
-								firstKeyTS: resumeTS,
-								start:      span.start,
-								end:        span.end,
-								attempts:   span.attempts,
-								lastTried:  span.lastTried,
+								span:         *resp.ResumeSpan,
+								firstKeyTS:   resumeTS,
+								start:        span.start,
+								end:          span.end,
+								attempts:     span.attempts,
+								lastTried:    span.lastTried,
+								finishesSpec: span.finishesSpec,
 							}
 						}
 
@@ -664,11 +657,10 @@ func runBackupProcessor(
 								// to store the metadata we need, but there's no actual File
 								// on-disk anywhere yet.
 								metadata: backuppb.BackupManifest_File{
-									Span:                    file.Span,
-									Path:                    file.Path,
-									EntryCounts:             entryCounts,
-									LocalityKV:              destLocalityKV,
-									ApproximatePhysicalSize: uint64(len(file.SST)),
+									Span:        file.Span,
+									Path:        file.Path,
+									EntryCounts: entryCounts,
+									LocalityKV:  destLocalityKV,
 								},
 								dataSST:       file.SST,
 								revStart:      resp.StartTime,

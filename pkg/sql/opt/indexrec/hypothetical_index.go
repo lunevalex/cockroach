@@ -1,18 +1,12 @@
 // Copyright 2021 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package indexrec
 
 import (
 	"github.com/cockroachdb/cockroach/pkg/geo/geoindex"
-	"github.com/cockroachdb/cockroach/pkg/geo/geopb"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/descpb"
 	"github.com/cockroachdb/cockroach/pkg/sql/opt/cat"
@@ -215,7 +209,7 @@ func (hi *hypotheticalIndex) ImplicitPartitioningColumnCount() int {
 }
 
 // GeoConfig is part of the cat.Index interface.
-func (hi *hypotheticalIndex) GeoConfig() geopb.Config {
+func (hi *hypotheticalIndex) GeoConfig() geoindex.Config {
 	if hi.IsInverted() {
 		srcCol := hi.tab.Column(hi.InvertedColumn().InvertedSourceColumnOrdinal())
 		switch srcCol.DatumType().Family() {
@@ -225,7 +219,7 @@ func (hi *hypotheticalIndex) GeoConfig() geopb.Config {
 			return *geoindex.DefaultGeographyIndexConfig()
 		}
 	}
-	return geopb.Config{}
+	return geoindex.Config{}
 }
 
 // Version is part of the cat.Index interface.

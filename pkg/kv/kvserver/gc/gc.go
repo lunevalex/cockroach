@@ -1,12 +1,7 @@
 // Copyright 2020 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 // Package gc contains the logic to run scan a range for garbage and issue
 // GC requests to remove that garbage.
@@ -464,74 +459,72 @@ func processReplicatedKeyRange(
 		}
 	}
 
-	return excludeUserKeySpan, rditer.IterateMVCCReplicaKeySpans(
-		ctx, desc, snap, rditer.IterateOptions{
-			CombineRangesAndPoints: true,
-			Reverse:                true,
-			ExcludeUserKeySpan:     excludeUserKeySpan,
-			ReadCategory:           storage.MVCCGCReadCategory,
-		}, func(iterator storage.MVCCIterator, span roachpb.Span, keyType storage.IterKeyType) error {
-			// Iterate all versions of all keys from oldest to newest. If a version is an
-			// intent it will have the highest timestamp of any versions and will be
-			// followed by a metadata entry.
-			// The loop determines if next object is garbage, non-garbage or intent and
-			// notifies batcher with its detail. Batcher is responsible for accumulating
-			// pending key data and sending sending keys to GCer as needed.
-			// It could also request the main loop to rewind to a previous point to
-			// retry (this is needed when attempt to collect a clear range batch fails
-			// in the middle of key versions).
-			it := makeGCIterator(iterator, threshold)
+	return excludeUserKeySpan, rditer.IterateMVCCReplicaKeySpans(desc, snap, rditer.IterateOptions{
+		CombineRangesAndPoints: true,
+		Reverse:                true,
+		ExcludeUserKeySpan:     excludeUserKeySpan,
+	}, func(iterator storage.MVCCIterator, span roachpb.Span, keyType storage.IterKeyType) error {
+		// Iterate all versions of all keys from oldest to newest. If a version is an
+		// intent it will have the highest timestamp of any versions and will be
+		// followed by a metadata entry.
+		// The loop determines if next object is garbage, non-garbage or intent and
+		// notifies batcher with its detail. Batcher is responsible for accumulating
+		// pending key data and sending sending keys to GCer as needed.
+		// It could also request the main loop to rewind to a previous point to
+		// retry (this is needed when attempt to collect a clear range batch fails
+		// in the middle of key versions).
+		it := makeGCIterator(iterator, threshold)
 
-			b := gcKeyBatcher{
-				gcKeyBatcherThresholds: batcherThresholds,
-				gcer:                   gcer,
-				info:                   info,
-				pointsBatches:          make([]pointsBatch, 1),
-				// We must clone here as we reuse key slice to avoid realocating on every
-				// key.
-				clearRangeEndKey: span.EndKey.Clone(),
-				prevWasNewest:    true,
+		b := gcKeyBatcher{
+			gcKeyBatcherThresholds: batcherThresholds,
+			gcer:                   gcer,
+			info:                   info,
+			pointsBatches:          make([]pointsBatch, 1),
+			// We must clone here as we reuse key slice to avoid realocating on every
+			// key.
+			clearRangeEndKey: span.EndKey.Clone(),
+			prevWasNewest:    true,
+		}
+
+		for ; ; it.step() {
+			var err error
+
+			s, ok := it.state()
+			if !ok {
+				if it.err != nil {
+					return it.err
+				}
+				break
 			}
 
-			for ; ; it.step() {
-				var err error
-
-				s, ok := it.state()
-				if !ok {
-					if it.err != nil {
-						return it.err
-					}
-					break
-				}
-
-				switch {
-				case s.curIsNotValue():
-					// Skip over non mvcc data.
-					err = b.foundNonGCableData(ctx, s.cur, true /* isNewestPoint */)
-				case s.curIsIntent():
-					// Skip over intents; they cannot be GC-ed. We simply ignore them --
-					// processReplicatedLocks will resolve them, if necessary.
-					err = b.foundNonGCableData(ctx, s.cur, true /* isNewestPoint */)
-					if err != nil {
-						return err
-					}
-					// Force step over the intent metadata as well to move on to the next
-					// key.
-					it.step()
-				default:
-					if isGarbage(threshold, s.cur, s.next, s.curIsNewest(), s.firstRangeTombstoneTsAtOrBelowGC) {
-						err = b.foundGarbage(ctx, s.cur, s.curLastKeyVersion())
-					} else {
-						err = b.foundNonGCableData(ctx, s.cur, s.curLastKeyVersion())
-					}
-				}
+			switch {
+			case s.curIsNotValue():
+				// Skip over non mvcc data.
+				err = b.foundNonGCableData(ctx, s.cur, true /* isNewestPoint */)
+			case s.curIsIntent():
+				// Skip over intents; they cannot be GC-ed. We simply ignore them --
+				// processReplicatedLocks will resolve them, if necessary.
+				err = b.foundNonGCableData(ctx, s.cur, true /* isNewestPoint */)
 				if err != nil {
 					return err
 				}
+				// Force step over the intent metadata as well to move on to the next
+				// key.
+				it.step()
+			default:
+				if isGarbage(threshold, s.cur, s.next, s.curIsNewest(), s.firstRangeTombstoneTsAtOrBelowGC) {
+					err = b.foundGarbage(ctx, s.cur, s.curLastKeyVersion())
+				} else {
+					err = b.foundNonGCableData(ctx, s.cur, s.curLastKeyVersion())
+				}
 			}
+			if err != nil {
+				return err
+			}
+		}
 
-			return b.flushLastBatch(ctx)
-		})
+		return b.flushLastBatch(ctx)
+	})
 }
 
 // processReplicatedLocks identifies extant replicated locks which have been
@@ -552,12 +545,11 @@ func processReplicatedLocks(
 
 	process := func(ltStartKey, ltEndKey roachpb.Key) error {
 		opts := storage.LockTableIteratorOptions{
-			LowerBound:   ltStartKey,
-			UpperBound:   ltEndKey,
-			MatchMinStr:  lock.Shared, // any strength
-			ReadCategory: storage.MVCCGCReadCategory,
+			LowerBound:  ltStartKey,
+			UpperBound:  ltEndKey,
+			MatchMinStr: lock.Shared, // any strength
 		}
-		iter, err := storage.NewLockTableIterator(ctx, reader, opts)
+		iter, err := storage.NewLockTableIterator(reader, opts)
 		if err != nil {
 			return err
 		}
@@ -1272,8 +1264,7 @@ func processLocalKeyRange(
 	startKey := keys.MakeRangeKeyPrefix(desc.StartKey)
 	endKey := keys.MakeRangeKeyPrefix(desc.EndKey)
 
-	_, err := storage.MVCCIterate(ctx, snap, startKey, endKey, hlc.Timestamp{},
-		storage.MVCCScanOptions{ReadCategory: storage.MVCCGCReadCategory},
+	_, err := storage.MVCCIterate(ctx, snap, startKey, endKey, hlc.Timestamp{}, storage.MVCCScanOptions{},
 		func(kv roachpb.KeyValue) error {
 			return handleOne(kv)
 		})
@@ -1392,12 +1383,11 @@ func processReplicatedRangeTombstones(
 	gcer GCer,
 	info *Info,
 ) error {
-	iter := rditer.NewReplicaMVCCDataIterator(ctx, desc, snap, rditer.ReplicaDataIteratorOptions{
+	iter := rditer.NewReplicaMVCCDataIterator(desc, snap, rditer.ReplicaDataIteratorOptions{
 		Reverse:            false,
 		IterKind:           storage.MVCCKeyIterKind,
 		KeyTypes:           storage.IterKeyTypeRangesOnly,
 		ExcludeUserKeySpan: excludeUserKeySpan,
-		ReadCategory:       storage.MVCCGCReadCategory,
 	})
 	defer iter.Close()
 

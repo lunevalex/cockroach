@@ -1,10 +1,7 @@
 // Copyright 2020 The Cockroach Authors.
 //
-// Licensed as a CockroachDB Enterprise file under the Cockroach Community
-// License (the "License"); you may not use this file except in compliance with
-// the License. You may obtain a copy of the License at
-//
-//     https://github.com/cockroachdb/cockroach/blob/master/licenses/CCL.txt
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package sqlproxyccl
 
@@ -233,7 +230,7 @@ func (s *Server) ServeSQL(
 		}
 		log.Infof(ctx, "proxy server listening at %s", ln.Addr())
 		if err := s.Stopper.RunAsyncTask(ctx, "listener-serve", func(ctx context.Context) {
-			_ = s.serve(ctx, ln)
+			_ = s.serve(ctx, ln, s.handler.RequireProxyProtocol)
 		}); err != nil {
 			return err
 		}
@@ -242,7 +239,7 @@ func (s *Server) ServeSQL(
 		proxyProtocolLn = s.requireProxyProtocolOnListener(proxyProtocolLn)
 		log.Infof(ctx, "proxy with required proxy headers server listening at %s", proxyProtocolLn.Addr())
 		if err := s.Stopper.RunAsyncTask(ctx, "proxy-protocol-listener-serve", func(ctx context.Context) {
-			_ = s.serve(ctx, proxyProtocolLn)
+			_ = s.serve(ctx, proxyProtocolLn, true /* requireProxyProtocol */)
 		}); err != nil {
 			return err
 		}
@@ -251,7 +248,7 @@ func (s *Server) ServeSQL(
 }
 
 // serve is called by ServeSQL to serve a single listener.
-func (s *Server) serve(ctx context.Context, ln net.Listener) error {
+func (s *Server) serve(ctx context.Context, ln net.Listener, requireProxyProtocol bool) error {
 	err := s.Stopper.RunAsyncTask(ctx, "listen-quiesce", func(ctx context.Context) {
 		<-s.Stopper.ShouldQuiesce()
 		if err := ln.Close(); err != nil && !grpcutil.IsClosedConnection(err) {
@@ -275,7 +272,7 @@ func (s *Server) serve(ctx context.Context, ln net.Listener) error {
 			defer s.metrics.CurConnCount.Dec(1)
 			remoteAddr := conn.RemoteAddr()
 			ctxWithTag := logtags.AddTag(ctx, "client", log.SafeOperational(remoteAddr))
-			if err := s.handler.handle(ctxWithTag, conn); err != nil {
+			if err := s.handler.handle(ctxWithTag, conn, requireProxyProtocol); err != nil {
 				log.Infof(ctxWithTag, "connection error: %v", err)
 			}
 		})

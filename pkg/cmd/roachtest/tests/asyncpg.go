@@ -1,17 +1,13 @@
 // Copyright 2021 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package tests
 
 import (
 	"context"
+	"fmt"
 	"regexp"
 
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/cluster"
@@ -22,16 +18,17 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/roachprod/install"
 )
 
-const asyncpgRunTestCmd = `
-source venv/bin/activate && 
-cd /mnt/data1/asyncpg && 
-PGPORT={pgport:1} PGHOST=localhost PGUSER=test_admin PGDATABASE=defaultdb python3 setup.py test > asyncpg.stdout
-`
+var asyncpgWarningArgs = "ignore::ResourceWarning"
+
+var asyncpgRunTestCmd = fmt.Sprintf(`
+source venv/bin/activate &&
+cd /mnt/data1/asyncpg &&
+PGPORT={pgport:1} PGHOST=localhost PGUSER=%s PGPASSWORD=%s PGSSLROOTCERT=$HOME/%s/ca.crt PGSSLMODE=require PGDATABASE=defaultdb python3 -W%q setup.py test > asyncpg.stdout
+`, install.DefaultUser, install.DefaultPassword, install.CockroachNodeCertsDir, asyncpgWarningArgs,
+)
 
 var asyncpgReleaseTagRegex = regexp.MustCompile(`^(?P<major>v\d+)\.(?P<minor>\d+)\.(?P<point>\d+)$`)
 
-// WARNING: DO NOT MODIFY the name of the below constant/variable without approval from the docs team.
-// This is used by docs automation to produce a list of supported versions for ORM's.
 var asyncpgSupportedTag = "v0.24.0"
 
 func registerAsyncpg(r registry.Registry) {
@@ -46,7 +43,15 @@ func registerAsyncpg(r registry.Registry) {
 		node := c.Node(1)
 		t.Status("setting up cockroach")
 
-		c.Start(ctx, t.L(), option.DefaultStartOptsInMemory(), install.MakeClusterSettings(), c.All())
+		// This test assumes that multiple_active_portals_enabled is false, but through
+		// metamorphic constants, it is possible for them to be enabled. We disable
+		// metamorphic testing to avoid this. Note the asyncpg test suite drops the
+		// database so we can't set the session variable like we do in pgjdbc.
+		// TODO(DarrylWong): Use a metamorphic constants exclusion list instead.
+		// See: https://github.com/cockroachdb/cockroach/issues/113164
+		settings := install.MakeClusterSettings()
+		settings.Env = append(settings.Env, "COCKROACH_INTERNAL_DISABLE_METAMORPHIC_TESTING=true")
+		c.Start(ctx, t.L(), option.NewStartOpts(sqlClientsInMemoryDB), install.MakeClusterSettings(), c.All())
 
 		version, err := fetchCockroachVersion(ctx, t.L(), c, node[0])
 		if err != nil {
@@ -140,14 +145,14 @@ func registerAsyncpg(r registry.Registry) {
 
 		t.Status("Running asyncpg tests ")
 		result, err := c.RunWithDetailsSingleNode(
-			ctx, t.L(), option.WithNodes(node), asyncpgRunTestCmd)
+			ctx, t.L(), node, asyncpgRunTestCmd)
 		if err != nil {
 			t.L().Printf("error during asyncpg run (may be ok): %v\n", err)
 		}
 		t.L().Printf("Test results for asyncpg: %s", result.Stdout+result.Stderr)
 		t.L().Printf("Test stdout for asyncpg")
 		if err := c.RunE(
-			ctx, option.WithNodes(node), "cd /mnt/data1/asyncpg && cat asyncpg.stdout",
+			ctx, node, "cd /mnt/data1/asyncpg && cat asyncpg.stdout",
 		); err != nil {
 			t.Fatal(err)
 		}

@@ -1,12 +1,7 @@
 // Copyright 2021 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package scexec_test
 
@@ -399,7 +394,7 @@ func (n noopJobRegistry) CheckPausepoint(name string) error {
 }
 
 func (n noopJobRegistry) UpdateJobWithTxn(
-	ctx context.Context, jobID jobspb.JobID, txn isql.Txn, updateFunc jobs.UpdateFn,
+	ctx context.Context, jobID jobspb.JobID, txn isql.Txn, useReadLock bool, updateFunc jobs.UpdateFn,
 ) error {
 	return nil
 }
@@ -519,7 +514,7 @@ func (noopMetadataUpdater) DeleteDatabaseRoleSettings(ctx context.Context, dbID 
 }
 
 // DeleteScheduleID implements scexec.DescriptorMetadataUpdater.
-func (noopMetadataUpdater) DeleteSchedule(ctx context.Context, scheduleID jobspb.ScheduleID) error {
+func (noopMetadataUpdater) DeleteSchedule(ctx context.Context, scheduleID int64) error {
 	return nil
 }
 

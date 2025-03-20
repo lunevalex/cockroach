@@ -1,12 +1,7 @@
 // Copyright 2023 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 import { cockroach } from "@cockroachlabs/crdb-protobuf-client";
 import { PayloadAction } from "@reduxjs/toolkit";
@@ -59,7 +54,25 @@ describe("DatabaseDetails sagas", () => {
           },
         ],
       },
-      tablesResp: { tables: ["yet", "another", "table"] },
+      tablesResp: {
+        tables: [
+          {
+            schema: "schema",
+            table: "table",
+            qualifiedNameWithSchemaAndTable: `"schema"."table"`,
+          },
+          {
+            schema: "schema2",
+            table: "table2",
+            qualifiedNameWithSchemaAndTable: `"schema"."table"`,
+          },
+          {
+            table: "tabble",
+            schema: "schema",
+            qualifiedNameWithSchemaAndTable: `"schema2j"."table2"`,
+          },
+        ],
+      },
       zoneConfigResp: {
         zone_config: new ZoneConfig({
           inherited_constraints: true,
@@ -69,8 +82,7 @@ describe("DatabaseDetails sagas", () => {
       },
       stats: {
         replicaData: {
-          replicas: [1, 2, 3],
-          regions: ["this", "is", "a", "region"],
+          storeIDs: [1, 2, 3],
         },
         indexStats: { num_index_recommendations: 4 },
       },

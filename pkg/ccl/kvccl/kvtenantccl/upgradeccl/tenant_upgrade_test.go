@@ -1,10 +1,7 @@
 // Copyright 2021 The Cockroach Authors.
 //
-// Licensed as a CockroachDB Enterprise file under the Cockroach Community
-// License (the "License"); you may not use this file except in compliance with
-// the License. You may obtain a copy of the License at
-//
-//     https://github.com/cockroachdb/cockroach/blob/master/licenses/CCL.txt
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package upgradeccl_test
 
@@ -42,16 +39,19 @@ func TestTenantAutoUpgradeRespectsAutoUpgradeEnabledSetting(t *testing.T) {
 	defer log.Scope(t).Close(t)
 	skip.UnderStressRace(t)
 
-	v0 := clusterversion.MinSupported
+	// v0 is hard-coded because at clusterversion.TestingBinaryMinSupportedVersion is `v22.2` at the
+	// time of typing and it does not support shared process tenants. We should update v0 to be
+	// clusterversion.TestingBinaryMinSupportedVersion when it is bumped to `v23.1`.
+	v0 := clusterversion.V23_1
 	ctx := context.Background()
 	settings := cluster.MakeTestingClusterSettingsWithVersions(
-		clusterversion.Latest.Version(),
-		v0.Version(),
+		clusterversion.TestingBinaryVersion,
+		clusterversion.ByKey(v0),
 		false, // initializeVersion
 	)
 	// Initialize the version to v0.
 	require.NoError(t, clusterversion.Initialize(ctx,
-		v0.Version(), &settings.SV))
+		clusterversion.ByKey(v0), &settings.SV))
 
 	ts := serverutils.StartServerOnly(t, base.TestServerArgs{
 		DefaultTestTenant: base.TestControlsTenantsExplicitly,
@@ -59,7 +59,8 @@ func TestTenantAutoUpgradeRespectsAutoUpgradeEnabledSetting(t *testing.T) {
 		Knobs: base.TestingKnobs{
 			Server: &server.TestingKnobs{
 				DisableAutomaticVersionUpgrade: make(chan struct{}),
-				BinaryVersionOverride:          v0.Version(),
+				BinaryVersionOverride:          clusterversion.ByKey(v0),
+				BootstrapVersionKeyOverride:    v0,
 			},
 			SQLEvalContext: &eval.TestingKnobs{
 				// When the host binary version is not equal to its cluster version, tenant logical version is set
@@ -72,11 +73,11 @@ func TestTenantAutoUpgradeRespectsAutoUpgradeEnabledSetting(t *testing.T) {
 	defer ts.Stopper().Stop(ctx)
 	sysDB := sqlutils.MakeSQLRunner(ts.SQLConn(t, serverutils.DBName("")))
 
-	expectedInitialTenantVersion := v0.Version()
+	expectedInitialTenantVersion := clusterversion.ByKey(v0)
 
 	tenantSettings := cluster.MakeTestingClusterSettingsWithVersions(
-		clusterversion.Latest.Version(),
-		v0.Version(),
+		clusterversion.TestingBinaryVersion,
+		clusterversion.ByKey(v0),
 		false, // initializeVersion
 	)
 	require.NoError(t, clusterversion.Initialize(ctx,
@@ -91,8 +92,9 @@ func TestTenantAutoUpgradeRespectsAutoUpgradeEnabledSetting(t *testing.T) {
 			TenantName: roachpb.TenantName(name),
 			Knobs: base.TestingKnobs{
 				Server: &server.TestingKnobs{
-					TenantAutoUpgradeInfo: upgradeInfoCh,
-					BinaryVersionOverride: v0.Version(),
+					TenantAutoUpgradeInfo:       upgradeInfoCh,
+					BootstrapVersionKeyOverride: v0,
+					BinaryVersionOverride:       clusterversion.ByKey(v0),
 				},
 			},
 		}
@@ -116,7 +118,7 @@ func TestTenantAutoUpgradeRespectsAutoUpgradeEnabledSetting(t *testing.T) {
 	// Upgrade the host cluster.
 	sysDB.Exec(t,
 		"SET CLUSTER SETTING version = $1",
-		clusterversion.Latest.String())
+		clusterversion.TestingBinaryVersion.String())
 
 	// Ensure that the tenant still works.
 	tenantRunner.CheckQueryResults(t, "SELECT * FROM t", [][]string{{"1"}, {"2"}})
@@ -140,15 +142,19 @@ func TestTenantAutoUpgrade(t *testing.T) {
 	defer log.Scope(t).Close(t)
 	skip.UnderStressRace(t)
 
-	v0 := clusterversion.MinSupported
+	// v0 is hard-coded because at clusterversion.TestingBinaryMinSupportedVersion is `v22.2` at the
+	// time of typing and it does not support shared process tenants. We should update v0 to be
+	// clusterversion.TestingBinaryMinSupportedVersion when it is bumped to `v23.1`.
+	v0 := clusterversion.V23_1
 	ctx := context.Background()
 	settings := cluster.MakeTestingClusterSettingsWithVersions(
-		clusterversion.Latest.Version(),
-		v0.Version(),
+		clusterversion.TestingBinaryVersion,
+		clusterversion.ByKey(v0),
 		false, // initializeVersion
 	)
 	// Initialize the version to v0.
-	require.NoError(t, clusterversion.Initialize(ctx, v0.Version(), &settings.SV))
+	require.NoError(t, clusterversion.Initialize(ctx,
+		clusterversion.ByKey(v0), &settings.SV))
 
 	ts := serverutils.StartServerOnly(t, base.TestServerArgs{
 		DefaultTestTenant: base.TestControlsTenantsExplicitly,
@@ -156,7 +162,8 @@ func TestTenantAutoUpgrade(t *testing.T) {
 		Knobs: base.TestingKnobs{
 			Server: &server.TestingKnobs{
 				DisableAutomaticVersionUpgrade: make(chan struct{}),
-				BinaryVersionOverride:          v0.Version(),
+				BinaryVersionOverride:          clusterversion.ByKey(v0),
+				BootstrapVersionKeyOverride:    v0,
 			},
 			SQLEvalContext: &eval.TestingKnobs{
 				// When the host binary version is not equal to its cluster version, tenant logical version is set
@@ -169,12 +176,12 @@ func TestTenantAutoUpgrade(t *testing.T) {
 	defer ts.Stopper().Stop(ctx)
 	sysDB := sqlutils.MakeSQLRunner(ts.SQLConn(t, serverutils.DBName("")))
 
-	expectedInitialTenantVersion := v0.Version()
-	expectedFinalTenantVersion := clusterversion.Latest.Version()
+	expectedInitialTenantVersion := clusterversion.ByKey(v0)
+	expectedFinalTenantVersion := clusterversion.TestingBinaryVersion
 
 	tenantSettings := cluster.MakeTestingClusterSettingsWithVersions(
-		clusterversion.Latest.Version(),
-		v0.Version(),
+		clusterversion.TestingBinaryVersion,
+		clusterversion.ByKey(v0),
 		false, // initializeVersion
 	)
 	require.NoError(t, clusterversion.Initialize(ctx,
@@ -191,7 +198,8 @@ func TestTenantAutoUpgrade(t *testing.T) {
 				Server: &server.TestingKnobs{
 					TenantAutoUpgradeInfo:                          upgradeInfoCh,
 					AllowTenantAutoUpgradeOnInternalVersionChanges: true,
-					BinaryVersionOverride:                          v0.Version(),
+					BootstrapVersionKeyOverride:                    v0,
+					BinaryVersionOverride:                          clusterversion.ByKey(v0),
 				},
 			},
 		}
@@ -256,17 +264,17 @@ func TestTenantUpgrade(t *testing.T) {
 	skip.UnderStressRace(t)
 	ctx := context.Background()
 
-	v1 := clusterversion.MinSupported.Version()
-	v2 := clusterversion.Latest.Version()
+	v1 := clusterversion.TestingBinaryMinSupportedVersion
+	v2 := clusterversion.TestingBinaryVersion
 
 	settings := cluster.MakeTestingClusterSettingsWithVersions(
 		v2,
 		v1,
 		false, // initializeVersion
 	)
-	// Initialize the version to the MinSupportedVersion.
+	// Initialize the version to the BinaryMinSupportedVersion.
 	require.NoError(t, clusterversion.Initialize(ctx,
-		clusterversion.MinSupported.Version(), &settings.SV))
+		clusterversion.TestingBinaryMinSupportedVersion, &settings.SV))
 
 	t.Log("starting server")
 	ts := serverutils.StartServerOnly(t, base.TestServerArgs{
@@ -382,9 +390,9 @@ func TestTenantUpgrade(t *testing.T) {
 //   - v0 corresponds to the bootstrapped version of the tenant,
 //   - v1, v2 correspond to adjacent releases.
 func v0v1v2() (roachpb.Version, roachpb.Version, roachpb.Version) {
-	v0 := clusterversion.MinSupported.Version()
-	v1 := clusterversion.Latest.Version()
-	v2 := clusterversion.Latest.Version()
+	v0 := clusterversion.ByKey(clusterversion.BinaryMinSupportedVersionKey)
+	v1 := clusterversion.TestingBinaryVersion
+	v2 := clusterversion.TestingBinaryVersion
 	if v1.Internal > 2 {
 		v1.Internal -= 2
 	} else {
@@ -398,9 +406,10 @@ func v0v1v2() (roachpb.Version, roachpb.Version, roachpb.Version) {
 func TestTenantUpgradeFailure(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
+	skip.WithIssue(t, 112209)
 
-	v0 := clusterversion.MinSupported.Version()
-	v2 := clusterversion.Latest.Version()
+	v0 := clusterversion.TestingBinaryMinSupportedVersion
+	v2 := clusterversion.TestingBinaryVersion
 	// v1 needs to be between v0 and v2. Set it to the minor release
 	// after v0 and before v2.
 	var v1 roachpb.Version
@@ -410,10 +419,7 @@ func TestTenantUpgradeFailure(t *testing.T) {
 			break
 		}
 	}
-	if v1 == (roachpb.Version{}) {
-		// There is no in-between version supported; skip this test.
-		skip.IgnoreLint(t, "test can only run when we support two previous releases")
-	}
+	require.NotEqual(t, v1, roachpb.Version{})
 
 	t.Log("starting server")
 	ctx := context.Background()
@@ -422,7 +428,7 @@ func TestTenantUpgradeFailure(t *testing.T) {
 		v0,
 		false, // initializeVersion
 	)
-	// Initialize the version to the MinSupportedVersion.
+	// Initialize the version to the BinaryMinSupportedVersion.
 	ts := serverutils.StartServerOnly(t, base.TestServerArgs{
 		DefaultTestTenant: base.TestControlsTenantsExplicitly,
 		Settings:          settings,
@@ -479,7 +485,7 @@ func TestTenantUpgradeFailure(t *testing.T) {
 								) error {
 									t.Logf("v1 migration running")
 									return nil
-								}, "test"), true
+								}), true
 						case v2:
 							return upgrade.NewTenantUpgrade("testing next",
 								v2,
@@ -502,7 +508,7 @@ func TestTenantUpgradeFailure(t *testing.T) {
 										}
 									}
 									return nil
-								}, "test"), true
+								}), true
 						default:
 							return nil, false
 						}

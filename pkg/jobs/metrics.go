@@ -1,12 +1,7 @@
 // Copyright 2018 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package jobs
 
@@ -17,6 +12,7 @@ import (
 
 	"github.com/cockroachdb/cockroach/pkg/jobs/jobspb"
 	"github.com/cockroachdb/cockroach/pkg/server/telemetry"
+	"github.com/cockroachdb/cockroach/pkg/util/cidr"
 	"github.com/cockroachdb/cockroach/pkg/util/metric"
 	io_prometheus_client "github.com/prometheus/client_model/go"
 )
@@ -249,12 +245,12 @@ var (
 func (Metrics) MetricStruct() {}
 
 // init initializes the metrics for job monitoring.
-func (m *Metrics) init(histogramWindowInterval time.Duration) {
+func (m *Metrics) init(histogramWindowInterval time.Duration, lookup *cidr.Lookup) {
 	if MakeRowLevelTTLMetricsHook != nil {
 		m.RowLevelTTL = MakeRowLevelTTLMetricsHook(histogramWindowInterval)
 	}
 	if MakeChangefeedMetricsHook != nil {
-		m.Changefeed = MakeChangefeedMetricsHook(histogramWindowInterval)
+		m.Changefeed = MakeChangefeedMetricsHook(histogramWindowInterval, lookup)
 	}
 	if MakeStreamIngestMetricsHook != nil {
 		m.StreamIngest = MakeStreamIngestMetricsHook(histogramWindowInterval)
@@ -295,7 +291,7 @@ func (m *Metrics) init(histogramWindowInterval time.Duration) {
 
 // MakeChangefeedMetricsHook allows for registration of changefeed metrics from
 // ccl code.
-var MakeChangefeedMetricsHook func(time.Duration) metric.Struct
+var MakeChangefeedMetricsHook func(time.Duration, *cidr.Lookup) metric.Struct
 
 // MakeStreamIngestMetricsHook allows for registration of streaming metrics from
 // ccl code.

@@ -1,12 +1,7 @@
 // Copyright 2022 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package loqrecovery_test
 
@@ -75,8 +70,7 @@ func TestFindUpdateDescriptor(t *testing.T) {
 			return srk
 		},
 		func(t *testing.T, ctx context.Context, reader storage.Reader) {
-			seq, err := loqrecovery.GetDescriptorChangesFromRaftLog(
-				ctx, testRangeID, 0, math.MaxInt64, reader)
+			seq, err := loqrecovery.GetDescriptorChangesFromRaftLog(testRangeID, 0, math.MaxInt64, reader)
 			require.NoError(t, err, "failed to read raft log data")
 
 			requireContainsDescriptor(t, loqrecoverypb.DescriptorChangeInfo{
@@ -126,8 +120,7 @@ func TestFindUpdateRaft(t *testing.T) {
 			return srk
 		},
 		func(t *testing.T, ctx context.Context, reader storage.Reader) {
-			seq, err := loqrecovery.GetDescriptorChangesFromRaftLog(
-				ctx, sRD.RangeID, 0, math.MaxInt64, reader)
+			seq, err := loqrecovery.GetDescriptorChangesFromRaftLog(sRD.RangeID, 0, math.MaxInt64, reader)
 			require.NoError(t, err, "failed to read raft log data")
 			requireContainsDescriptor(t, loqrecoverypb.DescriptorChangeInfo{
 				ChangeType: loqrecoverypb.DescriptorChangeType_ReplicaChange,
@@ -255,7 +248,7 @@ func TestCollectLeaseholderStatus(t *testing.T) {
 	// Note: we need to retry because replica collection is not atomic and
 	// leaseholder could move around so we could see none or more than one.
 	testutils.SucceedsSoon(t, func() error {
-		replicas, _, err := loqrecovery.CollectRemoteReplicaInfo(ctx, adm)
+		replicas, _, err := loqrecovery.CollectRemoteReplicaInfo(ctx, adm, -1 /* maxConcurrency */)
 		require.NoError(t, err, "failed to collect replica info")
 
 		foundLeaseholders := 0

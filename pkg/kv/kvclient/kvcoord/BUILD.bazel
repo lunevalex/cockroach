@@ -143,7 +143,6 @@ go_test(
         "txn_correctness_test.go",
         "txn_interceptor_committer_test.go",
         "txn_interceptor_heartbeater_test.go",
-        "txn_interceptor_metric_recorder_test.go",
         "txn_interceptor_pipeliner_client_test.go",
         "txn_interceptor_pipeliner_test.go",
         "txn_interceptor_seq_num_allocator_test.go",
@@ -151,12 +150,9 @@ go_test(
         "txn_test.go",
         ":mock_kvcoord",  # keep
     ],
+    args = ["-test.timeout=295s"],
     data = glob(["testdata/**"]),
     embed = [":kvcoord"],
-    exec_properties = select({
-        "//build/toolchains:is_heavy": {"Pool": "heavy"},
-        "//conditions:default": {"Pool": "default"},
-    }),
     shard_count = 16,
     deps = [
         "//build/bazelutil:noop",
@@ -206,6 +202,7 @@ go_test(
         "//pkg/testutils/sqlutils",
         "//pkg/testutils/testcluster",
         "//pkg/util",
+        "//pkg/util/admission/admissionpb",
         "//pkg/util/caller",
         "//pkg/util/ctxgroup",
         "//pkg/util/encoding",

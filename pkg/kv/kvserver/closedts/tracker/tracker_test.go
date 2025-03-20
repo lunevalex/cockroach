@@ -1,12 +1,7 @@
 // Copyright 2021 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package tracker
 
@@ -79,6 +74,19 @@ func testTracker(ctx context.Context, t *testing.T, tr Tracker) {
 	}
 	tr.Untrack(ctx, tok30)
 	require.True(t, tr.LowerBound(ctx).IsEmpty())
+
+	// Check that synthetic timestamps are tracked as such.
+	synthTS := hlc.Timestamp{
+		WallTime:  10,
+		Synthetic: true,
+	}
+	tok := tr.Track(ctx, synthTS)
+	require.Equal(t, synthTS, tr.LowerBound(ctx))
+	// Check that after the Tracker is emptied, lowerbounds are not synthetic any
+	// more.
+	tr.Untrack(ctx, tok)
+	tr.Track(ctx, ts(10))
+	require.Equal(t, ts(10), tr.LowerBound(ctx))
 }
 
 // Test the tracker by throwing random requests at it. We verify that, at all

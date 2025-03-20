@@ -1,12 +1,7 @@
 // Copyright 2020 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package xform
 
@@ -39,8 +34,7 @@ func (c *CustomFuncs) GenerateMergeJoins(
 	on memo.FiltersExpr,
 	joinPrivate *memo.JoinPrivate,
 ) {
-	if joinPrivate.Flags.Has(memo.DisallowMergeJoin) ||
-		!c.e.evalCtx.SessionData().OptimizerMergeJoinsEnabled {
+	if joinPrivate.Flags.Has(memo.DisallowMergeJoin) {
 		return
 	}
 
@@ -1117,17 +1111,13 @@ func (c *CustomFuncs) constructJoinWithConstants(
 }
 
 // ShouldReorderJoins returns whether the optimizer should attempt to find
-// a better ordering for a join tree. This is the case if the given expression
-// is the first expression of its group, and the join tree rooted at the
-// expression has not previously been reordered. This is to avoid duplicate
-// work. In addition, a join cannot be reordered if it has join hints.
+// a better ordering of inner joins. This is the case if the given expression is
+// the first expression of its group, and the join tree rooted at the expression
+// has not previously been reordered. This is to avoid duplicate work. In
+// addition, a join cannot be reordered if it has join hints.
 func (c *CustomFuncs) ShouldReorderJoins(root memo.RelExpr) bool {
+	// Only match the first expression of a group to avoid duplicate work.
 	if root != root.FirstExpr() {
-		// Only match the first expression of a group to avoid duplicate work.
-		return false
-	}
-	if c.e.evalCtx.SessionData().ReorderJoinsLimit == 0 {
-		// Join reordering has been disabled.
 		return false
 	}
 

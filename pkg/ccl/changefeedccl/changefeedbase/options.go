@@ -1,10 +1,7 @@
 // Copyright 2020 The Cockroach Authors.
 //
-// Licensed as a CockroachDB Enterprise file under the Cockroach Community
-// License (the "License"); you may not use this file except in compliance with
-// the License. You may obtain a copy of the License at
-//
-//     https://github.com/cockroachdb/cockroach/blob/master/licenses/CCL.txt
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package changefeedbase
 
@@ -136,12 +133,11 @@ const (
 	// the creation of the changeffed. If used in conjunction with a cursor,
 	// an initial scan will be performed at the cursor timestamp.
 	OptInitialScan = `initial_scan`
-	// OptNoInitialScan disables an initial scan. This is the default when a
+	// OptInitialScan enables an initial scan. This is the default when a
 	// cursor is specified. This option is useful to create a changefeed which
 	// subscribes only to new messages.
 	OptNoInitialScan = `no_initial_scan`
-	// OptEmitAllResolvedTimestamps is a sentinel value to indicate that all
-	// resolved timestamp events should be emitted.
+	// Sentinel value to indicate that all resolved timestamp events should be emitted.
 	OptEmitAllResolvedTimestamps = ``
 
 	OptInitialScanOnly = `initial_scan_only`

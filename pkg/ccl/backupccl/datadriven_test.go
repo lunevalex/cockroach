@@ -1,10 +1,7 @@
 // Copyright 2022 The Cockroach Authors.
 //
-// Licensed as a CockroachDB Enterprise file under the Cockroach Community
-// License (the "License"); you may not use this file except in compliance with
-// the License. You may obtain a copy of the License at
-//
-//     https://github.com/cockroachdb/cockroach/blob/master/licenses/CCL.txt
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package backupccl
 
@@ -81,13 +78,14 @@ var localityCfgs = map[string]roachpb.Locality{
 }
 
 var clusterVersionKeys = map[string]clusterversion.Key{
-	"23_2_Start": clusterversion.V23_2Start,
-	"23_2":       clusterversion.V23_2,
+	"23_1_Start":          clusterversion.V23_1Start,
+	"23_1_MVCCTombstones": clusterversion.V23_1_MVCCRangeTombstonesUnconditionallyEnabled,
+	"23_2_Start":          clusterversion.V23_2Start,
+	"23_2":                clusterversion.V23_2,
 }
 
 type sqlDBKey struct {
 	name string
-	vc   string
 	user string
 }
 
@@ -178,8 +176,9 @@ func (d *datadrivenTestState) addCluster(t *testing.T, cfg clusterCfg) error {
 		}
 		beforeKey--
 		params.ServerArgs.Knobs.Server = &server.TestingKnobs{
-			BinaryVersionOverride:          beforeKey.Version(),
+			BinaryVersionOverride:          clusterversion.ByKey(beforeKey),
 			DisableAutomaticVersionUpgrade: make(chan struct{}),
+			BootstrapVersionKeyOverride:    clusterversion.BinaryMinSupportedVersionKey,
 		}
 	}
 
@@ -237,36 +236,14 @@ func (d *datadrivenTestState) getIODir(t *testing.T, name string) string {
 }
 
 func (d *datadrivenTestState) getSQLDB(t *testing.T, name string, user string) *gosql.DB {
-	return d.getSQLDBForVC(t, name, "default", user)
-}
-
-func (d *datadrivenTestState) getSQLDBForVC(
-	t *testing.T, name string, vc string, user string,
-) *gosql.DB {
-	key := sqlDBKey{name, vc, user}
+	key := sqlDBKey{name, user}
 	if db, ok := d.sqlDBs[key]; ok {
 		return db
 	}
-
-	opts := []serverutils.SQLConnOption{
-		serverutils.CertsDirPrefix("TestBackupRestoreDataDriven"),
-		serverutils.User(user),
-	}
-
 	s := d.firstNode[name].ApplicationLayer()
-	switch vc {
-	case "default":
-		// Nothing to do.
-	case "system":
-		// We use the system layer since in the case of
-		// external SQL server's the application layer can't
-		// route to the system tenant.
-		s = d.firstNode[name].SystemLayer()
-	default:
-		opts = append(opts, serverutils.DBName("cluster:"+vc))
-	}
-
-	pgURL, cleanup := s.PGUrl(t, opts...)
+	pgURL, cleanup := s.PGUrl(
+		t, serverutils.CertsDirPrefix("TestBackupRestoreDataDriven"), serverutils.User(user),
+	)
 	d.cleanupFns = append(d.cleanupFns, cleanup)
 
 	base, err := pq.NewConnector(pgURL.String())
@@ -512,6 +489,10 @@ func runTestDataDriven(t *testing.T, testFilePathFromWorkspace string) {
 			skip.WithIssue(t, issue)
 			return ""
 
+		case "skip-under-duress":
+			skip.UnderDuress(t)
+			return ""
+
 		case "reset":
 			ds.cleanup(ctx, t)
 			ds = newDatadrivenTestState()
@@ -599,14 +580,13 @@ func runTestDataDriven(t *testing.T, testFilePathFromWorkspace string) {
 			if !ok {
 				t.Fatalf("clusterVersion %s does not exist in data driven global map", version)
 			}
-			clusterVersion := key.Version()
+			clusterVersion := clusterversion.ByKey(key)
 			_, err := ds.getSQLDB(t, cluster, user).Exec("SET CLUSTER SETTING version = $1", clusterVersion.String())
 			require.NoError(t, err)
 			return ""
 
 		case "exec-sql":
 			cluster := lastCreatedCluster
-			vc := "default"
 			user := "root"
 			if d.HasArg("cluster") {
 				d.ScanArgs(t, "cluster", &cluster)
@@ -614,14 +594,10 @@ func runTestDataDriven(t *testing.T, testFilePathFromWorkspace string) {
 			if d.HasArg("user") {
 				d.ScanArgs(t, "user", &user)
 			}
-			if d.HasArg("vc") {
-				d.ScanArgs(t, "vc", &vc)
-			}
-
 			ds.noticeBuffer = nil
 			checkForClusterSetting(t, d.Input, ds.clusters[cluster].NumServers())
 			d.Input = strings.ReplaceAll(d.Input, "http://COCKROACH_TEST_HTTP_server/", httpAddr)
-			_, err := ds.getSQLDBForVC(t, cluster, vc, user).Exec(d.Input)
+			_, err := ds.getSQLDB(t, cluster, user).Exec(d.Input)
 			ret := ds.noticeBuffer
 
 			if d.HasArg("ignore-notice") {
@@ -947,7 +923,7 @@ func handleKVRequest(
 			},
 			UseRangeTombstone: true,
 		}
-		if _, err := kv.SendWrapped(ctx, ds.firstNode[cluster].SystemLayer().DistSenderI().(*kvcoord.DistSender), &dr); err != nil {
+		if _, err := kv.SendWrapped(ctx, ds.firstNode[cluster].DistSenderI().(*kvcoord.DistSender), &dr); err != nil {
 			t.Fatal(err)
 		}
 	} else {

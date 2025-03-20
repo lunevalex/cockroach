@@ -1,12 +1,7 @@
 // Copyright 2022 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package sql
 
@@ -32,6 +27,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/catconstants"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
 	"github.com/cockroachdb/cockroach/pkg/sql/sessiondata"
+	"github.com/cockroachdb/cockroach/pkg/sql/sqlerrors"
 	"github.com/cockroachdb/cockroach/pkg/sql/types"
 	"github.com/cockroachdb/cockroach/pkg/util/errorutil/unimplemented"
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
@@ -126,7 +122,6 @@ func (sr *schemaResolver) byNameGetterBuilder() descs.ByNameGetterBuilder {
 func (sr *schemaResolver) LookupObject(
 	ctx context.Context, flags tree.ObjectLookupFlags, dbName, scName, obName string,
 ) (found bool, prefix catalog.ResolvedObjectPrefix, desc catalog.Descriptor, err error) {
-
 	// Check if we are looking up a type which matches a built-in type in
 	// CockroachDB but is an extension type on the public schema in PostgreSQL.
 	if flags.DesiredObjectKind == tree.TypeObject && scName == catconstants.PublicSchemaName {
@@ -173,6 +168,13 @@ func (sr *schemaResolver) LookupObject(
 		prefix, desc, err = descs.PrefixAndTable(ctx, g, &tn)
 	case tree.TypeObject:
 		prefix, desc, err = descs.PrefixAndType(ctx, g, &tn)
+	case tree.AnyObject:
+		prefix, desc, err = descs.PrefixAndTable(ctx, g, &tn)
+		if err != nil {
+			if sqlerrors.IsUndefinedRelationError(err) || errors.Is(err, catalog.ErrDescriptorWrongType) {
+				prefix, desc, err = descs.PrefixAndType(ctx, g, &tn)
+			}
+		}
 	default:
 		return false, prefix, nil, errors.AssertionFailedf(
 			"unknown desired object kind %v", flags.DesiredObjectKind,
@@ -187,6 +189,8 @@ func (sr *schemaResolver) LookupObject(
 			desc, err = sr.descCollection.MutableByID(sr.txn).Table(ctx, desc.GetID())
 		case tree.TypeObject:
 			desc, err = sr.descCollection.MutableByID(sr.txn).Type(ctx, desc.GetID())
+		case tree.AnyObject:
+			desc, err = sr.descCollection.MutableByID(sr.txn).Desc(ctx, desc.GetID())
 		}
 	}
 	return desc != nil, prefix, desc, err

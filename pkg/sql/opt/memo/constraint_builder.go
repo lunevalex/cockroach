@@ -1,12 +1,7 @@
 // Copyright 2018 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package memo
 
@@ -186,7 +181,7 @@ func (cb *constraintsBuilder) buildSingleColumnConstraintConst(
 
 	case opt.LikeOp:
 		if s, ok := tree.AsDString(datum); ok {
-			// Normalize the like pattern to a RE
+			// Normalize the like pattern to a RE.
 			if pattern, err := eval.LikeEscape(string(s)); err == nil {
 				if re, err := regexp.Compile(pattern); err == nil {
 					prefix, complete := re.LiteralPrefix()
@@ -200,10 +195,9 @@ func (cb *constraintsBuilder) buildSingleColumnConstraintConst(
 					c := cb.makeStringPrefixSpan(col, prefix)
 					// If pattern is simply prefix + .* the span is tight. Also pattern
 					// will have regexp special chars escaped and so prefix needs to be
-					// escaped too. The original string may have superfluous escape
-					if prefixEscape, err := eval.LikeEscape(prefix); err == nil {
-						return c, strings.HasSuffix(pattern, ".*") && strings.TrimSuffix(pattern, ".*") == prefixEscape
-					}
+					// escaped too.
+					prefixEscape := regexp.QuoteMeta(prefix)
+					return c, strings.HasSuffix(pattern, ".*") && strings.TrimSuffix(pattern, ".*") == prefixEscape
 				}
 			}
 		}

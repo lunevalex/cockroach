@@ -80,12 +80,12 @@
             (CanMapJoinOpFilter
                 $item
                 $leftCols:(OutputCols $left)
-                $equivSet:(GetEquivSet $on $left $right)
+                $equivFD:(GetEquivFD $on $left $right)
             ) &
             (CanMapJoinOpFilter
                 $item
                 $rightCols:(OutputCols $right)
-                $equivSet
+                $equivFD
             )
         ...
     ]
@@ -97,7 +97,7 @@
         $left
         [
             (FiltersItem
-                (MapJoinOpFilter $item $leftCols $equivSet)
+                (MapJoinOpFilter $item $leftCols $equivFD)
             )
         ]
     )
@@ -105,7 +105,7 @@
         $right
         [
             (FiltersItem
-                (MapJoinOpFilter $item $rightCols $equivSet)
+                (MapJoinOpFilter $item $rightCols $equivFD)
             )
         ]
     )
@@ -140,7 +140,7 @@
             (CanMapJoinOpFilter
                 $item
                 $leftCols
-                $equivSet:(GetEquivSet $on $left $right)
+                $equivFD:(GetEquivFD $on $left $right)
             )
         ...
     ]
@@ -153,7 +153,7 @@
     (ReplaceFiltersItem
         $on
         $item
-        (MapJoinOpFilter $item $leftCols $equivSet)
+        (MapJoinOpFilter $item $leftCols $equivFD)
     )
     $private
 )
@@ -174,7 +174,7 @@
             (CanMapJoinOpFilter
                 $item
                 $rightCols
-                $equivSet:(GetEquivSet $on $left $right)
+                $equivFD:(GetEquivFD $on $left $right)
             )
         ...
     ]
@@ -187,7 +187,7 @@
     (ReplaceFiltersItem
         $on
         $item
-        (MapJoinOpFilter $item $rightCols $equivSet)
+        (MapJoinOpFilter $item $rightCols $equivFD)
     )
     $private
 )

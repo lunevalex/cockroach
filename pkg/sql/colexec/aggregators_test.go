@@ -1,12 +1,7 @@
 // Copyright 2018 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package colexec
 
@@ -915,8 +910,8 @@ func TestAggregatorRandom(t *testing.T) {
 							expNulls[curGroup] = false
 							expCounts[curGroup]++
 							expSums[curGroup] += aggCol[i]
-							expMins[curGroup] = min(aggCol[i], expMins[curGroup])
-							expMaxs[curGroup] = max(aggCol[i], expMaxs[curGroup])
+							expMins[curGroup] = min64(aggCol[i], expMins[curGroup])
+							expMaxs[curGroup] = max64(aggCol[i], expMaxs[curGroup])
 						}
 						groups[i] = int64(curGroup)
 					}
@@ -988,16 +983,12 @@ func TestAggregatorRandom(t *testing.T) {
 	}
 }
 
-// benchmarkAggregateFunction runs aggregator micro benchmarks.
-// - numGroupCol is the number of grouping columns.
-// - groupSize is the number of tuples to target in each distinct aggregation
-// group.
-// - chunkSize is the number of tuples to target in each distinct partially
-// ordered group column, and is intended for use with partial order.
-// - limit is the number of rows to retrieve from the aggregation function
-// before ending the microbenchmark.
-// - numSameAggs, if positive, indicates the number of times that the provided
-// aggregate function should be evaluated.
+// benchmarkAggregateFunction runs aggregator microbenchmarks. numGroupCol is
+// the number of grouping columns. groupSize is the number of tuples to target
+// in each distinct aggregation group. chunkSize is the number of tuples to
+// target in each distinct partially ordered group column, and is intended for
+// use with partial order. Limit is the number of rows to retrieve from the
+// aggregation function before ending the microbenchmark.
 func benchmarkAggregateFunction(
 	b *testing.B,
 	agg aggType,
@@ -1009,7 +1000,6 @@ func benchmarkAggregateFunction(
 	numInputRows int,
 	chunkSize int,
 	limit int,
-	numSameAggs int,
 ) {
 	defer log.Scope(b).Close(b)
 	if groupSize > numInputRows {
@@ -1101,14 +1091,9 @@ func benchmarkAggregateFunction(
 	tc := aggregatorTestCase{
 		typs:           typs,
 		groupCols:      groupCols,
+		aggCols:        [][]uint32{aggCols},
+		aggFns:         []execinfrapb.AggregatorSpec_Func{aggFn},
 		unorderedInput: agg.order == unordered,
-	}
-	if numSameAggs < 1 {
-		numSameAggs = 1
-	}
-	for i := 0; i < numSameAggs; i++ {
-		tc.aggCols = append(tc.aggCols, aggCols)
-		tc.aggFns = append(tc.aggFns, aggFn)
 	}
 	if distinctProb > 0 {
 		if !typs[0].Identical(types.Int) {
@@ -1158,13 +1143,9 @@ func benchmarkAggregateFunction(
 	if distinctProb > 0 {
 		distinctProbString = fmt.Sprintf("/distinctProb=%.2f", distinctProb)
 	}
-	numSameAggsSuffix := ""
-	if numSameAggs != 1 {
-		numSameAggsSuffix = fmt.Sprintf("/numSameAggs=%d", numSameAggs)
-	}
 	b.Run(fmt.Sprintf(
-		"%s/%s/%s%s/groupSize=%d%s/numInputRows=%d",
-		fName, agg.name, inputTypesString, numSameAggsSuffix, groupSize, distinctProbString, numInputRows),
+		"%s/%s/%s/groupSize=%d%s/numInputRows=%d",
+		fName, agg.name, inputTypesString, groupSize, distinctProbString, numInputRows),
 		func(b *testing.B) {
 			b.SetBytes(int64(argumentsSize * numInputRows))
 			b.ResetTimer()
@@ -1215,15 +1196,12 @@ func BenchmarkAggregator(b *testing.B) {
 	// when benchmarking the aggregator logic.
 	aggFn := execinfrapb.AnyNotNull
 	for _, agg := range aggTypes {
-		for _, numSameAggs := range []int{1, 4} {
-			for _, numInputRows := range numRows {
-				for _, groupSize := range groupSizes {
-					benchmarkAggregateFunction(
-						b, agg, aggFn, []*types.T{types.Int}, 1, /* numGroupCol */
-						groupSize, 0 /* distinctProb */, numInputRows,
-						0 /* chunkSize */, 0 /* limit */, numSameAggs,
-					)
-				}
+		for _, numInputRows := range numRows {
+			for _, groupSize := range groupSizes {
+				benchmarkAggregateFunction(
+					b, agg, aggFn, []*types.T{types.Int}, 1, /* numGroupCol */
+					groupSize, 0 /* distinctProb */, numInputRows,
+					0 /* chunkSize */, 0 /* limit */)
 			}
 		}
 	}
@@ -1260,8 +1238,7 @@ func BenchmarkAllOptimizedAggregateFunctions(b *testing.B) {
 				benchmarkAggregateFunction(b, agg, aggFn, aggInputTypes,
 					1 /* numGroupCol */, groupSize,
 					0 /* distinctProb */, numInputRows,
-					0 /* chunkSize */, 0 /* limit */, 0, /* numSameAggs */
-				)
+					0 /* chunkSize */, 0 /* limit */)
 			}
 		}
 	}
@@ -1285,10 +1262,23 @@ func BenchmarkDistinctAggregation(b *testing.B) {
 					benchmarkAggregateFunction(b, agg, aggFn, []*types.T{types.Int},
 						1 /* numGroupCol */, groupSize,
 						0 /* distinctProb */, numInputRows,
-						0 /* chunkSize */, 0 /* limit */, 0, /* numSameAggs */
-					)
+						0 /* chunkSize */, 0 /* limit */)
 				}
 			}
 		}
 	}
+}
+
+func min64(a, b float64) float64 {
+	if a < b {
+		return a
+	}
+	return b
+}
+
+func max64(a, b float64) float64 {
+	if a > b {
+		return a
+	}
+	return b
 }

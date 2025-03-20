@@ -1,21 +1,18 @@
 // Copyright 2017 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package sql
 
 import (
 	"context"
 	encjson "encoding/json"
+	"fmt"
 	"sort"
 	"time"
 
+	"github.com/cockroachdb/cockroach/pkg/clusterversion"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/colinfo"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/descpb"
@@ -32,6 +29,17 @@ import (
 )
 
 var showTableStatsColumns = colinfo.ResultColumns{
+	{Name: "statistics_name", Typ: types.String},
+	{Name: "column_names", Typ: types.StringArray},
+	{Name: "created", Typ: types.TimestampTZ},
+	{Name: "row_count", Typ: types.Int},
+	{Name: "distinct_count", Typ: types.Int},
+	{Name: "null_count", Typ: types.Int},
+	{Name: "avg_size", Typ: types.Int},
+	{Name: "histogram_id", Typ: types.Int},
+}
+
+var showTableStatsColumnsPartialStatisticsVer = colinfo.ResultColumns{
 	{Name: "statistics_name", Typ: types.String},
 	{Name: "column_names", Typ: types.StringArray},
 	{Name: "created", Typ: types.TimestampTZ},
@@ -86,7 +94,11 @@ func (p *planner) ShowTableStats(ctx context.Context, n *tree.ShowTableStats) (p
 	if err := p.CheckAnyPrivilege(ctx, desc); err != nil {
 		return nil, err
 	}
-	columns := showTableStatsColumns
+	partialStatsVerActive := p.ExtendedEvalContext().ExecCfg.Settings.Version.IsActive(ctx, clusterversion.V23_1AddPartialStatisticsColumns)
+	columns := showTableStatsColumnsPartialStatisticsVer
+	if !partialStatsVerActive {
+		columns = showTableStatsColumns
+	}
 	if n.UsingJSON {
 		columns = showTableStatsJSONColumns
 	}
@@ -101,7 +113,16 @@ func (p *planner) ShowTableStats(ctx context.Context, n *tree.ShowTableStats) (p
 			//    "handle" which can be used with SHOW HISTOGRAM.
 			// TODO(yuzefovich): refactor the code to use the iterator API
 			// (currently it is not possible due to a panic-catcher below).
-			stmt := `SELECT
+			var partialPredicateCol string
+			var fullStatisticIDCol string
+			if partialStatsVerActive {
+				partialPredicateCol = `
+"partialPredicate",`
+				fullStatisticIDCol = `
+,"fullStatisticID"
+`
+			}
+			stmt := fmt.Sprintf(`SELECT
 							"tableID",
 							"statisticID",
 							name,
@@ -111,12 +132,12 @@ func (p *planner) ShowTableStats(ctx context.Context, n *tree.ShowTableStats) (p
 							"distinctCount",
 							"nullCount",
 							"avgSize",
-							"partialPredicate",
-							histogram,
-							"fullStatisticID"
+							%s
+							histogram
+							%s
 						FROM system.table_statistics
 						WHERE "tableID" = $1
-						ORDER BY "createdAt", "columnIDs", "statisticID"`
+						ORDER BY "createdAt", "columnIDs", "statisticID"`, partialPredicateCol, fullStatisticIDCol)
 
 			// There is a privilege check above to make sure the user has any
 			// privilege on the table being inspected. We use the node user to execute
@@ -152,6 +173,10 @@ func (p *planner) ShowTableStats(ctx context.Context, n *tree.ShowTableStats) (p
 
 			histIdx := histogramIdx
 			nCols := numCols
+			if !partialStatsVerActive {
+				histIdx = histogramIdx - 1
+				nCols = numCols - 2
+			}
 
 			// Guard against crashes in the code below (e.g. #56356).
 			defer func() {
@@ -181,7 +206,7 @@ func (p *planner) ShowTableStats(ctx context.Context, n *tree.ShowTableStats) (p
 					if ignoreStatsRowWithDroppedColumn {
 						continue
 					}
-					stat, err := stats.NewTableStatisticProto(row)
+					stat, err := stats.NewTableStatisticProto(row, partialStatsVerActive)
 					if err != nil {
 						return nil, err
 					}
@@ -201,11 +226,11 @@ func (p *planner) ShowTableStats(ctx context.Context, n *tree.ShowTableStats) (p
 				}
 
 				if withMerge {
-					merged := stats.MergedStatistics(ctx, statsList, p.ExtendedEvalContext().Settings)
+					merged := stats.MergedStatistics(ctx, statsList)
 					statsList = append(merged, statsList...)
 					// Iterate in reverse order to match the ORDER BY "columnIDs".
 					for i := len(merged) - 1; i >= 0; i-- {
-						mergedRow, err := tableStatisticProtoToRow(&merged[i].TableStatisticProto)
+						mergedRow, err := tableStatisticProtoToRow(&merged[i].TableStatisticProto, partialStatsVerActive)
 						if err != nil {
 							return nil, err
 						}
@@ -214,11 +239,11 @@ func (p *planner) ShowTableStats(ctx context.Context, n *tree.ShowTableStats) (p
 				}
 
 				if withForecast {
-					forecasts := stats.ForecastTableStatistics(ctx, p.ExtendedEvalContext().Settings, statsList)
+					forecasts := stats.ForecastTableStatistics(ctx, &p.ExtendedEvalContext().Settings.SV, statsList)
 					forecastRows := make([]tree.Datums, 0, len(forecasts))
 					// Iterate in reverse order to match the ORDER BY "columnIDs".
 					for i := len(forecasts) - 1; i >= 0; i-- {
-						forecastRow, err := tableStatisticProtoToRow(&forecasts[i].TableStatisticProto)
+						forecastRow, err := tableStatisticProtoToRow(&forecasts[i].TableStatisticProto, partialStatsVerActive)
 						if err != nil {
 							return nil, err
 						}
@@ -266,7 +291,7 @@ func (p *planner) ShowTableStats(ctx context.Context, n *tree.ShowTableStats) (p
 					if r[nameIdx] != tree.DNull {
 						statsRow.Name = string(*r[nameIdx].(*tree.DString))
 					}
-					if r[partialPredicateIdx] != tree.DNull && r[fullStatisticIDIdx] != tree.DNull {
+					if partialStatsVerActive && r[partialPredicateIdx] != tree.DNull && r[fullStatisticIDIdx] != tree.DNull {
 						statsRow.PartialPredicate = string(*r[partialPredicateIdx].(*tree.DString))
 						statsRow.FullStatisticID = (uint64)(*r[fullStatisticIDIdx].(*tree.DInt))
 					}
@@ -328,17 +353,31 @@ func (p *planner) ShowTableStats(ctx context.Context, n *tree.ShowTableStats) (p
 					histogramID = r[statIDIdx]
 				}
 
-				res := tree.Datums{
-					r[nameIdx],
-					colNames,
-					createdAtTZ,
-					r[rowCountIdx],
-					r[distinctCountIdx],
-					r[nullCountIdx],
-					r[avgSizeIdx],
-					r[partialPredicateIdx],
-					histogramID,
-					r[fullStatisticIDIdx],
+				var res tree.Datums
+				if partialStatsVerActive {
+					res = tree.Datums{
+						r[nameIdx],
+						colNames,
+						createdAtTZ,
+						r[rowCountIdx],
+						r[distinctCountIdx],
+						r[nullCountIdx],
+						r[avgSizeIdx],
+						r[partialPredicateIdx],
+						histogramID,
+						r[fullStatisticIDIdx],
+					}
+				} else {
+					res = tree.Datums{
+						r[nameIdx],
+						colNames,
+						createdAtTZ,
+						r[rowCountIdx],
+						r[distinctCountIdx],
+						r[nullCountIdx],
+						r[avgSizeIdx],
+						histogramID,
+					}
 				}
 
 				if _, err := v.rows.AddRow(ctx, res); err != nil {
@@ -361,7 +400,9 @@ func statColumnString(desc catalog.TableDescriptor, colID tree.Datum) (colName s
 	return colDesc.GetName(), nil
 }
 
-func tableStatisticProtoToRow(stat *stats.TableStatisticProto) (tree.Datums, error) {
+func tableStatisticProtoToRow(
+	stat *stats.TableStatisticProto, partialStatsVerActive bool,
+) (tree.Datums, error) {
 	name := tree.DNull
 	if stat.Name != "" {
 		name = tree.NewDString(stat.Name)
@@ -390,7 +431,10 @@ func tableStatisticProtoToRow(stat *stats.TableStatisticProto) (tree.Datums, err
 		tree.NewDInt(tree.DInt(stat.DistinctCount)),
 		tree.NewDInt(tree.DInt(stat.NullCount)),
 		tree.NewDInt(tree.DInt(stat.AvgSize)),
-		partialPredicate,
+	}
+
+	if partialStatsVerActive {
+		row = append(row, partialPredicate)
 	}
 
 	if stat.HistogramData == nil {
@@ -402,6 +446,8 @@ func tableStatisticProtoToRow(stat *stats.TableStatisticProto) (tree.Datums, err
 		}
 		row = append(row, tree.NewDBytes(tree.DBytes(histogram)))
 	}
-	row = append(row, FullStatisticID)
+	if partialStatsVerActive {
+		row = append(row, FullStatisticID)
+	}
 	return row, nil
 }

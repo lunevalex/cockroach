@@ -1,22 +1,19 @@
 // Copyright 2014 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package batcheval
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	"github.com/cockroachdb/cockroach/pkg/kv/kvpb"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/batcheval/result"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/lockspanset"
+	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/readsummary/rspb"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/spanset"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/storage"
@@ -65,6 +62,15 @@ func RequestLease(
 	rErr := &kvpb.LeaseRejectedError{
 		Existing:  prevLease,
 		Requested: args.Lease,
+	}
+
+	// However, we verify that the current lease's sequence number and proposed
+	// timestamp match the provided PrevLease. This ensures that the validation
+	// here is consistent with the validation that was performed when the lease
+	// request was constructed.
+	if prevLease.Sequence != args.PrevLease.Sequence || !prevLease.ProposedTS.Equal(args.PrevLease.ProposedTS) {
+		rErr.Message = fmt.Sprintf("expected previous lease %s, found %s", args.PrevLease, prevLease)
+		return newFailedLeaseTrigger(false /* isTransfer */), rErr
 	}
 
 	// MIGRATION(tschottdorf): needed to apply Raft commands which got proposed
@@ -145,7 +151,22 @@ func RequestLease(
 	}
 	newLease.Start = effectiveStart
 
+	var priorReadSum *rspb.ReadSummary
+	if !prevLease.Equivalent(newLease) {
+		// If the new lease is not equivalent to the old lease (i.e. either the
+		// lease is changing hands or the leaseholder restarted), construct a
+		// read summary to instruct the new leaseholder on how to update its
+		// timestamp cache. Since we are not the leaseholder ourselves, we must
+		// pessimistically assume that prior leaseholders served reads all the
+		// way up to the start of the new lease.
+		//
+		// NB: this is equivalent to the leaseChangingHands condition in
+		// leasePostApplyLocked.
+		worstCaseSum := rspb.FromTimestamp(newLease.Start.ToTimestamp())
+		priorReadSum = &worstCaseSum
+	}
+
 	log.VEventf(ctx, 2, "lease request: prev lease: %+v, new lease: %+v", prevLease, newLease)
 	return evalNewLease(ctx, cArgs.EvalCtx, readWriter, cArgs.Stats,
-		newLease, prevLease, isExtension, false /* isTransfer */)
+		newLease, prevLease, priorReadSum, isExtension, false /* isTransfer */)
 }

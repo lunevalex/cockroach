@@ -8,6 +8,7 @@ go_library(
     deps = [
         "//pkg/settings/cluster",
         "//pkg/sql/sqlerrors",
+        "//pkg/util/uuid",
         "@com_github_cockroachdb_errors//:errors",
     ],
 )

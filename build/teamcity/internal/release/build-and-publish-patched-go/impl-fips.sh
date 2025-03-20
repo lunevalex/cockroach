@@ -1,11 +1,17 @@
 #!/usr/bin/env bash
 
+# Copyright 2023 The Cockroach Authors.
+#
+# Use of this software is governed by the CockroachDB Software License
+# included in the /LICENSE file.
+
+
 set -xeuo pipefail
 
 # TODO: We may want to fork this repo and keep it up to date.
 GO_FIPS_REPO=https://github.com/golang-fips/go
-GO_FIPS_COMMIT=go1.21-fips-release
-GO_VERSION=1.21.5
+GO_FIPS_COMMIT=47f280d5e727f35a8e57020e563d6bae04d8db1e
+GO_VERSION=1.21.12
 
 # Install build dependencies
 yum install git golang golang-bin openssl openssl-devel -y

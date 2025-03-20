@@ -1,12 +1,7 @@
 // Copyright 2019 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package kvcoord
 
@@ -18,7 +13,6 @@ import (
 
 	"github.com/cockroachdb/cockroach/pkg/base"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvpb"
-	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/concurrency/isolation"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/concurrency/lock"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/txnwait"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
@@ -269,7 +263,7 @@ func TestTxnHeartbeaterLoopStartsBeforeExpiry(t *testing.T) {
 		},
 		{
 			// First locking request happens at expiration. Heartbeat immediately.
-			lockingRequestDelay: 5*time.Second + 1*time.Nanosecond,
+			lockingRequestDelay: 5 * time.Second,
 			consideredExpired:   true,
 			loopStarts:          StartImmediately,
 		},
@@ -282,10 +276,11 @@ func TestTxnHeartbeaterLoopStartsBeforeExpiry(t *testing.T) {
 	} {
 		t.Run(fmt.Sprintf("delay=%s", test.lockingRequestDelay), func(t *testing.T) {
 			ctx := context.Background()
+			txn := makeTxnProto()
+
 			manualTime := timeutil.NewManualTime(timeutil.Unix(0, 123))
 			clock := hlc.NewClockForTesting(manualTime)
-			txn := roachpb.MakeTransaction("test", []byte("key"), isolation.Serializable, 0, clock.Now(),
-				0 /* maxOffsetNs */, 0 /* coordinatorNodeID */, 0, false /* omitInRangefeeds */)
+			txn.MinTimestamp, txn.WriteTimestamp = clock.Now(), clock.Now()
 
 			// We attempt to simulate a transaction that heartbeats every 1s, however
 			// it is important to note that a transaction is considered expired when it

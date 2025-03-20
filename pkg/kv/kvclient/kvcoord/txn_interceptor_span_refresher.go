@@ -1,12 +1,7 @@
 // Copyright 2018 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package kvcoord
 
@@ -43,23 +38,6 @@ var MaxTxnRefreshSpansBytes = settings.RegisterIntSetting(
 	"maximum number of bytes used to track refresh spans in serializable transactions",
 	1<<22, /* 4 MB */
 	settings.WithPublic)
-
-// KeepRefreshSpansOnSavepointRollback is a boolean flag that, when enabled,
-// ensures that all refresh spans accumulated since a savepoint was created are
-// kept even after the savepoint is rolled back. This ensures that the reads
-// corresponding to the refresh spans are serialized correctly, even though they
-// were rolled back. See #111228 for more details.
-// When set to true, this setting corresponds to the correct new behavior,
-// which also matches the Postgres behavior. We don't expect this new behavior
-// to impact customers because they should already be able to handle
-// serialization errors; in case any unforeseen customer issues arise, the
-// setting here allows us to revert to the old behavior.
-// TODO(mira): set the default to true after #113765.
-var KeepRefreshSpansOnSavepointRollback = settings.RegisterBoolSetting(
-	settings.SystemVisible,
-	"kv.transaction.keep_refresh_spans_on_savepoint_rollback.enabled",
-	"if enabled, all refresh spans accumulated since a savepoint was created are kept after the savepoint is rolled back",
-	false)
 
 // txnSpanRefresher is a txnInterceptor that collects the read spans of a
 // serializable transaction in the event it gets a serializable retry error. It
@@ -437,10 +415,6 @@ func (sr *txnSpanRefresher) splitEndTxnAndRetrySend(
 	if err := br.Combine(ctx, brSuffix, []int{etIdx}, ba); err != nil {
 		return nil, kvpb.NewError(err)
 	}
-	if br.Txn == nil || !br.Txn.Status.IsFinalized() {
-		return nil, kvpb.NewError(errors.AssertionFailedf(
-			"txn status not finalized after successful retried EndTxn: %v", br.Txn))
-	}
 	return br, nil
 }
 
@@ -811,9 +785,6 @@ func (sr *txnSpanRefresher) createSavepointLocked(ctx context.Context, s *savepo
 	// TODO(nvanbenschoten): make sure this works correctly with ReadCommitted.
 	// The refresh spans should either be empty when captured into a savepoint or
 	// should be cleared when the savepoint is rolled back to.
-	// TODO(mira): after we remove
-	// kv.transaction.keep_refresh_spans_on_savepoint_rollback.enabled, we won't
-	// need to keep refresh spans in the savepoint anymore.
 	s.refreshSpans = make([]roachpb.Span, len(sr.refreshFootprint.asSlice()))
 	copy(s.refreshSpans, sr.refreshFootprint.asSlice())
 	s.refreshInvalid = sr.refreshInvalid
@@ -821,11 +792,9 @@ func (sr *txnSpanRefresher) createSavepointLocked(ctx context.Context, s *savepo
 
 // rollbackToSavepointLocked is part of the txnInterceptor interface.
 func (sr *txnSpanRefresher) rollbackToSavepointLocked(ctx context.Context, s savepoint) {
-	if !KeepRefreshSpansOnSavepointRollback.Get(&sr.st.SV) {
-		sr.refreshFootprint.clear()
-		sr.refreshFootprint.insert(s.refreshSpans...)
-		sr.refreshInvalid = s.refreshInvalid
-	}
+	sr.refreshFootprint.clear()
+	sr.refreshFootprint.insert(s.refreshSpans...)
+	sr.refreshInvalid = s.refreshInvalid
 }
 
 // closeLocked implements the txnInterceptor interface.

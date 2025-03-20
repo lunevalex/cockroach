@@ -1,10 +1,7 @@
 // Copyright 2022 The Cockroach Authors.
 //
-// Licensed as a CockroachDB Enterprise file under the Cockroach Community
-// License (the "License"); you may not use this file except in compliance with
-// the License. You may obtain a copy of the License at
-//
-//     https://github.com/cockroachdb/cockroach/blob/master/licenses/CCL.txt
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package multiregionccl
 
@@ -46,7 +43,8 @@ import (
 func TestColdStartLatency(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
-	skip.UnderDuress(t, "too slow")
+	skip.UnderRace(t, "too slow")
+	skip.UnderStress(t, "too slow")
 
 	// We'll need to make some per-node args to assign the different
 	// KV nodes to different regions and AZs. We'll want to do it to
@@ -328,7 +326,7 @@ SELECT checkpoint > extract(epoch from after)
 		defer tenant.AppStopper().Stop(ctx)
 		pgURL, cleanup, err := sqlutils.PGUrlWithOptionalClientCertsE(
 			tenant.AdvSQLAddr(), "tenantdata", url.UserPassword("foo", password),
-			false, // withClientCerts
+			false, "", // withClientCerts
 		)
 		if !assert.NoError(t, err) {
 			return

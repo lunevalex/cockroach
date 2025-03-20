@@ -1,12 +1,7 @@
 // Copyright 2020 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package tests
 
@@ -31,7 +26,7 @@ func runDecommissionSelf(ctx context.Context, t test.Test, c cluster.Cluster) {
 			// Stop n2 and exclude it from post-test consistency checks,
 			// as this node can't contact cluster any more and operations
 			// on it will hang.
-			u.c.Wipe(ctx, false /* preserveCerts */, c.Node(2))
+			u.c.Wipe(ctx, c.Node(2))
 		},
 		checkOneMembership(1, "decommissioned"),
 	)

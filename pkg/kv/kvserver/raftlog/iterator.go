@@ -1,18 +1,11 @@
 // Copyright 2022 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package raftlog
 
 import (
-	"context"
-
 	"github.com/cockroachdb/cockroach/pkg/keys"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvpb"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
@@ -34,8 +27,7 @@ type storageIter interface {
 // The raft log is a contiguous sequence of indexes (i.e. no holes) which may be
 // empty.
 type Reader interface {
-	NewMVCCIterator(
-		context.Context, storage.MVCCIterKind, storage.IterOptions) (storage.MVCCIterator, error)
+	NewMVCCIterator(storage.MVCCIterKind, storage.IterOptions) (storage.MVCCIterator, error)
 }
 
 // An Iterator inspects the raft log. After creation, SeekGE should be invoked,
@@ -71,9 +63,7 @@ type IterOptions struct {
 // RangeID from the provided Reader.
 //
 // Callers that can afford allocating a closure may prefer using Visit.
-func NewIterator(
-	ctx context.Context, rangeID roachpb.RangeID, eng Reader, opts IterOptions,
-) (*Iterator, error) {
+func NewIterator(rangeID roachpb.RangeID, eng Reader, opts IterOptions) (*Iterator, error) {
 	// TODO(tbg): can pool these most of the things below, incl. the *Iterator.
 	prefixBuf := keys.MakeRangeIDPrefixBuf(rangeID)
 	var upperBound roachpb.Key
@@ -82,7 +72,7 @@ func NewIterator(
 	} else {
 		upperBound = prefixBuf.RaftLogKey(opts.Hi)
 	}
-	iter, err := eng.NewMVCCIterator(ctx, storage.MVCCKeyIterKind, storage.IterOptions{
+	iter, err := eng.NewMVCCIterator(storage.MVCCKeyIterKind, storage.IterOptions{
 		UpperBound: upperBound,
 	})
 	if err != nil {
@@ -145,13 +135,9 @@ func (it *Iterator) Entry() raftpb.Entry {
 // The closure may return iterutil.StopIteration(), which will stop iteration
 // without returning an error.
 func Visit(
-	ctx context.Context,
-	eng Reader,
-	rangeID roachpb.RangeID,
-	lo, hi kvpb.RaftIndex,
-	fn func(raftpb.Entry) error,
+	eng Reader, rangeID roachpb.RangeID, lo, hi kvpb.RaftIndex, fn func(raftpb.Entry) error,
 ) error {
-	it, err := NewIterator(ctx, rangeID, eng, IterOptions{Hi: hi})
+	it, err := NewIterator(rangeID, eng, IterOptions{Hi: hi})
 	if err != nil {
 		return err
 	}

@@ -1,12 +1,7 @@
 // Copyright 2021 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package cli
 
@@ -19,6 +14,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/server/serverpb"
 	"github.com/cockroachdb/errors"
+	"github.com/cockroachdb/redact"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
@@ -41,7 +37,7 @@ const (
 func makeClusterWideZipRequests(
 	admin serverpb.AdminClient, status serverpb.StatusClient, prefix string,
 ) []zipRequest {
-	return []zipRequest{
+	zipRequests := []zipRequest{
 		// NB: we intentionally omit liveness since it's already pulled manually (we
 		// act on the output to special case decommissioned nodes).
 		{
@@ -62,13 +58,16 @@ func makeClusterWideZipRequests(
 			},
 			pathName: prefix + settingsName,
 		},
-		{
+	}
+	if zipCtx.includeRangeInfo {
+		zipRequests = append(zipRequests, zipRequest{
 			fn: func(ctx context.Context) (interface{}, error) {
 				return status.ProblemRanges(ctx, &serverpb.ProblemRangesRequest{})
 			},
 			pathName: prefix + problemRangesName,
-		},
+		})
 	}
+	return zipRequests
 }
 
 // collectClusterData runs the data collection that only needs to
@@ -176,9 +175,9 @@ func (zc *debugZipContext) collectClusterData(
 				sort.Slice(rangeList.Ranges, func(i, j int) bool {
 					return rangeList.Ranges[i].RangeID > rangeList.Ranges[j].RangeID
 				})
-				sLocality := zc.clusterPrinter.start("writing tenant ranges for locality: %s", locality)
+				sLocality := zc.clusterPrinter.start(redact.Sprintf("writing tenant ranges for locality: %s", locality))
 				name := fmt.Sprintf("%s/%s/%s", zc.prefix, tenantRangesName, locality)
-				s := zc.clusterPrinter.start("writing tenant ranges for locality %s", locality)
+				s := zc.clusterPrinter.start(redact.Sprintf("writing tenant ranges for locality %s", locality))
 				if err := zc.z.createJSON(s, name+".json", rangeList.Ranges); err != nil {
 					return &serverpb.NodesListResponse{}, nil, s.fail(err)
 				}

@@ -20,10 +20,7 @@ go_test(
         "db_test.go",
         "functions_test.go",
     ],
+    args = ["-test.timeout=55s"],
     embed = [":testmodel"],
-    exec_properties = select({
-        "//build/toolchains:is_heavy": {"Pool": "heavy"},
-        "//conditions:default": {"Pool": "default"},
-    }),
     deps = ["//pkg/ts/tspb"],
 )

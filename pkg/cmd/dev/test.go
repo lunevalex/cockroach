@@ -1,12 +1,7 @@
 // Copyright 2020 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package main
 
@@ -87,7 +82,7 @@ pkg/kv/kvserver:kvserver_test) instead.`,
         Same as above, but time out after 60 seconds if no test has failed
           (Note: the timeout command is called "gtimeout" on macOS and can be installed with "brew install coreutils")
 
-    dev test pkg/cmd/dev:dev_test --stress --timeout 5s
+    dev test pkg/cmd/dev:dev_test --stress --test-args='-test.timeout 5s'
         Run a test repeatedly until it runs longer than 5s
 
     end=$((SECONDS+N))
@@ -233,7 +228,7 @@ func (d *dev) test(cmd *cobra.Command, commandLine []string) error {
 		args = append(args, fmt.Sprintf("--local_cpu_resources=%d", numCPUs))
 	}
 	if race {
-		args = append(args, "--config=race", "--test_sharding_strategy=disabled")
+		args = append(args, "--config=race")
 	}
 	if deadlock {
 		goTags = append(goTags, "deadlock")
@@ -252,25 +247,18 @@ func (d *dev) test(cmd *cobra.Command, commandLine []string) error {
 		pkg = strings.TrimPrefix(pkg, "./")
 		pkg = strings.TrimRight(pkg, "/")
 
-		if !strings.HasPrefix(pkg, "pkg/") && !strings.HasPrefix(pkg, "pkg:") {
+		if !strings.HasPrefix(pkg, "pkg/") {
 			return fmt.Errorf("malformed package %q, expecting %q", pkg, "pkg/{...}")
 		}
 
-		if !strings.Contains(pkg, ":") && !strings.HasSuffix(pkg, "/...") {
-			pkg = fmt.Sprintf("%s:all", pkg)
+		var target string
+		if strings.Contains(pkg, ":") || strings.HasSuffix(pkg, "/...") {
+			// For parity with bazel, we allow specifying named build targets.
+			target = pkg
+		} else {
+			target = fmt.Sprintf("%s:all", pkg)
 		}
-		// Filter out only test targets.
-		queryArgs := []string{"query", fmt.Sprintf("kind(.*_test, %s)", pkg)}
-		labelsBytes, err := d.exec.CommandContextSilent(ctx, "bazel", queryArgs...)
-		if err != nil {
-			return fmt.Errorf("could not query for tests within %s: got error %w", pkg, err)
-		}
-		labels := strings.TrimSpace(string(labelsBytes))
-		if labels == "" {
-			log.Printf("WARNING: no test targets were found matching %s", pkg)
-			continue
-		}
-		testTargets = append(testTargets, strings.Split(labels, "\n")...)
+		testTargets = append(testTargets, target)
 	}
 
 	for _, target := range testTargets {
@@ -285,11 +273,6 @@ func (d *dev) test(cmd *cobra.Command, commandLine []string) error {
 				return fmt.Errorf("%s:%s will fail since it is an integration test. To run this test, run `%s`", testTarget[0], integrationTest.testName, integrationTest.commandToRun)
 			}
 		}
-	}
-
-	if len(testTargets) == 0 {
-		log.Printf("WARNING: no matching test targets were found and no tests will be run")
-		return nil
 	}
 
 	args = append(args, testTargets...)
@@ -333,7 +316,15 @@ func (d *dev) test(cmd *cobra.Command, commandLine []string) error {
 		args = append(args, "--test_arg", "-show-diff")
 	}
 	if timeout > 0 {
-		args = append(args, fmt.Sprintf("--test_timeout=%d", int(timeout.Seconds())))
+		// The bazel timeout should be higher than the timeout passed to the
+		// test binary (giving it ample time to clean up, 5 seconds is probably
+		// enough).
+		args = append(args, fmt.Sprintf("--test_timeout=%d", 5+int(timeout.Seconds())))
+		args = append(args, "--test_arg", fmt.Sprintf("-test.timeout=%s", timeout.String()))
+
+		// If --test-args '-test.timeout=X' is specified as well, or
+		// -- --test_arg '-test.timeout=X', that'll take precedence further
+		// below.
 	}
 
 	if stress {

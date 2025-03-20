@@ -1,12 +1,7 @@
 // Copyright 2021 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 import React from "react";
 
@@ -83,6 +78,60 @@ export default function (props: GraphDashboardProps) {
             name="cr.node.sys.runnable.goroutines.per.cpu"
             title={nodeDisplayName(nodeDisplayNameByID, nid)}
             sources={[nid]}
+          />
+        ))}
+      </Axis>
+    </LineGraph>,
+
+    <LineGraph
+      title="Elastic CPU Utilization"
+      sources={nodeSources}
+      tenantSource={tenantSource}
+      tooltip={`CPU utilization by elastic work, compared to the limit set for elastic work.`}
+      showMetricsInTooltip={true}
+    >
+      <Axis units={AxisUnits.Percentage} label="CPU Utilization">
+        {nodeIDs.map(nid => (
+          <>
+            <Metric
+              name="cr.node.admission.elastic_cpu.utilization"
+              title={
+                "Elastic CPU Utilization " +
+                nodeDisplayName(nodeDisplayNameByID, nid)
+              }
+              sources={[nid]}
+            />
+            <Metric
+              name="cr.node.admission.elastic_cpu.utilization_limit"
+              title={
+                "Elastic CPU Utilization Limit " +
+                nodeDisplayName(nodeDisplayNameByID, nid)
+              }
+              sources={[nid]}
+            />
+          </>
+        ))}
+      </Axis>
+    </LineGraph>,
+
+    <LineGraph
+      title="Elastic CPU Exhausted Duration Per Second"
+      sources={nodeSources}
+      tenantSource={tenantSource}
+      tooltip={`Duration of CPU exhaustion by elastic work, in microseconds.`}
+      showMetricsInTooltip={true}
+    >
+      <Axis label="duration (micros/sec)">
+        {nodeIDs.map(nid => (
+          <Metric
+            key={nid}
+            name="cr.node.admission.elastic_cpu.nanos_exhausted_duration"
+            title={
+              "Elastic CPU Exhausted " +
+              nodeDisplayName(nodeDisplayNameByID, nid)
+            }
+            sources={[nid]}
+            nonNegativeRate
           />
         ))}
       </Axis>

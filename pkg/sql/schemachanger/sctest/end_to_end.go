@@ -1,12 +1,7 @@
 // Copyright 2022 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 // Package sctest contains tools to run end-to-end datadriven tests in both
 // ccl and non-ccl settings.
@@ -47,6 +42,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/testutils/serverutils"
 	"github.com/cockroachdb/cockroach/pkg/testutils/skip"
 	"github.com/cockroachdb/cockroach/pkg/testutils/sqlutils"
+	"github.com/cockroachdb/cockroach/pkg/util/timeutil"
 	"github.com/cockroachdb/datadriven"
 	"github.com/stretchr/testify/require"
 )
@@ -312,6 +308,7 @@ func execStatementWithTestDeps(
 	var jobID jobspb.JobID
 	var state scpb.CurrentState
 	var err error
+	startTime := timeutil.Now()
 
 	deps.WithTxn(func(s *sctestdeps.TestState) {
 		// Run statement phase.
@@ -337,7 +334,7 @@ func execStatementWithTestDeps(
 		deps.IncrementPhase()
 		deps.LogSideEffectf("# begin %s", deps.Phase())
 		err = scrun.RunSchemaChangesInJob(
-			ctx, deps.TestingKnobs(), deps, jobID, job.DescriptorIDs, nil, /* rollbackCause */
+			ctx, deps.TestingKnobs(), deps, jobID, startTime, job.DescriptorIDs, nil, /* rollbackCause */
 		)
 		require.NoError(t, err, "error in mock schema change job execution")
 		deps.LogSideEffectf("# end %s", deps.Phase())

@@ -1,12 +1,7 @@
 // Copyright 2020 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package sql
 
@@ -38,6 +33,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/pgnotice"
 	"github.com/cockroachdb/cockroach/pkg/sql/privilege"
 	"github.com/cockroachdb/cockroach/pkg/sql/syntheticprivilege"
+	"github.com/cockroachdb/cockroach/pkg/storage"
 	"github.com/cockroachdb/cockroach/pkg/util/duration"
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
 	"github.com/cockroachdb/cockroach/pkg/util/ioctx"
@@ -749,12 +745,18 @@ func (p *planner) ForceDeleteTableData(ctx context.Context, descID int64) error 
 		Key: tableSpan.Key, EndKey: tableSpan.EndKey,
 	}
 	b := p.Txn().NewBatch()
-	b.AddRawRequest(&kvpb.DeleteRangeRequest{
-		RequestHeader:           requestHeader,
-		UseRangeTombstone:       true,
-		IdempotentTombstone:     true,
-		UpdateRangeDeleteGCHint: true,
-	})
+	if storage.CanUseMVCCRangeTombstones(ctx, p.execCfg.Settings) {
+		b.AddRawRequest(&kvpb.DeleteRangeRequest{
+			RequestHeader:           requestHeader,
+			UseRangeTombstone:       true,
+			IdempotentTombstone:     true,
+			UpdateRangeDeleteGCHint: true,
+		})
+	} else {
+		b.AddRawRequest(&kvpb.ClearRangeRequest{
+			RequestHeader: requestHeader,
+		})
+	}
 	if err := p.txn.DB().Run(ctx, b); err != nil {
 		return err
 	}

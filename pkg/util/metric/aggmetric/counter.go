@@ -1,12 +1,7 @@
 // Copyright 2020 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package aggmetric
 
@@ -239,5 +234,5 @@ func (g *CounterFloat64) Inc(i float64) {
 // UpdateIfHigher sets the counter's value only if it's higher
 // than the currently set one. It's assumed the caller holds
 func (g *CounterFloat64) UpdateIfHigher(i float64) {
-	g.value.UpdateIfHigher(i)
+	g.value.Update(i)
 }

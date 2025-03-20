@@ -1,12 +1,7 @@
 // Copyright 2018 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package main
 
@@ -28,9 +23,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/roachprod/logger"
 	"github.com/cockroachdb/cockroach/pkg/util/allstacks"
 	"github.com/cockroachdb/cockroach/pkg/util/leaktest"
-	"github.com/cockroachdb/cockroach/pkg/util/log"
-	"github.com/cockroachdb/cockroach/pkg/util/log/logconfig"
-	"github.com/cockroachdb/cockroach/pkg/util/log/logpb"
 	"github.com/cockroachdb/cockroach/pkg/util/stop"
 	"github.com/cockroachdb/cockroach/pkg/util/timeutil"
 	"github.com/cockroachdb/errors"
@@ -58,16 +50,16 @@ func runTests(register func(registry.Registry), filter *registry.TestFilter) err
 	parallelism := roachtestflags.Parallelism
 	if roachtestflags.Cloud == spec.Local {
 		clusterType = localCluster
+
+		// This will suppress the annoying "Allow incoming network connections" popup from
+		// OSX when running a roachtest
+		bindTo = "localhost"
+
+		fmt.Printf("--local specified. Binding http listener to localhost only")
 		if parallelism != 1 {
 			fmt.Printf("--local specified. Overriding --parallelism to 1.\n")
 			parallelism = 1
 		}
-	}
-
-	if runtime.GOOS == "darwin" {
-		// This will suppress the annoying "Allow incoming network connections" popup from
-		// OSX when running a roachtest
-		bindTo = "localhost"
 	}
 
 	opt := clustersOpt{
@@ -113,8 +105,8 @@ func runTests(register func(registry.Registry), filter *registry.TestFilter) err
 	if literalArtifactsDir == "" {
 		literalArtifactsDir = artifactsDir
 	}
-
-	setLogConfig(artifactsDir)
+	redirectLogger := redirectCRDBLogger(context.Background(), filepath.Join(artifactsDir, "roachtest.crdb.log"))
+	logger.InitCRDBLogConfig(redirectLogger)
 	runnerDir := filepath.Join(artifactsDir, runnerLogsDir)
 	runnerLogPath := filepath.Join(
 		runnerDir, fmt.Sprintf("test_runner-%d.log", timeutil.Now().Unix()))
@@ -167,23 +159,9 @@ func runTests(register func(registry.Registry), filter *registry.TestFilter) err
 
 	if roachtestflags.TeamCity {
 		// Collect the runner logs.
-		fmt.Printf("##teamcity[publishArtifacts '%s']\n", filepath.Join(literalArtifactsDir, runnerLogsDir))
+		fmt.Printf("##teamcity[publishArtifacts '%s' => '%s']\n", filepath.Join(literalArtifactsDir, runnerLogsDir), runnerLogsDir)
 	}
 	return err
-}
-
-// This diverts all the default non fatal logging to a file in `baseDir`. This is particularly
-// useful in CI, where without this, stderr/stdout are cluttered with logs from various
-// packages used in roachtest like sarama and testutils.
-func setLogConfig(baseDir string) {
-	logConf := logconfig.DefaultStderrConfig()
-	logConf.Sinks.Stderr.Filter = logpb.Severity_FATAL
-	if err := logConf.Validate(&baseDir); err != nil {
-		panic(err)
-	}
-	if _, err := log.ApplyConfig(logConf); err != nil {
-		panic(err)
-	}
 }
 
 // getUser takes the value passed on the command line and comes up with the
@@ -326,4 +304,15 @@ func testRunnerLogger(
 	}
 	shout(ctx, l, os.Stdout, "test runner logs in: %s", runnerLogPath)
 	return l, teeOpt
+}
+
+func redirectCRDBLogger(ctx context.Context, path string) *logger.Logger {
+	verboseCfg := logger.Config{}
+	var err error
+	l, err := verboseCfg.NewLogger(path)
+	if err != nil {
+		panic(err)
+	}
+	shout(ctx, l, os.Stdout, "fallback runner logs in: %s", path)
+	return l
 }

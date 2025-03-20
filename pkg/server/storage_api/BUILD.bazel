@@ -25,10 +25,7 @@ go_test(
         "rangelog_test.go",
         "ranges_test.go",
     ],
-    exec_properties = select({
-        "//build/toolchains:is_heavy": {"Pool": "heavy"},
-        "//conditions:default": {"Pool": "default"},
-    }),
+    args = ["-test.timeout=295s"],
     deps = [
         "//pkg/base",
         "//pkg/build",

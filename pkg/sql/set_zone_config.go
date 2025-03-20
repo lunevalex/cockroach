@@ -1,12 +1,7 @@
 // Copyright 2017 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package sql
 
@@ -22,6 +17,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/keys"
 	"github.com/cockroachdb/cockroach/pkg/server/serverpb"
 	"github.com/cockroachdb/cockroach/pkg/server/telemetry"
+	"github.com/cockroachdb/cockroach/pkg/settings"
 	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/descpb"
@@ -32,7 +28,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/privilege"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/eval"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
-	"github.com/cockroachdb/cockroach/pkg/sql/sqlclustersettings"
 	"github.com/cockroachdb/cockroach/pkg/sql/sqlerrors"
 	"github.com/cockroachdb/cockroach/pkg/sql/sqltelemetry"
 	"github.com/cockroachdb/cockroach/pkg/sql/syntheticprivilege"
@@ -101,6 +96,7 @@ func init() {
 				}
 				return base.CheckEnterpriseEnabled(
 					execCfg.Settings,
+					execCfg.NodeInfo.LogicalClusterID(),
 					"global_reads",
 				)
 			},
@@ -261,7 +257,7 @@ func (p *planner) SetZoneConfig(ctx context.Context, n *tree.SetZoneConfig) (pla
 		return nil, err
 	}
 
-	if err := sqlclustersettings.RequireSystemTenantOrClusterSetting(execCfg.Codec, execCfg.Settings, sqlclustersettings.SecondaryTenantZoneConfigsEnabled); err != nil {
+	if err := requireSystemTenantOrClusterSetting(execCfg.Codec, execCfg.Settings, SecondaryTenantZoneConfigsEnabled); err != nil {
 		return nil, err
 	}
 
@@ -614,6 +610,13 @@ func (n *setZoneConfigNode) startExec(params runParams) error {
 			return err
 		}
 
+		var oldZone *zonepb.ZoneConfig
+		if completeSubzone != nil {
+			oldZone = protoutil.Clone(&completeSubzone.Config).(*zonepb.ZoneConfig)
+		} else {
+			oldZone = protoutil.Clone(completeZone).(*zonepb.ZoneConfig)
+		}
+
 		// We need to inherit zone configuration information from the correct zone,
 		// not completeZone.
 		{
@@ -882,7 +885,8 @@ func (n *setZoneConfigNode) startExec(params runParams) error {
 		if deleteZone {
 			info = &eventpb.RemoveZoneConfig{CommonZoneConfigDetails: eventDetails}
 		} else {
-			info = &eventpb.SetZoneConfig{CommonZoneConfigDetails: eventDetails}
+			info = &eventpb.SetZoneConfig{CommonZoneConfigDetails: eventDetails,
+				ResolvedOldConfig: oldZone.String()}
 		}
 		return params.p.logEvent(params.ctx, targetID, info)
 	}
@@ -1102,9 +1106,19 @@ func validateZoneAttrsAndLocalitiesForSystemTenant(
 	return nil
 }
 
+// secondaryTenantsAllZoneConfigsEnabled is an extension of
+// SecondaryTenantZoneConfigsEnabled that allows virtual clusters to modify all
+// type of constraints in zone configs (i.e. not only zones and regions).
+var secondaryTenantsAllZoneConfigsEnabled = settings.RegisterBoolSetting(
+	settings.SystemVisible,
+	"sql.virtual_cluster.feature_access.zone_configs_unrestricted.enabled",
+	"enable unrestricted usage of ALTER CONFIGURE ZONE in virtual clusters",
+	false,
+)
+
 // validateZoneLocalitiesForSecondaryTenants performs constraint/lease
 // preferences validation for secondary tenants. Only newly added constraints
-// are validated. Unless SecondaryTenantsAllZoneConfigsEnabled is set to 'true',
+// are validated. Unless secondaryTenantsAllZoneConfigsEnabled is set to 'true',
 // secondary tenants are only allowed to reference locality attributes as they
 // only have access to region information via the serverpb.TenantStatusServer.
 // In that case they're only allowed to reference the "region" and "zone" tiers.
@@ -1173,8 +1187,8 @@ func validateZoneLocalitiesForSecondaryTenants(
 				)
 			}
 		default:
-			if err := sqlclustersettings.RequireSystemTenantOrClusterSetting(
-				codec, settings, sqlclustersettings.SecondaryTenantsAllZoneConfigsEnabled,
+			if err := requireSystemTenantOrClusterSetting(
+				codec, settings, secondaryTenantsAllZoneConfigsEnabled,
 			); err != nil {
 				return err
 			}
@@ -1200,7 +1214,7 @@ func prepareZoneConfigWrites(
 	if len(z.Subzones) > 0 {
 		st := execCfg.Settings
 		z.SubzoneSpans, err = GenerateSubzoneSpans(
-			st, execCfg.Codec, table, z.Subzones, hasNewSubzones)
+			st, execCfg.NodeInfo.LogicalClusterID(), execCfg.Codec, table, z.Subzones, hasNewSubzones)
 		if err != nil {
 			return nil, err
 		}

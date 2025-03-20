@@ -1,12 +1,7 @@
 // Copyright 2016 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package sql
 
@@ -95,6 +90,8 @@ func NewInternalSessionData(
 	sd.SearchPath = sessiondata.DefaultSearchPathForUser(username.NodeUserName())
 	sd.SequenceState = sessiondata.NewSequenceState()
 	sd.Location = time.UTC
+	sd.StmtTimeout = 0
+	sd.DisallowFullTableScans = false
 	return sd
 }
 
@@ -289,14 +286,6 @@ func (ie *InternalExecutor) initConnEx(
 	var ex *connExecutor
 	var err error
 	if txn == nil {
-		postSetupFn := func(ex *connExecutor) {
-			// Inject any synthetic descriptors into the internal
-			// executor after its created
-			if ie.syntheticDescriptors != nil {
-				ex.extraTxnState.descCollection.SetSyntheticDescriptors(ie.syntheticDescriptors)
-				ex.extraTxnState.shouldResetSyntheticDescriptors = true
-			}
-		}
 		ex = ie.s.newConnExecutor(
 			ctx,
 			sdMutIterator,
@@ -306,7 +295,7 @@ func (ie *InternalExecutor) initConnEx(
 			&ie.s.InternalMetrics,
 			applicationStats,
 			ie.s.cfg.GenerateID(),
-			postSetupFn,
+			nil, /* postSetupFn */
 		)
 	} else {
 		ex, err = ie.newConnExecutorWithTxn(
@@ -389,9 +378,11 @@ func (ie *InternalExecutor) newConnExecutorWithTxn(
 	if txn.Type() == kv.LeafTxn {
 		// If the txn is a leaf txn it is not allowed to perform mutations. For
 		// sanity, set read only on the session.
-		ex.dataMutatorIterator.applyOnEachMutator(func(m sessionDataMutator) {
-			m.SetReadOnly(true)
-		})
+		if err := ex.dataMutatorIterator.applyOnEachMutatorError(func(m sessionDataMutator) error {
+			return m.SetReadOnly(true)
+		}); err != nil {
+			return nil, err
+		}
 	}
 
 	// The new transaction stuff below requires active monitors and traces, so
@@ -834,7 +825,7 @@ func applyInternalExecutorSessionExceptions(sd *sessiondata.SessionData) {
 	// At the moment, we disable the usage of the Streamer API in the internal
 	// executor to avoid possible concurrency with the "outer" query (which
 	// might be using the RootTxn).
-	sd.LocalOnlySessionData.StreamerEnabled = false
+	sd.SessionData.StreamerEnabled = false
 	// If the internal executor creates a new transaction, then it runs in
 	// SERIALIZABLE. If it's used in an existing transaction, then it inherits the
 	// isolation level of the existing transaction.
@@ -863,7 +854,42 @@ func applyOverrides(o sessiondata.InternalExecutorOverride, sd *sessiondata.Sess
 	}
 	// We always override the injection knob based on the override struct.
 	sd.InjectRetryErrorsEnabled = o.InjectRetryErrorsEnabled
+	if o.OptimizerUseHistograms {
+		sd.OptimizerUseHistograms = true
+	}
+
+	if o.MultiOverride != "" {
+		overrides := strings.Split(o.MultiOverride, ",")
+		for _, override := range overrides {
+			parts := strings.Split(override, "=")
+			if len(parts) == 2 {
+				sd.Update(parts[0], parts[1])
+			}
+		}
+	}
+	// Add any new overrides above the MultiOverride.
 }
+
+var ieMultiOverride = settings.RegisterStringSetting(
+	settings.ApplicationLevel,
+	"sql.internal_executor.session_overrides",
+	"comma-separated list of 'variable=value' pairs that change the corresponding "+
+		"session variables used by the InternalExecutor (performed on a best-effort basis)",
+	"",
+	settings.WithValidateString(func(_ *settings.Values, val string) error {
+		if val == "" {
+			return nil
+		}
+		overrides := strings.Split(val, ",")
+		for _, override := range overrides {
+			parts := strings.Split(override, "=")
+			if len(parts) != 2 {
+				return errors.Newf("invalid override format: expected 'variable=value', found %q", override)
+			}
+		}
+		return nil
+	}),
+)
 
 func (ie *InternalExecutor) maybeRootSessionDataOverride(
 	opName string,
@@ -1014,9 +1040,26 @@ func (ie *InternalExecutor) execInternal(
 	} else {
 		sd = NewInternalSessionData(context.Background(), ie.s.cfg.Settings, "" /* opName */)
 	}
+	if globalOverride := ieMultiOverride.Get(&ie.s.cfg.Settings.SV); globalOverride != "" {
+		globalOverride = strings.TrimSpace(globalOverride)
+		// Prepend the "global" setting overrides to ensure that caller's
+		// overrides take precedence.
+		if localOverride := sessionDataOverride.MultiOverride; localOverride != "" {
+			sessionDataOverride.MultiOverride = globalOverride + "," + localOverride
+		} else {
+			sessionDataOverride.MultiOverride = globalOverride
+		}
+	}
 
 	applyInternalExecutorSessionExceptions(sd)
 	applyOverrides(sessionDataOverride, sd)
+	if !rw.async() && (txn != nil && txn.Type() == kv.RootTxn) {
+		// If the "outer" query uses the RootTxn and the sync result channel is
+		// requested, then we must disable DistSQL to ensure that the "inner"
+		// query doesn't use the LeafTxn (which could result in illegal
+		// concurrency).
+		sd.DistSQLMode = sessiondatapb.DistSQLOff
+	}
 	sd.Internal = true
 	if sd.User().Undefined() {
 		return nil, errors.AssertionFailedf("no user specified for internal query")
@@ -1751,35 +1794,27 @@ func (ief *InternalDB) txn(
 		modifiedDescriptors []lease.IDVersion,
 		deletedDescs catalog.DescriptorIDSet,
 	) error {
-		// No descriptors to wait for.
-		if len(modifiedDescriptors) == 0 && deletedDescs.Len() == 0 {
-			return nil
-		}
 		retryOpts := retry.Options{
 			InitialBackoff: time.Millisecond,
 			Multiplier:     1.5,
 			MaxBackoff:     time.Second,
 		}
 		lm := ief.server.cfg.LeaseManager
-		cachedRegions, err := regions.NewCachedDatabaseRegions(ctx, ief.server.cfg.DB, ief.server.cfg.LeaseManager)
-		if err != nil {
-			return err
-		}
 		for _, ld := range modifiedDescriptors {
 			if deletedDescs.Contains(ld.ID) { // we'll wait below
 				continue
 			}
-			_, err := lm.WaitForOneVersion(ctx, ld.ID, cachedRegions, retryOpts)
+			_, err := lm.WaitForOneVersion(ctx, ld.ID, retryOpts)
 			// If the descriptor has been deleted, just wait for leases to drain.
 			if errors.Is(err, catalog.ErrDescriptorNotFound) {
-				err = lm.WaitForNoVersion(ctx, ld.ID, cachedRegions, retryOpts)
+				err = lm.WaitForNoVersion(ctx, ld.ID, retryOpts)
 			}
 			if err != nil {
 				return err
 			}
 		}
 		for _, id := range deletedDescs.Ordered() {
-			if err := lm.WaitForNoVersion(ctx, id, cachedRegions, retryOpts); err != nil {
+			if err := lm.WaitForNoVersion(ctx, id, retryOpts); err != nil {
 				return err
 			}
 		}
@@ -1834,6 +1869,7 @@ func (ief *InternalDB) txn(
 			if kvTxn.TestingShouldRetry() {
 				return kvTxn.GenerateForcedRetryableErr(ctx, "injected retriable error")
 			}
+
 			return commitTxnFn(ctx)
 		}); errIsRetriable(err) {
 			continue

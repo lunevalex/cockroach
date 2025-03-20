@@ -1,12 +1,7 @@
 // Copyright 2022 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package randident
 
@@ -24,9 +19,9 @@ type NameGeneratorConfig = randidentcfg.Config
 type NameGenerator interface {
 	// GenerateOne generates one name.
 	//
-	// The specified suffix is included in the name if Suffix is true
+	// The specified number is included in the name if Number is true
 	// in the attached NameGeneratorConfig.
-	GenerateOne(suffix string) string
+	GenerateOne(number int) string
 
 	// GenerateMultiple generates count names, guaranteed to not be
 	// present in the conflictNames map.
@@ -47,7 +42,7 @@ func DefaultNameGeneratorConfig() NameGeneratorConfig {
 		DiacriticDepth: 1,
 
 		// Number the objects by default and add some noise.
-		Suffix: true,
+		Number: true,
 		Noise:  true,
 	}
 }

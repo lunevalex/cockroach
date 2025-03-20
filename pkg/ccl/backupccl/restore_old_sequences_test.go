@@ -1,10 +1,7 @@
 // Copyright 2021 The Cockroach Authors.
 //
-// Licensed as a CockroachDB Enterprise file under the Cockroach Community
-// License (the "License"); you may not use this file except in compliance with
-// the License. You may obtain a copy of the License at
-//
-//     https://github.com/cockroachdb/cockroach/blob/master/licenses/CCL.txt
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package backupccl
 
@@ -68,8 +65,8 @@ func TestRestoreOldSequences(t *testing.T) {
 func restoreOldSequencesTest(exportDir string, isSchemaOnly bool) func(t *testing.T) {
 	return func(t *testing.T) {
 		params := base.TestServerArgs{}
-		params.Settings = cluster.MakeTestingClusterSettingsWithVersions(clusterversion.Latest.Version(),
-			clusterversion.MinSupported.Version(), false /* initializeVersion */)
+		params.Settings = cluster.MakeTestingClusterSettingsWithVersions(clusterversion.TestingBinaryVersion,
+			clusterversion.TestingBinaryMinSupportedVersion, false /* initializeVersion */)
 		const numAccounts = 1000
 		_, sqlDB, dir, cleanup := backupRestoreTestSetupWithParams(t, singleNode, numAccounts,
 			InitManualReplication, base.TestClusterArgs{ServerArgs: params})
@@ -83,11 +80,11 @@ func restoreOldSequencesTest(exportDir string, isSchemaOnly bool) func(t *testin
 		// option to ensure the restore is successful on development branches. This
 		// is because, while the backups were generated on release branches and have
 		// versions such as 22.2 in their manifest, the development branch will have
-		// a MinSupportedVersion offset by the clusterversion.DevOffset described in
-		// `pkg/clusterversion/cockroach_versions.go`. This will mean that the
-		// manifest version is always less than the MinSupportedVersion which will
-		// in turn fail the restore unless we pass in the specified option to elide
-		// the compatibility check.
+		// a BinaryMinSupportedVersion offset by the clusterversion.DevOffset
+		// described in `pkg/clusterversion/cockroach_versions.go`. This will mean
+		// that the manifest version is always less than the
+		// BinaryMinSupportedVersion which will in turn fail the restore unless we
+		// pass in the specified option to elide the compatability check.
 		restoreQuery := `RESTORE test.* FROM LATEST IN $1 WITH UNSAFE_RESTORE_INCOMPATIBLE_VERSION`
 		if isSchemaOnly {
 			restoreQuery = restoreQuery + ", schema_only"

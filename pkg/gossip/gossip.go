@@ -1,12 +1,7 @@
 // Copyright 2014 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 /*
 Each node attempts to contact peer nodes to gather all Infos in
@@ -90,7 +85,7 @@ const (
 	// defaultStallInterval is the default interval for checking whether
 	// the incoming and outgoing connections to the gossip network are
 	// insufficient to keep the network connected.
-	defaultStallInterval = 2 * time.Second
+	defaultStallInterval = 1 * time.Second
 
 	// defaultBootstrapInterval is the minimum time between successive
 	// bootstrapping attempts to avoid busy-looping trying to find the
@@ -170,6 +165,30 @@ var (
 		Measurement: "Gossip Bytes",
 		Unit:        metric.Unit_BYTES,
 	}
+	MetaCallbacksProcessed = metric.Metadata{
+		Name:        "gossip.callbacks.processed",
+		Help:        "Number of gossip callbacks processed",
+		Measurement: "Callbacks",
+		Unit:        metric.Unit_COUNT,
+	}
+	MetaCallbacksPending = metric.Metadata{
+		Name:        "gossip.callbacks.pending",
+		Help:        "Number of gossip callbacks waiting to be processed",
+		Measurement: "Callbacks",
+		Unit:        metric.Unit_COUNT,
+	}
+	MetaCallbacksProcessingDuration = metric.Metadata{
+		Name:        "gossip.callbacks.processing_duration",
+		Help:        "Duration of gossip callback processing",
+		Measurement: "Duration",
+		Unit:        metric.Unit_NANOSECONDS,
+	}
+	MetaCallbacksPendingDuration = metric.Metadata{
+		Name:        "gossip.callbacks.pending_duration",
+		Help:        "Duration of gossip callback queueing to be processed",
+		Measurement: "Duration",
+		Unit:        metric.Unit_NANOSECONDS,
+	}
 )
 
 // KeyNotPresentError is returned by gossip when queried for a key that doesn't
@@ -191,7 +210,7 @@ func NewKeyNotPresentError(key string) error {
 // AddressResolver is a thin wrapper around gossip's GetNodeIDAddress
 // that allows it to be used as a nodedialer.AddressResolver.
 func AddressResolver(gossip *Gossip) nodedialer.AddressResolver {
-	return func(nodeID roachpb.NodeID) (net.Addr, error) {
+	return func(nodeID roachpb.NodeID) (net.Addr, roachpb.Locality, error) {
 		return gossip.GetNodeIDAddress(nodeID)
 	}
 }
@@ -240,6 +259,8 @@ type Gossip struct {
 	bootstrapInterval time.Duration
 	cullInterval      time.Duration
 
+	// TODO(baptist): Remember the localities for each remote address. Then pass
+	// it into the Dial.
 	// addresses is a list of bootstrap host addresses for
 	// connecting to the gossip network.
 	addressIdx     int
@@ -269,6 +290,7 @@ func New(
 	registry *metric.Registry,
 	locality roachpb.Locality,
 ) *Gossip {
+	ambient.SetEventLog("gossip", "gossip")
 	g := &Gossip{
 		server:            newServer(ambient, clusterID, nodeID, stopper, registry),
 		Connected:         make(chan struct{}),
@@ -284,6 +306,8 @@ func New(
 		bootstrapAddrs:    map[util.UnresolvedAddr]roachpb.NodeID{},
 		locality:          locality,
 	}
+
+	stopper.AddCloser(stop.CloserFn(g.server.AmbientContext.FinishEventLog))
 
 	registry.AddMetric(g.outgoing.gauge)
 
@@ -340,7 +364,7 @@ func (g *Gossip) GetNodeMetrics() *Metrics {
 // SetNodeDescriptor adds the node descriptor to the gossip network.
 func (g *Gossip) SetNodeDescriptor(desc *roachpb.NodeDescriptor) error {
 	ctx := g.AnnotateCtx(context.TODO())
-	log.VInfof(ctx, 1, "NodeDescriptor set to %+v", desc)
+	log.Infof(ctx, "NodeDescriptor set to %+v", desc)
 	if desc.Address.IsEmpty() {
 		log.Fatalf(ctx, "n%d address is empty", desc.NodeID)
 	}
@@ -431,7 +455,9 @@ func (g *Gossip) SetStorage(storage Storage) error {
 
 	// If a new address was found, immediately signal bootstrap.
 	if newAddressFound {
-		log.Ops.VInfof(ctx, 1, "found new addresses from storage; signaling bootstrap")
+		if log.V(1) {
+			log.Ops.Infof(ctx, "found new addresses from storage; signaling bootstrap")
+		}
 		g.signalStalledLocked()
 	}
 	return nil
@@ -464,26 +490,32 @@ func (g *Gossip) GetAddresses() []util.UnresolvedAddr {
 }
 
 // GetNodeIDAddress looks up the RPC address of the node by ID.
-func (g *Gossip) GetNodeIDAddress(nodeID roachpb.NodeID) (*util.UnresolvedAddr, error) {
+func (g *Gossip) GetNodeIDAddress(
+	nodeID roachpb.NodeID,
+) (*util.UnresolvedAddr, roachpb.Locality, error) {
 	return g.getNodeIDAddress(nodeID, false /* locked */)
 }
 
 // GetNodeIDSQLAddress looks up the SQL address of the node by ID.
-func (g *Gossip) GetNodeIDSQLAddress(nodeID roachpb.NodeID) (*util.UnresolvedAddr, error) {
+func (g *Gossip) GetNodeIDSQLAddress(
+	nodeID roachpb.NodeID,
+) (*util.UnresolvedAddr, roachpb.Locality, error) {
 	nd, err := g.getNodeDescriptor(nodeID, false /* locked */)
 	if err != nil {
-		return nil, err
+		return nil, roachpb.Locality{}, err
 	}
-	return &nd.SQLAddress, nil
+	return &nd.SQLAddress, nd.Locality, nil
 }
 
 // GetNodeIDHTTPAddress looks up the HTTP address of the node by ID.
-func (g *Gossip) GetNodeIDHTTPAddress(nodeID roachpb.NodeID) (*util.UnresolvedAddr, error) {
+func (g *Gossip) GetNodeIDHTTPAddress(
+	nodeID roachpb.NodeID,
+) (*util.UnresolvedAddr, roachpb.Locality, error) {
 	nd, err := g.getNodeDescriptor(nodeID, false /* locked */)
 	if err != nil {
-		return nil, err
+		return nil, roachpb.Locality{}, err
 	}
-	return &nd.HTTPAddress, nil
+	return &nd.HTTPAddress, nd.Locality, nil
 }
 
 // GetNodeDescriptor looks up the descriptor of the node by ID.
@@ -501,6 +533,8 @@ func (g *Gossip) GetNodeDescriptorCount() int {
 	return count
 }
 
+// TODO(baptist): StoreDescriptors don't belong in the Gossip package at all.
+// This method should be moved out of gossip.
 // GetStoreDescriptor looks up the descriptor of the node by ID.
 func (g *Gossip) GetStoreDescriptor(storeID roachpb.StoreID) (*roachpb.StoreDescriptor, error) {
 	if value, ok := g.storeDescs.Load(int64(storeID)); ok {
@@ -705,8 +739,9 @@ func (g *Gossip) updateNodeAddress(key string, content roachpb.Value) {
 		log.Errorf(ctx, "%v", err)
 		return
 	}
-
-	log.VInfof(ctx, 1, "updateNodeAddress called on %q with desc %+v", key, desc)
+	if log.V(1) {
+		log.Infof(ctx, "updateNodeAddress called on %q with desc %+v", key, desc)
+	}
 
 	g.mu.Lock()
 	defer g.mu.Unlock()
@@ -776,10 +811,10 @@ func (g *Gossip) updateStoreMap(key string, content roachpb.Value) {
 		return
 	}
 
-	log.VInfof(ctx, 1, "updateStoreMap called on %q with desc %+v", key, desc)
+	if log.V(1) {
+		log.Infof(ctx, "updateStoreMap called on %q with desc %+v", key, desc)
+	}
 
-	g.mu.Lock()
-	defer g.mu.Unlock()
 	g.storeDescs.Store(int64(desc.StoreID), unsafe.Pointer(&desc))
 }
 
@@ -855,12 +890,12 @@ func (g *Gossip) getNodeDescriptor(
 // "distant" node address to connect directly to.
 func (g *Gossip) getNodeIDAddress(
 	nodeID roachpb.NodeID, locked bool,
-) (*util.UnresolvedAddr, error) {
+) (*util.UnresolvedAddr, roachpb.Locality, error) {
 	nd, err := g.getNodeDescriptor(nodeID, locked)
 	if err != nil {
-		return nil, err
+		return nil, roachpb.Locality{}, err
 	}
-	return nd.AddressForLocality(g.locality), nil
+	return nd.AddressForLocality(g.locality), nd.Locality, nil
 }
 
 // AddInfo adds or updates an info object. Returns an error if info
@@ -994,10 +1029,9 @@ func (g *Gossip) GetInfoStatus() InfoStatus {
 	g.mu.RLock()
 	defer g.mu.RUnlock()
 	is := InfoStatus{
-		Infos:           make(map[string]Info),
-		Client:          clientStatus,
-		Server:          serverStatus,
-		HighWaterStamps: g.mu.is.getHighWaterStamps(),
+		Infos:  make(map[string]Info),
+		Client: clientStatus,
+		Server: serverStatus,
 	}
 	for k, v := range g.mu.is.Infos {
 		is.Infos[k] = *protoutil.Clone(v).(*Info)
@@ -1125,7 +1159,7 @@ func (g *Gossip) hasOutgoingLocked(nodeID roachpb.NodeID) bool {
 	// outgoing nodeSet due to the way that outgoing clients' node IDs are only
 	// resolved once the connection has been established (rather than as soon as
 	// we've created it).
-	nodeAddr, err := g.getNodeIDAddress(nodeID, true /* locked */)
+	nodeAddr, _, err := g.getNodeIDAddress(nodeID, true /* locked */)
 	if err != nil {
 		// If we don't have the address, fall back to using the outgoing nodeSet
 		// since at least it's better than nothing.
@@ -1178,8 +1212,21 @@ func (g *Gossip) bootstrap(rpcContext *rpc.Context) {
 				log.Eventf(ctx, "have clients: %t, have sentinel: %t", haveClients, haveSentinel)
 				if !haveClients || !haveSentinel {
 					// Try to get another bootstrap address.
+					//
+					// TODO(baptist): The bootstrap address from the
+					// configuration does not have locality information. We
+					// could use "our" locality or leave it blank like it
+					// currently does. Alternatively we could break and
+					// reconnect once we determine the remote locality from
+					// gossip.
 					if addr := g.getNextBootstrapAddressLocked(); !addr.IsEmpty() {
-						g.startClientLocked(addr, rpcContext)
+						locality := roachpb.Locality{}
+						nodeID := g.bootstrapAddrs[addr]
+						// We may not have a node descriptor for this node yet, in which case we dial without one.
+						if nd, err := g.getNodeDescriptor(nodeID, true); err == nil {
+							locality = nd.Locality
+						}
+						g.startClientLocked(addr, locality, rpcContext)
 					} else {
 						bootstrapAddrs := make([]string, 0, len(g.bootstrapping))
 						for addr := range g.bootstrapping {
@@ -1318,13 +1365,13 @@ func (g *Gossip) tightenNetwork(ctx context.Context, rpcContext *rpc.Context) {
 		// If tightening is needed, then reset lastTighten to avoid restricting how
 		// soon we try again.
 		g.mu.lastTighten = time.Time{}
-		if nodeAddr, err := g.getNodeIDAddress(distantNodeID, true /* locked */); err != nil || nodeAddr == nil {
+		if nodeAddr, locality, err := g.getNodeIDAddress(distantNodeID, true /* locked */); err != nil || nodeAddr == nil {
 			log.Health.Errorf(ctx, "unable to get address for n%d: %s", distantNodeID, err)
 		} else {
 			log.Health.Infof(ctx, "starting client to n%d (%d > %d) to tighten network graph",
 				distantNodeID, distantHops, maxHops)
 			log.Eventf(ctx, "tightening network with new client to %s", nodeAddr)
-			g.startClientLocked(*nodeAddr, rpcContext)
+			g.startClientLocked(*nodeAddr, locality, rpcContext)
 		}
 	}
 }
@@ -1336,7 +1383,12 @@ func (g *Gossip) doDisconnected(c *client, rpcContext *rpc.Context) {
 
 	// If the client was disconnected with a forwarding address, connect now.
 	if c.forwardAddr != nil {
-		g.startClientLocked(*c.forwardAddr, rpcContext)
+		locality := roachpb.Locality{}
+		// If we have a node descriptor for this node use it when dialing.
+		if nd, err := g.getNodeDescriptor(c.peerID, true); err == nil {
+			locality = nd.Locality
+		}
+		g.startClientLocked(*c.forwardAddr, locality, rpcContext)
 	}
 	g.maybeSignalStatusChangeLocked()
 }
@@ -1408,12 +1460,14 @@ func (g *Gossip) signalConnectedLocked() {
 // startClientLocked launches a new client connected to remote address.
 // The client is added to the outgoing address set and launched in
 // a goroutine.
-func (g *Gossip) startClientLocked(addr util.UnresolvedAddr, rpcContext *rpc.Context) {
+func (g *Gossip) startClientLocked(
+	addr util.UnresolvedAddr, locality roachpb.Locality, rpcContext *rpc.Context,
+) {
 	g.clientsMu.Lock()
 	defer g.clientsMu.Unlock()
 	ctx := g.AnnotateCtx(context.TODO())
 	log.VEventf(ctx, 1, "starting new client to %s", addr)
-	c := newClient(g.server.AmbientContext, &addr, g.serverMetrics)
+	c := newClient(g.server.AmbientContext, &addr, locality, g.serverMetrics)
 	g.clientsMu.clients = append(g.clientsMu.clients, c)
 	c.startLocked(g, g.disconnected, rpcContext, g.server.stopper)
 }

@@ -1,19 +1,18 @@
 // Copyright 2022 The Cockroach Authors.
 //
-// Licensed as a CockroachDB Enterprise file under the Cockroach Community
-// License (the "License"); you may not use this file except in compliance with
-// the License. You may obtain a copy of the License at
-//
-//     https://github.com/cockroachdb/cockroach/blob/master/licenses/CCL.txt
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package authccl
 
 import (
+	"bytes"
 	"context"
 	gosql "database/sql"
 	"fmt"
 	"math"
 	"net"
+	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -27,6 +26,8 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/base"
 	"github.com/cockroachdb/cockroach/pkg/ccl/jwtauthccl"
 	"github.com/cockroachdb/cockroach/pkg/security/username"
+	"github.com/cockroachdb/cockroach/pkg/server/apiconstants"
+	"github.com/cockroachdb/cockroach/pkg/server/authserver"
 	"github.com/cockroachdb/cockroach/pkg/sql/pgwire"
 	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/pgcode"
 	"github.com/cockroachdb/cockroach/pkg/testutils"
@@ -41,12 +42,12 @@ import (
 	"github.com/cockroachdb/datadriven"
 	"github.com/cockroachdb/errors"
 	"github.com/cockroachdb/errors/stdstrings"
-	"github.com/lib/pq"
+	"github.com/jackc/pgconn"
+	"github.com/jackc/pgx/v4"
 	"github.com/stretchr/testify/require"
 )
 
 // The code in this file takes inspiration from pgwire/auth_test.go
-
 // TestAuthenticationAndHBARules exercises the authentication code
 // using datadriven testing.
 //
@@ -107,7 +108,6 @@ import (
 func TestAuthenticationAndHBARules(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	skip.UnderRace(t, "takes >1min under race")
-
 	testutils.RunTrueAndFalse(t, "insecure", func(t *testing.T, insecure bool) {
 		jwtRunTest(t, insecure)
 	})
@@ -145,18 +145,16 @@ func makeSocketFile(t *testing.T) (socketDir, socketFile string, cleanupFn func(
 }
 
 func jwtRunTest(t *testing.T, insecure bool) {
-
+	ctx := context.Background()
 	datadriven.Walk(t, datapathutils.TestDataPath(t), func(t *testing.T, path string) {
 		defer leaktest.AfterTest(t)()
 
 		maybeSocketDir, maybeSocketFile, cleanup := makeSocketFile(t)
 		defer cleanup()
-
 		// We really need to have the logs go to files, so that -show-logs
 		// does not break the "authlog" directives.
 		sc := log.ScopeWithoutShowLogs(t)
 		defer sc.Close(t)
-
 		// Enable logging channels.
 		log.TestingResetActive()
 		cfg := logconfig.DefaultConfig()
@@ -179,7 +177,7 @@ func jwtRunTest(t *testing.T, insecure bool) {
 		}
 		defer cleanup()
 
-		srv, conn, _ := serverutils.StartServer(t,
+		srv := serverutils.StartServerOnly(t,
 			base.TestServerArgs{
 				DefaultTestTenant: base.TestDoesNotWorkWithSharedProcessModeButWeDontKnowWhyYet(
 					base.TestTenantProbabilistic, 112949,
@@ -187,12 +185,21 @@ func jwtRunTest(t *testing.T, insecure bool) {
 				Insecure:   insecure,
 				SocketFile: maybeSocketFile,
 			})
-		defer srv.Stopper().Stop(context.Background())
+		defer srv.Stopper().Stop(ctx)
+
+		pgURL, cleanup := srv.PGUrl(t, serverutils.User(username.RootUser), serverutils.ClientCerts(!insecure))
+		defer cleanup()
+		rootConn, err := pgx.Connect(ctx, pgURL.String())
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = rootConn.Close(ctx) }()
+
 		s := srv.ApplicationLayer()
 
 		sv := &s.ClusterSettings().SV
 
-		if _, err := conn.ExecContext(context.Background(), fmt.Sprintf(`CREATE USER %s`, username.TestUser)); err != nil {
+		if _, err := rootConn.Exec(ctx, fmt.Sprintf(`CREATE USER %s`, username.TestUser)); err != nil {
 			t.Fatal(err)
 		}
 
@@ -210,27 +217,27 @@ func jwtRunTest(t *testing.T, insecure bool) {
 							if err != nil {
 								t.Fatalf("unknown value for jwt_cluster_setting enabled: %s", a.Vals[0])
 							}
-							jwtauthccl.JWTAuthEnabled.Override(context.Background(), sv, v)
+							jwtauthccl.JWTAuthEnabled.Override(ctx, sv, v)
 						case "audience":
 							if len(a.Vals) != 1 {
 								t.Fatalf("wrong number of argumenets to jwt_cluster_setting audience: %d", len(a.Vals))
 							}
-							jwtauthccl.JWTAuthAudience.Override(context.Background(), sv, a.Vals[0])
+							jwtauthccl.JWTAuthAudience.Override(ctx, sv, a.Vals[0])
 						case "issuers":
 							if len(a.Vals) != 1 {
 								t.Fatalf("wrong number of argumenets to jwt_cluster_setting issuers: %d", len(a.Vals))
 							}
-							jwtauthccl.JWTAuthIssuers.Override(context.Background(), sv, a.Vals[0])
+							jwtauthccl.JWTAuthIssuersConfig.Override(ctx, sv, a.Vals[0])
 						case "jwks":
 							if len(a.Vals) != 1 {
 								t.Fatalf("wrong number of argumenets to jwt_cluster_setting jwks: %d", len(a.Vals))
 							}
-							jwtauthccl.JWTAuthJWKS.Override(context.Background(), sv, a.Vals[0])
+							jwtauthccl.JWTAuthJWKS.Override(ctx, sv, a.Vals[0])
 						case "claim":
 							if len(a.Vals) != 1 {
 								t.Fatalf("wrong number of argumenets to jwt_cluster_setting claim: %d", len(a.Vals))
 							}
-							jwtauthccl.JWTAuthClaim.Override(context.Background(), sv, a.Vals[0])
+							jwtauthccl.JWTAuthClaim.Override(ctx, sv, a.Vals[0])
 						case "ident_map":
 							if len(a.Vals) != 1 {
 								t.Fatalf("wrong number of argumenets to jwt_cluster_setting ident_map: %d", len(a.Vals))
@@ -239,7 +246,16 @@ func jwtRunTest(t *testing.T, insecure bool) {
 							if len(args) != 3 {
 								t.Fatalf("wrong number of comma separated argumenets to jwt_cluster_setting ident_map: %d", len(a.Vals))
 							}
-							pgwire.ConnIdentityMapConf.Override(context.Background(), sv, strings.Join(args, "    "))
+							pgwire.ConnIdentityMapConf.Override(ctx, sv, strings.Join(args, "    "))
+						case "jwks_auto_fetch.enabled":
+							if len(a.Vals) != 1 {
+								t.Fatalf("wrong number of argumenets to jwt_cluster_setting jwks_auto.fetch_enabled: %d", len(a.Vals))
+							}
+							v, err := strconv.ParseBool(a.Vals[0])
+							if err != nil {
+								t.Fatalf("unknown value for jwt_cluster_setting jwks_auto_fetch.enabled: %s", a.Vals[0])
+							}
+							jwtauthccl.JWKSAutoFetchEnabled.Override(ctx, sv, v)
 						default:
 							t.Fatalf("unknown jwt_cluster_setting: %s", a.Key)
 						}
@@ -261,7 +277,7 @@ func jwtRunTest(t *testing.T, insecure bool) {
 					}
 
 				case "sql":
-					_, err := conn.ExecContext(context.Background(), td.Input)
+					_, err := rootConn.Exec(ctx, td.Input)
 					return "ok", err
 
 				case "connect", "connect_unix":
@@ -269,21 +285,18 @@ func jwtRunTest(t *testing.T, insecure bool) {
 						// Unix sockets not supported; assume the test succeeded.
 						return td.Expected, nil
 					}
-
 					// Prepare a connection string using the server's default.
 					// What is the user requested by the test?
 					user := username.RootUser
 					if td.HasArg("user") {
 						td.ScanArgs(t, "user", &user)
 					}
-
 					// Allow connections for non-root, non-testuser to force the
 					// use of client certificates.
 					forceCerts := false
 					if td.HasArg("force_certs") {
 						forceCerts = true
 					}
-
 					// We want the certs to be present in the filesystem for this test.
 					// However, certs are only generated for users "root" and "testuser" specifically.
 					sqlURL, cleanupFn := s.PGUrl(
@@ -291,7 +304,6 @@ func jwtRunTest(t *testing.T, insecure bool) {
 						serverutils.ClientCerts(forceCerts || user == username.RootUser || user == username.TestUser),
 					)
 					defer cleanupFn()
-
 					var host, port string
 					if td.Cmd == "connect" {
 						host, port, err = net.SplitHostPort(s.AdvSQLAddr())
@@ -306,7 +318,6 @@ func jwtRunTest(t *testing.T, insecure bool) {
 					if err != nil {
 						t.Fatal(err)
 					}
-
 					// Here we make use of the fact that pq accepts connection
 					// strings using the alternate postgres configuration format,
 					// consisting of k=v pairs separated by spaces.
@@ -344,29 +355,76 @@ func jwtRunTest(t *testing.T, insecure bool) {
 						if len(a.Vals) > 0 {
 							val = a.Vals[0]
 						}
+						if len(val) == 0 {
+							// pgx.Connect requires empty values to be passed as a
+							// single-quoted empty string.
+							val = "''"
+						}
 						fmt.Fprintf(&dsnBuf, "%s%s=%s", sp, a.Key, val)
 						sp = " "
 					}
 					dsn := dsnBuf.String()
 
 					// Finally, connect and test the connection.
-					dbSQL, err := gosql.Open("postgres", dsn)
+					dbSQL, err := pgx.Connect(ctx, dsn)
 					if dbSQL != nil {
 						// Note: gosql.Open may return a valid db (with an open
 						// TCP connection) even if there is an error. We want to
 						// ensure this gets closed so that we catch the conn close
 						// message in the log.
-						defer dbSQL.Close()
+						defer func() { _ = dbSQL.Close(ctx) }()
 					}
 					if err != nil {
 						return "", err
 					}
-					row := dbSQL.QueryRow("SELECT current_catalog")
+					row := dbSQL.QueryRow(ctx, "SELECT current_catalog")
 					var dbName string
 					if err := row.Scan(&dbName); err != nil {
 						return "", err
 					}
 					return "ok " + dbName, nil
+
+				case "console_api_auth":
+					// Parse arguments.
+					authorizationHeader := ""
+					if td.HasArg("authorization") {
+						td.ScanArgs(t, "authorization", &authorizationHeader)
+					}
+					// Default the endpoint to `/_admin/v1/cluster` if not provided.
+					endpoint := apiconstants.AdminPrefix + "cluster"
+					if td.HasArg("path") {
+						td.ScanArgs(t, "path", &endpoint)
+					}
+					userName := ""
+					if td.HasArg("username") {
+						td.ScanArgs(t, "username", &userName)
+					}
+
+					// Get an unauthenticated client (without the session cookie) to test JWT auth.
+					client, err := s.GetUnauthenticatedHTTPClient()
+					require.NoError(t, err)
+
+					// Construct an HTTP request.
+					req, err := http.NewRequest(
+						"GET",
+						s.AdminURL().WithPath(endpoint).String(),
+						bytes.NewBuffer(nil),
+					)
+					require.NoError(t, err)
+					if authorizationHeader != "" {
+						req.Header.Set(authserver.AuthorizationHeader, authorizationHeader)
+					}
+					if userName != "" {
+						req.Header.Set(authserver.UsernameHeader, userName)
+					}
+
+					// Send the request and assert the response status code.
+					resp, err := client.Do(req)
+					if err != nil {
+						return "", err
+					}
+					defer resp.Body.Close()
+					return strconv.Itoa(resp.StatusCode), nil
 
 				default:
 					td.Fatalf(t, "unknown command: %s", td.Cmd)
@@ -387,20 +445,34 @@ var authLogFileRe = regexp.MustCompile(`"EventType":"client_`)
 func fmtErr(err error) string {
 	if err != nil {
 		errStr := ""
-		if pqErr := (*pq.Error)(nil); errors.As(err, &pqErr) {
-			errStr = pqErr.Message
-			if pgcode.MakeCode(string(pqErr.Code)) != pgcode.Uncategorized {
-				errStr += fmt.Sprintf(" (SQLSTATE %s)", pqErr.Code)
+		if pgxErr := (*pgconn.PgError)(nil); errors.As(err, &pgxErr) {
+			errStr = pgxErr.Message
+			if pgcode.MakeCode(pgxErr.Code) != pgcode.Uncategorized {
+				errStr += fmt.Sprintf(" (SQLSTATE %s)", pgxErr.Code)
 			}
-			if pqErr.Hint != "" {
-				hint := strings.Replace(pqErr.Hint, stdstrings.IssueReferral, "<STANDARD REFERRAL>", 1)
+			if pgxErr.Hint != "" {
+				hint := strings.Replace(pgxErr.Hint, stdstrings.IssueReferral, "<STANDARD REFERRAL>", 1)
+				if strings.Contains(hint, "Supported methods:") {
+					// Depending on whether the test is running on linux or not
+					// (or, more specifically, whether gss build tag is set),
+					// "gss" method might not be included, so we remove it here
+					// and not include into the expected output.
+					hint = strings.Replace(hint, "gss, ", "", 1)
+				}
 				errStr += "\nHINT: " + hint
 			}
-			if pqErr.Detail != "" {
-				errStr += "\nDETAIL: " + pqErr.Detail
+			if pgxErr.Detail != "" {
+				errStr += "\nDETAIL: " + pgxErr.Detail
 			}
 		} else {
 			errStr = err.Error()
+			// pgx uses an internal type (pgconn.connectError) for "TLS not enabled"
+			// errors here. We need to munge the error here to avoid including
+			// non-stable information like IP addresses in the output.
+			const tlsErr = "tls error (server refused TLS connection)"
+			if strings.HasSuffix(errStr, tlsErr) {
+				errStr = tlsErr
+			}
 		}
 		return "ERROR: " + errStr
 	}

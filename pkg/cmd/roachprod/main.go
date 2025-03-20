@@ -1,12 +1,7 @@
 // Copyright 2018 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package main
 
@@ -26,7 +21,7 @@ import (
 
 	"github.com/cockroachdb/cockroach/pkg/build"
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachprod/grafana"
-	"github.com/cockroachdb/cockroach/pkg/cmd/roachprod/upgrade"
+	"github.com/cockroachdb/cockroach/pkg/cmd/roachprod/update"
 	"github.com/cockroachdb/cockroach/pkg/roachprod"
 	"github.com/cockroachdb/cockroach/pkg/roachprod/config"
 	rperrors "github.com/cockroachdb/cockroach/pkg/roachprod/errors"
@@ -302,23 +297,27 @@ hosts file.
 			// We use a hacky workaround below to color the empty string.
 			// [1] https://github.com/golang/go/issues/12073
 
-			// Print header.
-			fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t\n",
-				"Cluster", "Clouds", "Size", "VM", "Arch",
-				color.HiWhiteString("$/hour"), color.HiWhiteString("$ Spent"),
-				color.HiWhiteString("Uptime"), color.HiWhiteString("TTL"),
-				color.HiWhiteString("$/TTL"))
-			// Print separator.
-			fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t\n",
-				"", "", "", "",
-				color.HiWhiteString(""), color.HiWhiteString(""),
-				color.HiWhiteString(""), color.HiWhiteString(""),
-				color.HiWhiteString(""))
+			if !listDetails {
+				// Print header only if we are not printing cluster details.
+				fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t\n",
+					"Cluster", "Clouds", "Size", "VM", "Arch",
+					color.HiWhiteString("$/hour"), color.HiWhiteString("$ Spent"),
+					color.HiWhiteString("Uptime"), color.HiWhiteString("TTL"),
+					color.HiWhiteString("$/TTL"))
+				// Print separator.
+				fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t\n",
+					"", "", "", "",
+					color.HiWhiteString(""), color.HiWhiteString(""),
+					color.HiWhiteString(""), color.HiWhiteString(""),
+					color.HiWhiteString(""))
+			}
 			totalCostPerHour := 0.0
 			for _, name := range names {
 				c := filteredCloud.Clusters[name]
 				if listDetails {
-					c.PrintDetails(config.Logger)
+					if err = c.PrintDetails(config.Logger); err != nil {
+						return err
+					}
 				} else {
 					// N.B. Tabwriter doesn't support per-column alignment. It looks odd to have the cluster names right-aligned,
 					// so we make it left-aligned.
@@ -520,7 +519,7 @@ SIGHUP), unless you also configure --max-wait.
 		if sig == 9 /* SIGKILL */ && !cmd.Flags().Changed("wait") {
 			wait = true
 		}
-		stopOpts := roachprod.StopOpts{Wait: wait, MaxWait: maxWait, ProcessTag: tag, Sig: sig}
+		stopOpts := roachprod.StopOpts{Wait: wait, GracePeriod: gracePeriod, ProcessTag: tag, Sig: sig}
 		return roachprod.Stop(context.Background(), config.Logger, args[0], stopOpts)
 	}),
 }
@@ -572,13 +571,16 @@ environment variables to the cockroach process.
 		startOpts.AdminUIPort = 0
 
 		startOpts.Target = install.StartSharedProcessForVirtualCluster
-		if externalProcessNodes != "" {
+		// If the user passed an `--external-nodes` option, we are
+		// starting a separate process virtual cluster.
+		if startOpts.VirtualClusterLocation != "" {
 			startOpts.Target = install.StartServiceForVirtualCluster
 		}
 
 		startOpts.VirtualClusterName = args[0]
-		return roachprod.StartServiceForVirtualCluster(context.Background(),
-			config.Logger, externalProcessNodes, storageCluster, startOpts, clusterSettingsOpts...)
+		return roachprod.StartServiceForVirtualCluster(
+			context.Background(), config.Logger, storageCluster, startOpts, clusterSettingsOpts...,
+		)
 	}),
 }
 
@@ -606,7 +608,7 @@ non-terminating signal (e.g. SIGHUP), unless you also configure --max-wait.
 		}
 		stopOpts := roachprod.StopOpts{
 			Wait:               wait,
-			MaxWait:            maxWait,
+			GracePeriod:        gracePeriod,
 			Sig:                sig,
 			VirtualClusterName: virtualClusterName,
 			SQLInstance:        sqlInstance,
@@ -962,6 +964,7 @@ var pgurlCmd = &cobra.Command{
 			Secure:             secure,
 			VirtualClusterName: virtualClusterName,
 			SQLInstance:        sqlInstance,
+			Auth:               install.AuthRootCert,
 		})
 		if err != nil {
 			return err
@@ -1387,13 +1390,25 @@ func validateAndConfigure(cmd *cobra.Command, args []string) {
 			_ = cmd.Flags().Set("arch", string(arch))
 		}
 	}
+
+	// Validate cloud providers, if set.
+	providersSet := make(map[string]struct{})
+	for _, p := range createVMOpts.VMProviders {
+		if _, ok := vm.Providers[p]; !ok {
+			printErrAndExit(fmt.Errorf("unknown cloud provider %q", p))
+		}
+		if _, ok := providersSet[p]; ok {
+			printErrAndExit(fmt.Errorf("duplicate cloud provider specified %q", p))
+		}
+		providersSet[p] = struct{}{}
+	}
 }
 
 var updateCmd = &cobra.Command{
 	Use:   "update",
-	Short: "check TeamCity for a new roachprod binary and update if available",
-	Long: "Will attempt to download the latest master branch roachprod binary from teamcity" +
-		" and swap the current roachprod with it. The current roachprod binary will be backed up" +
+	Short: "check gs://cockroach-nightly for a new roachprod binary; update if available",
+	Long: "Attempts to download the latest roachprod binary (on master) from gs://cockroach-nightly. " +
+		" Swaps the current binary with it. The current roachprod binary will be backed up" +
 		" and can be restored via `roachprod update --revert`.",
 	Run: wrap(func(cmd *cobra.Command, args []string) error {
 		currentBinary, err := os.Executable()
@@ -1401,10 +1416,10 @@ var updateCmd = &cobra.Command{
 			return err
 		}
 
-		if revertUpdate {
-			if upgrade.PromptYesNo("Revert to previous version? Note: this will replace the" +
+		if roachprodUpdateRevert {
+			if update.PromptYesNo("Revert to previous version? Note: this will replace the" +
 				" current roachprod binary with a previous roachprod.bak binary.") {
-				if err := upgrade.SwapBinary(currentBinary, currentBinary+".bak"); err != nil {
+				if err := update.SwapBinary(currentBinary, currentBinary+".bak"); err != nil {
 					return err
 				}
 				fmt.Println("roachprod successfully reverted, run `roachprod -v` to confirm.")
@@ -1413,12 +1428,12 @@ var updateCmd = &cobra.Command{
 		}
 
 		newBinary := currentBinary + ".new"
-		if err := upgrade.DownloadLatestRoadprod(newBinary); err != nil {
+		if err := update.DownloadLatestRoachprod(newBinary, roachprodUpdateBranch, roachprodUpdateOS, roachprodUpdateArch); err != nil {
 			return err
 		}
 
-		if upgrade.PromptYesNo("Continue with update? This will overwrite any existing roachprod.bak binary.") {
-			if err := upgrade.SwapBinary(currentBinary, newBinary); err != nil {
+		if update.PromptYesNo("Continue with update? This will overwrite any existing roachprod.bak binary.") {
+			if err := update.SwapBinary(currentBinary, newBinary); err != nil {
 				return errors.WithDetail(err, "unable to update binary")
 			}
 
@@ -1530,6 +1545,18 @@ Node specification
 	if err := roachprod.LoadClusters(); err != nil {
 		// We don't want to exit as we may be looking at the help message.
 		fmt.Printf("problem loading clusters: %s\n", err)
+	}
+
+	updateTime, sha, err := update.CheckLatest(roachprodUpdateBranch, roachprodUpdateOS, roachprodUpdateArch)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "WARN: failed to check if a more recent 'roachprod' binary exists: %s\n", err)
+	} else {
+		age, err := update.TimeSinceUpdate(updateTime)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "WARN: unable to check mtime of 'roachprod' binary: %s\n", err)
+		} else if age.Hours() >= 14*24 {
+			fmt.Fprintf(os.Stderr, "WARN: roachprod binary is >= 2 weeks old (%s); latest sha: %q\nWARN: Consider updating the binary: `roachprod update`\n\n", age, sha)
+		}
 	}
 
 	if err := rootCmd.Execute(); err != nil {

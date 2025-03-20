@@ -1,10 +1,7 @@
 // Copyright 2021 The Cockroach Authors.
 //
-// Licensed as a CockroachDB Enterprise file under the Cockroach Community
-// License (the "License"); you may not use this file except in compliance with
-// the License. You may obtain a copy of the License at
-//
-//     https://github.com/cockroachdb/cockroach/blob/master/licenses/CCL.txt
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package streamclient_test
 
@@ -21,14 +18,12 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/ccl/streamingccl/replicationtestutils"
 	"github.com/cockroachdb/cockroach/pkg/ccl/streamingccl/streamclient"
 	"github.com/cockroachdb/cockroach/pkg/jobs"
-	"github.com/cockroachdb/cockroach/pkg/jobs/jobspb"
 	"github.com/cockroachdb/cockroach/pkg/keys"
 	"github.com/cockroachdb/cockroach/pkg/repstream/streampb"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/desctestutils"
 	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/pgcode"
 	"github.com/cockroachdb/cockroach/pkg/testutils"
-	"github.com/cockroachdb/cockroach/pkg/testutils/jobutils"
 	"github.com/cockroachdb/cockroach/pkg/testutils/serverutils"
 	"github.com/cockroachdb/cockroach/pkg/util/cancelchecker"
 	"github.com/cockroachdb/cockroach/pkg/util/ctxgroup"
@@ -212,7 +207,9 @@ func TestPartitionedStreamReplicationClient(t *testing.T) {
 
 	h, cleanup := replicationtestutils.NewReplicationHelper(t,
 		base.TestServerArgs{
-			DefaultTestTenant: base.TestControlsTenantsExplicitly,
+			// Need to disable the test tenant until tenant-level restore is
+			// supported. Tracked with #76378.
+			DefaultTestTenant: base.TODOTestTenantDisabled,
 			Knobs: base.TestingKnobs{
 				JobsTestingKnobs: jobs.NewTestingKnobsWithShortIntervals(),
 			},
@@ -222,14 +219,14 @@ func TestPartitionedStreamReplicationClient(t *testing.T) {
 	defer cleanup()
 
 	testTenantName := roachpb.TenantName("test-tenant")
-	testTenantHistoryID := fmt.Sprintf("%s:%s", h.SysServer.RPCContext().StorageClusterID, serverutils.TestTenantID())
-
 	tenant, cleanupTenant := h.CreateTenant(t, serverutils.TestTenantID(), testTenantName)
 	defer cleanupTenant()
 
 	ctx := context.Background()
 	// Makes sure source cluster producer job does not time out within test timeout
-
+	h.SysSQL.Exec(t, `
+SET CLUSTER SETTING stream_replication.job_liveness.timeout = '500s';
+`)
 	tenant.SQL.Exec(t, `
 CREATE DATABASE d;
 CREATE TABLE d.t1(i int primary key, a string, b string);
@@ -249,36 +246,13 @@ INSERT INTO d.t2 VALUES (2);
 			[][]string{{string(status)}})
 	}
 
-	id, from, ts, err := client.PriorReplicationDetails(ctx, testTenantName)
-	require.NoError(t, err)
-
-	require.Equal(t, testTenantHistoryID, id)
-	require.Empty(t, from)
-	require.True(t, ts.IsEmpty())
-
-	// Allow root to directly edit the system.tenant table, which requires node.
-	h.SysSQL.Exec(t, "INSERT INTO system.users VALUES ('node', NULL, true, 3)")
-	h.SysSQL.Exec(t, "GRANT node TO root")
-
-	h.SysSQL.Exec(t, `UPDATE system.tenants SET info = crdb_internal.json_to_pb('cockroach.multitenant.ProtoInfo',
-		'{"previousSourceTenant": {
-			"clusterId": "00000000000000000000000000000001",
-			"cutoverTimestamp": {"wallTime": "1"},
-			"tenantId": {"id": "99"}
-		}}'::jsonb) WHERE id = $1`, serverutils.TestTenantID().ToUint64())
-
-	id, from, ts, err = client.PriorReplicationDetails(ctx, testTenantName)
-	require.NoError(t, err)
-	require.Equal(t, testTenantHistoryID, id)
-	require.Equal(t, "00000000-0000-0000-0000-000000000001:99", from)
-	require.True(t, ts.Equal(hlc.Timestamp{WallTime: 1}), ts)
-
 	rps, err := client.Create(ctx, testTenantName, streampb.ReplicationProducerRequest{})
 	require.NoError(t, err)
 	streamID := rps.StreamID
 	// We can create multiple replication streams for the same tenant.
 	_, err = client.Create(ctx, testTenantName, streampb.ReplicationProducerRequest{})
 	require.NoError(t, err)
+
 	expectStreamState(streamID, jobs.StatusRunning)
 
 	top, err := client.Plan(ctx, streamID)
@@ -369,15 +343,14 @@ INSERT INTO d.t2 VALUES (2);
 
 	// Makes producer job exit quickly.
 	h.SysSQL.Exec(t, `
-SET CLUSTER SETTING stream_replication.stream_liveness_track_frequency = '200ms'`)
+SET CLUSTER SETTING stream_replication.stream_liveness_track_frequency = '200ms';
+`)
 	rps, err = client.Create(ctx, testTenantName, streampb.ReplicationProducerRequest{})
 	require.NoError(t, err)
 	streamID = rps.StreamID
-	jobutils.WaitForJobToRun(t, h.SysSQL, jobspb.JobID(streamID))
 	require.NoError(t, client.Complete(ctx, streamID, true))
-	h.SysSQL.Exec(t, fmt.Sprintf(`ALTER TENANT '%s' SET REPLICATION EXPIRATION WINDOW ='100ms'`, testTenantName))
-	jobutils.WaitForJobToSucceed(t, h.SysSQL, jobspb.JobID(streamID))
-
+	h.SysSQL.CheckQueryResultsRetry(t,
+		fmt.Sprintf("SELECT status FROM [SHOW JOBS] WHERE job_id = %d", streamID), [][]string{{"succeeded"}})
 }
 
 // isQueryCanceledError returns true if the error appears to be a query cancelled error.

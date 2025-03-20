@@ -1,12 +1,7 @@
 // Copyright 2022 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package stats
 
@@ -105,14 +100,14 @@ var zeroQuantile = quantile{{p: 0, v: 0}, {p: 1, v: 0}}
 // If you are introducing a new histogram version, please check whether
 // makeQuantile and quantile.toHistogram need to change, and then increase the
 // hard-coded number here.
-const _ = 3 - uint(HistVersion)
+const _ = 2 - uint(histVersion)
 
 // canMakeQuantile returns true if a quantile function can be created for a
 // histogram of the given type. Note that by not supporting BYTES we rule out
 // creating quantile functions for histograms of inverted columns.
 // TODO(michae2): Add support for DECIMAL, TIME, TIMETZ, and INTERVAL.
 func canMakeQuantile(version HistogramVersion, colType *types.T) bool {
-	if version > 3 {
+	if version > 2 {
 		return false
 	}
 

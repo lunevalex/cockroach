@@ -24,12 +24,9 @@ go_test(
     name = "hba_test",
     size = "small",
     srcs = ["hba_test.go"],
+    args = ["-test.timeout=55s"],
     data = glob(["testdata/**"]),
     embed = [":hba"],
-    exec_properties = select({
-        "//build/toolchains:is_heavy": {"Pool": "heavy"},
-        "//conditions:default": {"Pool": "default"},
-    }),
     deps = [
         "//pkg/settings/rulebasedscanner",
         "//pkg/testutils/datapathutils",

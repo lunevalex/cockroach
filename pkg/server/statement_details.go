@@ -1,12 +1,7 @@
 // Copyright 2023 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package server
 
@@ -16,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/cockroachdb/cockroach/pkg/clusterversion"
 	"github.com/cockroachdb/cockroach/pkg/server/authserver"
 	"github.com/cockroachdb/cockroach/pkg/server/serverpb"
 	"github.com/cockroachdb/cockroach/pkg/server/srverrors"
@@ -65,22 +61,30 @@ func getStatementDetails(
 		return nil, srverrors.ServerError(ctx, err)
 	}
 
+	// Used for mixed cluster version, where we need to use the persisted view with _v22_2.
+	tableSuffix := ""
+	if !settings.Version.IsActive(ctx, clusterversion.V23_1AddSQLStatsComputedIndexes) {
+		tableSuffix = "_v22_2"
+	}
 	// Check if the activity tables have data within the selected period.
+	activityHasData := false
 	reqStartTime := getTimeFromSeconds(req.Start)
-	activityHasData, err := activityTablesHaveFullData(
-		ctx,
-		ie,
-		settings,
-		testingKnobs,
-		reqStartTime,
-		1,
-		serverpb.StatsSortOptions_SERVICE_LAT, //Order is not used on this endpoint, so any value can be passed here.
-	)
-	if err != nil {
-		log.Errorf(ctx, "Error on getStatementDetails: %s", err)
+	if settings.Version.IsActive(ctx, clusterversion.V23_1AddSystemActivityTables) {
+		activityHasData, err = activityTablesHaveFullData(
+			ctx,
+			ie,
+			settings,
+			testingKnobs,
+			reqStartTime,
+			1,
+			serverpb.StatsSortOptions_SERVICE_LAT, //Order is not used on this endpoint, so any value can be passed here.
+		)
+		if err != nil {
+			log.Errorf(ctx, "Error on getStatementDetails: %s", err)
+		}
 	}
 
-	statementTotal, err := getTotalStatementDetails(ctx, ie, whereClause, args, activityHasData)
+	statementTotal, err := getTotalStatementDetails(ctx, ie, whereClause, args, activityHasData, tableSuffix)
 	if err != nil {
 		return nil, srverrors.ServerError(ctx, err)
 	}
@@ -90,7 +94,8 @@ func getStatementDetails(
 		whereClause,
 		args,
 		limit,
-		activityHasData)
+		activityHasData,
+		tableSuffix)
 	if err != nil {
 		return nil, srverrors.ServerError(ctx, err)
 	}
@@ -100,7 +105,8 @@ func getStatementDetails(
 		whereClause,
 		args,
 		limit,
-		activityHasData)
+		activityHasData,
+		tableSuffix)
 	if err != nil {
 		return nil, srverrors.ServerError(ctx, err)
 	}
@@ -205,6 +211,7 @@ func getTotalStatementDetails(
 	whereClause string,
 	args []interface{},
 	activityTableHasAllData bool,
+	tableSuffix string,
 ) (serverpb.StatementDetailsResponse_CollectedStatementSummary, error) {
 	const expectedNumDatums = 4
 	var statement serverpb.StatementDetailsResponse_CollectedStatementSummary
@@ -242,7 +249,7 @@ LIMIT 1`, whereClause), args...)
 			sessiondata.NodeUserSessionDataOverride,
 			fmt.Sprintf(
 				queryFormat,
-				CrdbInternalStmtStatsPersisted,
+				CrdbInternalStmtStatsPersisted+tableSuffix,
 				whereClause), args...)
 		if err != nil {
 			return statement, srverrors.ServerError(ctx, err)
@@ -310,6 +317,7 @@ func getStatementDetailsPerAggregatedTs(
 	args []interface{},
 	limit int64,
 	activityTableHasAllData bool,
+	tableSuffix string,
 ) ([]serverpb.StatementDetailsResponse_CollectedStatementGroupedByAggregatedTs, error) {
 	const expectedNumDatums = 3
 	const queryFormat = `
@@ -355,7 +363,7 @@ LIMIT $%d`, whereClause, len(args)),
 		}
 		query = fmt.Sprintf(
 			queryFormat,
-			CrdbInternalStmtStatsPersisted,
+			CrdbInternalStmtStatsPersisted+tableSuffix,
 			whereClause,
 			len(args))
 
@@ -497,6 +505,7 @@ func getStatementDetailsPerPlanHash(
 	args []interface{},
 	limit int64,
 	activityTableHasAllData bool,
+	tableSuffix string,
 ) ([]serverpb.StatementDetailsResponse_CollectedStatementGroupedByPlanHash, error) {
 	expectedNumDatums := 5
 	const queryFormat = `
@@ -552,7 +561,7 @@ LIMIT $%d`, whereClause, len(args)), args...)
 		}
 		query = fmt.Sprintf(
 			queryFormat,
-			"crdb_internal.statement_statistics_persisted",
+			"crdb_internal.statement_statistics_persisted"+tableSuffix,
 			whereClause,
 			len(args))
 		it, iterErr = ie.QueryIteratorEx(ctx, "console-combined-stmts-persisted-details-by-plan-hash", nil,

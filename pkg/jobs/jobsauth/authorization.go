@@ -1,12 +1,7 @@
 // Copyright 2022 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package jobsauth
 
@@ -60,9 +55,6 @@ type AuthorizationAccessor interface {
 
 	// HasPrivilege mirrors sql.AuthorizationAccessor.
 	HasPrivilege(ctx context.Context, privilegeObject privilege.Object, privilege privilege.Kind, user username.SQLUsername) (bool, error)
-
-	// UserHasRoleOption mirrors sql.AuthorizationAccessor.
-	UserHasRoleOption(ctx context.Context, user username.SQLUsername, roleOption roleoption.Option) (bool, error)
 
 	// HasRoleOption mirrors sql.AuthorizationAccessor.
 	HasRoleOption(ctx context.Context, roleOption roleoption.Option) (bool, error)

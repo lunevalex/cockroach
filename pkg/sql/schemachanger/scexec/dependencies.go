@@ -1,12 +1,7 @@
 // Copyright 2021 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package scexec
 
@@ -138,6 +133,10 @@ type TransactionalJobRegistry interface {
 	//
 	// See (*jobs.Registry).CheckPausepoint
 	CheckPausepoint(name string) error
+
+	// UseLegacyGCJob indicate whether the legacy GC job should be used.
+	// This only matters for setting the initial RunningStatus.
+	UseLegacyGCJob(ctx context.Context) bool
 
 	// TODO(ajwerner): Deal with setting the running status to indicate
 	// validating, backfilling, or generally performing metadata changes
@@ -344,7 +343,7 @@ type DescriptorMetadataUpdater interface {
 	DeleteDatabaseRoleSettings(ctx context.Context, dbID descpb.ID) error
 
 	// DeleteSchedule deletes the given schedule.
-	DeleteSchedule(ctx context.Context, id jobspb.ScheduleID) error
+	DeleteSchedule(ctx context.Context, id int64) error
 
 	// UpdateTTLScheduleLabel updates the schedule_name for the TTL Scheduled Job
 	// of the given table.

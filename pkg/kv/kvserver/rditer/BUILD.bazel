@@ -30,12 +30,9 @@ go_test(
         "replica_data_iter_test.go",
         "select_test.go",
     ],
+    args = ["-test.timeout=55s"],
     data = glob(["testdata/**"]),
     embed = [":rditer"],
-    exec_properties = select({
-        "//build/toolchains:is_heavy": {"Pool": "heavy"},
-        "//conditions:default": {"Pool": "default"},
-    }),
     deps = [
         "//pkg/keys",
         "//pkg/kv/kvserver/concurrency/lock",

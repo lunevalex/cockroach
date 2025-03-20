@@ -1,12 +1,7 @@
 // Copyright 2023 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package main
 
@@ -16,11 +11,9 @@ import (
 	"crypto/sha256"
 	"fmt"
 	"io"
-	"net/http"
 	"os"
 	"sort"
 	"strings"
-	"text/template"
 	"time"
 
 	"github.com/cockroachdb/cockroach/pkg/build"
@@ -98,12 +91,8 @@ func updateReleasesFiles(_ *cobra.Command, _ []string) (retErr error) {
 	if predecessor == "" {
 		return fmt.Errorf("could not determine predecessor version for version %+v", currentVersion)
 	}
-	prePredecessor := result[result[result[currentSeries].Predecessor].Predecessor].Latest
-	if prePredecessor == "" {
-		return fmt.Errorf("could not determine predecessor's predecessor version for version %+v", currentVersion)
-	}
 	fmt.Printf("writing data to %s\n", logictestReposFile)
-	if err := generateRepositoriesFile(prePredecessor, predecessor); err != nil {
+	if err := generateRepositoriesFile(predecessor); err != nil {
 		return err
 	}
 	fmt.Printf("done\n")
@@ -122,12 +111,6 @@ func processReleaseData(data []Release) map[string]release.Series {
 
 		// Filter out everything that is older than `minVersion`
 		if !v.AtLeast(minVersion) {
-			continue
-		}
-
-		// Skip cloud-only releases, since they cannot be downloaded from
-		// binaries.cockroachdb.com.
-		if r.CloudOnly {
 			continue
 		}
 
@@ -326,102 +309,82 @@ func releaseName(name string) string {
 	return strings.TrimPrefix(name, "v")
 }
 
-func generateRepositoriesFile(versions ...string) error {
+func generateRepositoriesFile(version string) error {
 	client := httputil.NewClientWithTimeout(15 * time.Second)
-	cfgKeys := map[string]string{
-		"CONFIG_LINUX_AMD64":  "linux-amd64",
-		"CONFIG_LINUX_ARM64":  "linux-arm64",
-		"CONFIG_DARWIN_AMD64": "darwin-10.9-amd64",
-		"CONFIG_DARWIN_ARM64": "darwin-11.0-arm64",
+	cfgs := []string{
+		"linux-amd64",
+		"linux-arm64",
+		"darwin-10.9-amd64",
+		"darwin-11.0-arm64",
 	}
-	versionToCfgToHash := make(map[string]map[string]string)
-	for _, v := range versions {
-		versionToCfgToHash[v] = make(map[string]string)
-		for cfgKey, cfg := range cfgKeys {
-			url := fmt.Sprintf("https://binaries.cockroachdb.com/cockroach-v%s.%s.tgz", v, cfg)
-			resp, err := client.Get(context.Background(), url)
-			if err != nil {
-				return fmt.Errorf("could not download cockroach release: %w", err)
-			}
-			if resp.StatusCode != http.StatusOK {
-				return fmt.Errorf("unexpected status code %d when downloading %s", resp.StatusCode, url)
-			}
-			var blob bytes.Buffer
-			if _, err := io.Copy(&blob, resp.Body); err != nil {
-				return fmt.Errorf("error reading response body: %w", err)
-			}
-			sum := sha256.Sum256(blob.Bytes())
-			versionToCfgToHash[v][cfgKey] = fmt.Sprintf("%x", sum)
-			if err := resp.Body.Close(); err != nil {
-				return err
-			}
+	cfgToHash := make(map[string]string)
+	for _, cfg := range cfgs {
+		url := fmt.Sprintf("https://binaries.cockroachdb.com/cockroach-v%s.%s.tgz", version, cfg)
+		resp, err := client.Get(context.Background(), url)
+		if err != nil {
+			return fmt.Errorf("could not download cockroach release: %w", err)
+		}
+		var blob bytes.Buffer
+		if _, err := io.Copy(&blob, resp.Body); err != nil {
+			return fmt.Errorf("error reading response body: %w", err)
+		}
+		sum := sha256.Sum256(blob.Bytes())
+		cfgToHash[cfg] = fmt.Sprintf("%x", sum)
+		if err := resp.Body.Close(); err != nil {
+			return err
 		}
 	}
 
-	quotedVersions := make([]string, len(versions))
-	for i, v := range versions {
-		quotedVersions[i] = fmt.Sprintf("%q", v)
-	}
 	return writeFileIntoRepo(func(f *os.File) error {
 		if err := writeHeader(f); err != nil {
 			return err
 		}
 
-		const fileTemplate = `load("@bazel_tools//tools/build_defs/repo:http.bzl", "http_archive")
+		fileContent := fmt.Sprintf(`load("@bazel_tools//tools/build_defs/repo:http.bzl", "http_archive")
 
+_PREDECESSOR_VERSION = "%s"
 CONFIG_LINUX_AMD64 = "linux-amd64"
 CONFIG_LINUX_ARM64 = "linux-arm64"
 CONFIG_DARWIN_AMD64 = "darwin-10.9-amd64"
 CONFIG_DARWIN_ARM64 = "darwin-11.0-arm64"
-
 _CONFIGS = [
-{{- range $version, $configToHash := . }}
-    ("{{$version}}", [
-{{- range $config, $hash := $configToHash }}
-        ({{$config}}, "{{$hash}}"),
-{{- end }}
-    ]),
-{{- end }}
+    (CONFIG_LINUX_AMD64, "%s"),
+    (CONFIG_LINUX_ARM64, "%s"),
+    (CONFIG_DARWIN_AMD64, "%s"),
+    (CONFIG_DARWIN_ARM64, "%s"),
 ]
 
 def _munge_name(s):
     return s.replace("-", "_").replace(".", "_")
 
-def _repo_name(version, config_name):
+def _repo_name(config_name):
     return "cockroach_binary_v{}_{}".format(
-        _munge_name(version),
+        _munge_name(_PREDECESSOR_VERSION),
         _munge_name(config_name))
 
-def _file_name(version, config_name):
+def _file_name(config_name):
     return "cockroach-v{}.{}/cockroach".format(
-        version, config_name)
+        _PREDECESSOR_VERSION, config_name)
 
 def target(config_name):
-    targets = []
-    for versionAndConfigs in _CONFIGS:
-        version, _ = versionAndConfigs
-        targets.append("@{}//:{}".format(_repo_name(version, config_name),
-                                         _file_name(version, config_name)))
-    return targets
+    return "@{}//:{}".format(_repo_name(config_name),
+                             _file_name(config_name))
 
 def cockroach_binaries_for_testing():
-    for versionAndConfigs in _CONFIGS:
-        version, configs = versionAndConfigs
-        for config in configs:
-            config_name, shasum = config
-            file_name = _file_name(version, config_name)
-            http_archive(
-                name = _repo_name(version, config_name),
-                build_file_content = """exports_files(["{}"])""".format(file_name),
-                sha256 = shasum,
-                urls = [
-                    "https://binaries.cockroachdb.com/{}".format(
-                        file_name.removesuffix("/cockroach")) + ".tgz",
-                ],
-            )
-`
-		tmpl := template.Must(template.New("repos").Parse(fileTemplate))
-		if err := tmpl.Execute(f, versionToCfgToHash); err != nil {
+    for config in _CONFIGS:
+        config_name, shasum = config
+        file_name = _file_name(config_name)
+        http_archive(
+            name = _repo_name(config_name),
+            build_file_content = """exports_files(["{}"])""".format(file_name),
+            sha256 = shasum,
+            urls = [
+                "https://binaries.cockroachdb.com/{}".format(
+                    file_name.removesuffix("/cockroach")) + ".tgz",
+            ],
+        )
+`, version, cfgToHash["linux-amd64"], cfgToHash["linux-arm64"], cfgToHash["darwin-10.9-amd64"], cfgToHash["darwin-11.0-arm64"])
+		if _, err := f.WriteString(fileContent); err != nil {
 			return err
 		}
 		return nil

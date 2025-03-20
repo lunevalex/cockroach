@@ -1,19 +1,13 @@
 // Copyright 2016 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package issues
 
 import (
 	"bytes"
 	"context"
-	"encoding/base64"
 	"fmt"
 	"log"
 	"net/url"
@@ -154,10 +148,8 @@ type TeamCityOptions struct {
 
 // EngFlowOptions configures EngFlow-specific Options.
 type EngFlowOptions struct {
-	ServerURL           string
-	InvocationID        string
-	Label               string
-	Shard, Run, Attempt int
+	ServerURL    string
+	InvocationID string
 }
 
 // Options configures the issue poster.
@@ -337,7 +329,34 @@ func buildIssueQueries(
 	return existingIssueQuery, relatedIssuesQuery
 }
 
-func (p *poster) post(origCtx context.Context, formatter IssueFormatter, req PostRequest) error {
+type TestFailureType string
+
+const (
+	TestFailureNewIssue     = TestFailureType("new_issue")
+	TestFailureIssueComment = TestFailureType("comment")
+)
+
+// TestFailureIssue encapsulates data about an issue created or
+// changed in order to report a test failure.
+type TestFailureIssue struct {
+	Type TestFailureType
+	ID   int
+}
+
+func (tfi TestFailureIssue) String() string {
+	switch tfi.Type {
+	case TestFailureNewIssue:
+		return fmt.Sprintf("created new GitHub issue #%d", tfi.ID)
+	case TestFailureIssueComment:
+		return fmt.Sprintf("commented on existing GitHub issue #%d", tfi.ID)
+	default:
+		return fmt.Sprintf("[unrecognized test failure type %q, ID=%d]", tfi.Type, tfi.ID)
+	}
+}
+
+func (p *poster) post(
+	origCtx context.Context, formatter IssueFormatter, req PostRequest,
+) (*TestFailureIssue, error) {
 	ctx := &postCtx{Context: origCtx}
 	data := p.templateData(
 		ctx,
@@ -402,6 +421,7 @@ func (p *poster) post(origCtx context.Context, formatter IssueFormatter, req Pos
 	createLabels := []string{RobotLabel}
 	createLabels = append(createLabels, req.labels()...)
 	createLabels = append(createLabels, releaseLabel(p.Branch))
+	var result TestFailureIssue
 	if foundIssue == nil {
 		issueRequest := github.IssueRequest{
 			Title:     &title,
@@ -411,11 +431,13 @@ func (p *poster) post(origCtx context.Context, formatter IssueFormatter, req Pos
 		}
 		issue, _, err := p.createIssue(ctx, p.Org, p.Repo, &issueRequest)
 		if err != nil {
-			return errors.Wrapf(err, "failed to create GitHub issue %s",
+			return nil, errors.Wrapf(err, "failed to create GitHub issue %s",
 				github.Stringify(issueRequest))
 		}
 
-		p.l.Printf("created GitHub issue #%d", *issue.Number)
+		result.Type = TestFailureNewIssue
+		result.ID = *issue.Number
+		p.l.Printf("%s", result)
 		if req.ProjectColumnID != 0 {
 			_, _, err := p.createProjectCard(ctx, int64(req.ProjectColumnID), &github.ProjectCardOptions{
 				ContentID:   *issue.ID,
@@ -433,14 +455,16 @@ func (p *poster) post(origCtx context.Context, formatter IssueFormatter, req Pos
 		comment := github.IssueComment{Body: github.String(body)}
 		if _, _, err := p.createComment(
 			ctx, p.Org, p.Repo, *foundIssue, &comment); err != nil {
-			return errors.Wrapf(err, "failed to update issue #%d with %s",
+			return nil, errors.Wrapf(err, "failed to update issue #%d with %s",
 				*foundIssue, github.Stringify(comment))
 		} else {
-			p.l.Printf("created comment on existing GitHub issue (#%d)", *foundIssue)
+			result.Type = TestFailureIssueComment
+			result.ID = *foundIssue
+			p.l.Printf("%s", result)
 		}
 	}
 
-	return nil
+	return &result, nil
 }
 
 func (p *poster) teamcityURL(tab, fragment string) *url.URL {
@@ -467,15 +491,11 @@ func (p *poster) buildURL() *url.URL {
 		u := p.teamcityURL("log", "")
 		return u
 	} else if p.Options.EngFlowOptions != nil {
-		opts := p.Options.EngFlowOptions
-		u, err := url.Parse(opts.ServerURL)
+		u, err := url.Parse(p.Options.EngFlowOptions.ServerURL)
 		if err != nil {
 			log.Fatal(err)
 		}
-		base64Target := base64.StdEncoding.EncodeToString([]byte(opts.Label))
-		u.Path = fmt.Sprintf("invocations/default/%s", opts.InvocationID)
-		u.RawQuery = fmt.Sprintf("testReportRun=%d&testReportShard=%d&testReportAttempt=%d", opts.Run, opts.Shard, opts.Attempt)
-		u.Fragment = fmt.Sprintf("targets-%s", base64Target)
+		u.Path = fmt.Sprintf("invocation/%s", p.Options.EngFlowOptions.InvocationID)
 		return u
 	}
 	return nil
@@ -559,9 +579,9 @@ type Logger interface {
 // will be returned.
 func Post(
 	ctx context.Context, l Logger, formatter IssueFormatter, req PostRequest, opts *Options,
-) error {
+) (*TestFailureIssue, error) {
 	if !opts.CanPost() {
-		return errors.Newf("GITHUB_API_TOKEN env variable is not set; cannot post issue")
+		return nil, errors.Newf("GITHUB_API_TOKEN env variable is not set; cannot post issue")
 	}
 
 	client := github.NewClient(oauth2.NewClient(ctx, oauth2.StaticTokenSource(

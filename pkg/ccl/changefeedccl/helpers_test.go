@@ -1,10 +1,7 @@
 // Copyright 2018 The Cockroach Authors.
 //
-// Licensed as a CockroachDB Enterprise file under the Cockroach Community
-// License (the "License"); you may not use this file except in compliance with
-// the License. You may obtain a copy of the License at
-//
-//     https://github.com/cockroachdb/cockroach/blob/master/licenses/CCL.txt
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package changefeedccl
 
@@ -49,9 +46,10 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/cockroach/pkg/util/log/eventpb"
-	"github.com/cockroachdb/cockroach/pkg/util/retry"
 	"github.com/cockroachdb/cockroach/pkg/util/timeutil"
+	"github.com/cockroachdb/cockroach/pkg/util/tracing"
 	"github.com/cockroachdb/errors"
+	"github.com/cockroachdb/redact"
 	"github.com/lib/pq"
 	"github.com/stretchr/testify/require"
 )
@@ -261,7 +259,7 @@ func withTimeout(
 		jobID = jobFeed.JobID()
 	}
 	return timeutil.RunWithTimeout(context.Background(),
-		fmt.Sprintf("withTimeout-%d", jobID), timeout,
+		redact.Sprintf("withTimeout-%d", jobID), timeout,
 		func(ctx context.Context) error {
 			defer stopFeedWhenDone(ctx, f)()
 			return fn(ctx)
@@ -412,6 +410,10 @@ func startTestFullServer(
 		Settings:          options.settings,
 	}
 
+	if options.debugUseAfterFinish {
+		args.Tracer = tracing.NewTracerWithOpt(context.Background(), tracing.WithUseAfterFinishOpt(true, true))
+	}
+
 	if options.argsFn != nil {
 		options.argsFn(&args)
 	}
@@ -522,6 +524,10 @@ func startTestTenant(
 		Settings:      options.settings,
 	}
 
+	if options.debugUseAfterFinish {
+		tenantArgs.Tracer = tracing.NewTracerWithOpt(context.Background(), tracing.WithUseAfterFinishOpt(true, true))
+	}
+
 	tenantServer, tenantDB := serverutils.StartTenant(t, systemServer, tenantArgs)
 	// Re-run setup on the tenant as well
 	tenantRunner := sqlutils.MakeSQLRunner(tenantDB)
@@ -549,7 +555,10 @@ type feedTestOptions struct {
 	externalIODir                string
 	allowedSinkTypes             []string
 	disabledSinkTypes            []string
+	disableSyntheticTimestamps   bool
 	settings                     *cluster.Settings
+	additionalSystemPrivs        []string
+	debugUseAfterFinish          bool
 }
 
 type feedTestOption func(opts *feedTestOptions)
@@ -569,6 +578,12 @@ var feedTestNoExternalConnection = func(opts *feedTestOptions) { opts.forceNoExt
 // has privileges to create changefeeds on tables in the default database `d` only.
 var feedTestUseRootUserConnection = func(opts *feedTestOptions) { opts.forceRootUserConnection = true }
 
+// feedTestNoForcedSyntheticTimestamps is a feedTestOption that will prevent
+// the test from randomly forcing timestamps to be synthetic and offset five seconds into the future from
+// what they would otherwise be. It doesn't prevent synthetic timestamps but they're otherwise unlikely to
+// occur in tests.
+var feedTestNoForcedSyntheticTimestamps = func(opts *feedTestOptions) { opts.disableSyntheticTimestamps = true }
+
 var feedTestForceSink = func(sinkType string) feedTestOption {
 	return feedTestRestrictSinks(sinkType)
 }
@@ -583,6 +598,13 @@ var feedTestEnterpriseSinks = func(opts *feedTestOptions) {
 
 var feedTestOmitSinks = func(sinkTypes ...string) feedTestOption {
 	return func(opts *feedTestOptions) { opts.disabledSinkTypes = append(opts.disabledSinkTypes, sinkTypes...) }
+}
+
+//lint:ignore U1000 unused
+var feedTestAdditionalSystemPrivs = func(privs ...string) feedTestOption {
+	return func(opts *feedTestOptions) {
+		opts.additionalSystemPrivs = append(opts.additionalSystemPrivs, privs...)
+	}
 }
 
 func (opts feedTestOptions) omitSinks(sinks ...string) feedTestOptions {
@@ -609,6 +631,10 @@ func withKnobsFn(fn updateKnobsFn) feedTestOption {
 // Silence the linter.
 var _ = withKnobsFn(nil /* fn */)
 
+var withDebugUseAfterFinish feedTestOption = func(opts *feedTestOptions) {
+	opts.debugUseAfterFinish = true
+}
+
 func newTestOptions() feedTestOptions {
 	// percentTenant is the percentage of tests that will be run against
 	// a SQL-node in a multi-tenant server. 1 for all tests to be run on a
@@ -623,6 +649,30 @@ func makeOptions(opts ...feedTestOption) feedTestOptions {
 	options := newTestOptions()
 	for _, o := range opts {
 		o(&options)
+	}
+	if !options.disableSyntheticTimestamps && rand.Intn(2) == 0 {
+		// Offset all timestamps a random (but consistent per test) amount into the
+		// future to ensure we can handle that. Always chooses an integer number of
+		// seconds for easier debugging and so that 0 is a possibility.
+		offset := int64(rand.Intn(6)) * time.Second.Nanoseconds()
+		// TODO(#105053): Remove this line
+		_ = offset
+		oldKnobsFn := options.knobsFn
+		options.knobsFn = func(knobs *base.TestingKnobs) {
+			if oldKnobsFn != nil {
+				oldKnobsFn(knobs)
+			}
+			knobs.DistSQL.(*execinfra.TestingKnobs).
+				Changefeed.(*TestingKnobs).FeedKnobs.ModifyTimestamps = func(t *hlc.Timestamp) {
+				// NOTE(ricky): This line of code should be uncommented.
+				// It used to be just t.Add(offset, 0), but t.Add() has no side
+				// effects so this was a no-op. *t = t.Add(offset, 0) is correct,
+				// but causes test failures.
+				// TODO(#105053): Uncomment and fix test failures
+				//*t = t.Add(offset, 0)
+				t.Synthetic = true
+			}
+		}
 	}
 	return options
 }
@@ -660,50 +710,6 @@ func expectNotice(
 	sqlDB.Exec(t, sql)
 
 	require.Equal(t, expected, actual)
-}
-
-// These retry opts are configured so that we don't perform a read transaction
-// on the job record too often. It's important to avoid contending
-// with the write txn which updates the job progress. If we read too often, we
-// may continously invalidate the writes, preventing checkpoints from
-// being written.
-var jobRecordPollFrequency = 3 * time.Second
-
-var jobRecordRetryOpts = retry.Options{
-	InitialBackoff: jobRecordPollFrequency,
-	Multiplier:     1,
-	MaxBackoff:     5 * time.Second,
-	MaxRetries:     30,
-}
-
-// waitForCheckpoint waits for the specified job to have a non-empty checkpoint
-func waitForCheckpoint(t *testing.T, jf cdctest.EnterpriseTestFeed, jr *jobs.Registry) {
-	for r := retry.Start(jobRecordRetryOpts); ; {
-		t.Log("waiting for checkpoint")
-		progress := loadProgress(t, jf, jr)
-		if p := progress.GetChangefeed(); p != nil && p.Checkpoint != nil && len(p.Checkpoint.Spans) > 0 {
-			t.Logf("read checkpoint %v", p.Checkpoint)
-			return
-		}
-		if !r.Next() {
-			t.Fatal("could not read checkpoint")
-		}
-	}
-}
-
-// waitForHighwater waits for the specified job to have a non-nil highwater.
-func waitForHighwater(t *testing.T, jf cdctest.EnterpriseTestFeed, jr *jobs.Registry) {
-	for r := retry.Start(jobRecordRetryOpts); ; {
-		t.Log("waiting for highwater")
-		progress := loadProgress(t, jf, jr)
-		if hw := progress.GetHighWater(); hw != nil && !hw.IsEmpty() {
-			t.Logf("read highwater %s", hw)
-			return
-		}
-		if !r.Next() {
-			t.Fatal("could not read highwater")
-		}
-	}
 }
 
 func loadProgress(
@@ -964,7 +970,7 @@ func makeFeedFactoryWithOptions(
 	}
 	switch sinkType {
 	case "kafka":
-		f := makeKafkaFeedFactory(srvOrCluster, db)
+		f := makeKafkaFeedFactory(t, srvOrCluster, db)
 		userDB, cleanup := getInitialDBForEnterpriseFactory(t, s, db, options)
 		f.(*kafkaFeedFactory).configureUserDB(userDB)
 		return f, func() { cleanup() }
@@ -1010,9 +1016,9 @@ func makeFeedFactoryWithOptions(
 				User:   url.UserPassword(u, pass[0]),
 				Host:   s.SQLAddr(), Path: "d"}, func() {}
 		}
-		sink, cleanup := getInitialSinkForSinklessFactory(t, db, pgURLForUserSinkless)
+		sink, cleanup := getInitialSinkForSinklessFactory(t, db, pgURLForUserSinkless, options)
 		root, cleanupRoot := pgURLForUserSinkless(username.RootUser)
-		f := makeSinklessFeedFactory(s, sink, root, pgURLForUserSinkless)
+		f := makeSinklessFeedFactory(t, s, sink, root, pgURLForUserSinkless)
 		return f, func() {
 			cleanup()
 			cleanupRoot()
@@ -1035,6 +1041,7 @@ func getInitialDBForEnterpriseFactory(
 		user := "EnterpriseFeedUser"
 		password := "hunter2"
 		createUserWithDefaultPrivilege(t, rootDB, user, password, "CHANGEFEED", "SELECT")
+		grantUserAdditionalSystemPrivileges(t, rootDB, user, opts.additionalSystemPrivs)
 		pgURL := url.URL{
 			Scheme: "postgres",
 			User:   url.UserPassword(user, password),
@@ -1051,16 +1058,17 @@ func getInitialDBForEnterpriseFactory(
 }
 
 func getInitialSinkForSinklessFactory(
-	t *testing.T, db *gosql.DB, sinkForUser sinkForUser,
+	t *testing.T, db *gosql.DB, sinkForUser sinkForUser, opts feedTestOptions,
 ) (url.URL, func()) {
 	// Instead of creating sinkless changefeeds on the root connection, we may choose to create
 	// them on a test user connection. This user should have the minimum privileges to create a changefeed,
 	// which means they default to having the SELECT privilege on all tables.
 	const percentNonRoot = 1
-	if rand.Float32() < percentNonRoot {
+	if !opts.forceRootUserConnection && rand.Float32() < percentNonRoot {
 		user := "SinklessFeedUser"
 		password := "hunter2"
 		createUserWithDefaultPrivilege(t, db, user, password, "SELECT")
+		grantUserAdditionalSystemPrivileges(t, db, user, opts.additionalSystemPrivs)
 		return sinkForUser(user, password)
 	}
 	return sinkForUser(username.RootUser)
@@ -1086,6 +1094,15 @@ func createUserWithDefaultPrivilege(
 		if err != nil {
 			t.Fatal(err)
 		}
+	}
+}
+
+func grantUserAdditionalSystemPrivileges(
+	t *testing.T, rootDB *gosql.DB, user string, privs []string,
+) {
+	for _, priv := range privs {
+		_, err := rootDB.Exec(fmt.Sprintf(`GRANT SYSTEM %s TO %s`, priv, user))
+		require.NoError(t, err)
 	}
 }
 
@@ -1248,9 +1265,7 @@ func verifyLogsWithEmittedBytesAndMessages(
 			emittedBytes += msg.EmittedBytes
 			emittedMessages += msg.EmittedMessages
 			require.Equal(t, interval, msg.LoggingInterval)
-			if closing {
-				require.Equal(t, true, msg.Closing)
-			}
+			require.Equal(t, closing, msg.Closing)
 		}
 		if emittedBytes == 0 || emittedMessages == 0 {
 			return errors.Newf(

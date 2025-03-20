@@ -32,11 +32,8 @@ go_test(
         "hlc_test.go",
         "timestamp_test.go",
     ],
+    args = ["-test.timeout=55s"],
     embed = [":hlc"],
-    exec_properties = select({
-        "//build/toolchains:is_heavy": {"Pool": "heavy"},
-        "//conditions:default": {"Pool": "default"},
-    }),
     deps = [
         "//pkg/cli/exit",
         "//pkg/testutils/zerofields",

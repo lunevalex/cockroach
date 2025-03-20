@@ -1,12 +1,7 @@
 // Copyright 2017 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package server_test
 
@@ -166,7 +161,7 @@ func TestClusterVersionPersistedOnJoin(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
 
-	var newVersion = clusterversion.Latest.Version()
+	var newVersion = clusterversion.TestingBinaryVersion
 	var oldVersion = prev(newVersion)
 
 	// Starts 3 nodes that have cluster versions set to be oldVersion and
@@ -212,7 +207,7 @@ func TestClusterVersionUpgrade(t *testing.T) {
 
 	ctx := context.Background()
 
-	var newVersion = clusterversion.Latest.Version()
+	var newVersion = clusterversion.TestingBinaryVersion
 	var oldVersion = prev(newVersion)
 
 	disableUpgradeCh := make(chan struct{})
@@ -350,7 +345,7 @@ func TestAllVersionsAgree(t *testing.T) {
 		TestCluster: tcRaw,
 	}
 
-	exp := clusterversion.Latest.String()
+	exp := clusterversion.TestingBinaryVersion.String()
 
 	// The node bootstrapping the cluster starts at TestingBinaryVersion, the
 	// others start at TestingMinimumSupportedVersion and it takes them a gossip
@@ -376,8 +371,8 @@ func TestAllVersionsAgree(t *testing.T) {
 // equal the TestingBinaryMinSupportedVersion to avoid rot in tests using this
 // (as we retire old versions).
 func v0v1() (roachpb.Version, roachpb.Version) {
-	v1 := clusterversion.MinSupported.Version()
-	v0 := clusterversion.MinSupported.Version()
+	v1 := clusterversion.TestingBinaryMinSupportedVersion
+	v0 := clusterversion.TestingBinaryMinSupportedVersion
 	if v0.Minor > 0 {
 		v0.Minor--
 	} else {
@@ -433,7 +428,7 @@ func TestClusterVersionMixedVersionTooOld(t *testing.T) {
 						ctx context.Context, version clusterversion.ClusterVersion, deps upgrade.TenantDeps,
 					) error {
 						return nil
-					}, "test"), true
+					}), true
 			},
 		},
 	}

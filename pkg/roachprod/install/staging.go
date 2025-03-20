@@ -1,21 +1,20 @@
 // Copyright 2018 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package install
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"net/url"
 	"path/filepath"
+	"regexp"
+	"strings"
 
+	rperrors "github.com/cockroachdb/cockroach/pkg/roachprod/errors"
 	"github.com/cockroachdb/cockroach/pkg/roachprod/logger"
 	"github.com/cockroachdb/cockroach/pkg/roachprod/vm"
 	"github.com/cockroachdb/errors"
@@ -302,9 +301,18 @@ func stageRemoteBinary(
 	cmdStr := fmt.Sprintf(
 		`curl -sfSL -o "%s" "%s" && chmod 755 %s`, target, binURL, target,
 	)
-	return c.Run(
-		ctx, l, l.Stdout, l.Stderr, WithNodes(c.Nodes), fmt.Sprintf("staging binary (%s)", applicationName), cmdStr,
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+
+	err = c.Run(
+		ctx, l, &stdout, &stderr, OnNodes(c.Nodes), fmt.Sprintf("staging binary (%s)", applicationName), cmdStr,
 	)
+
+	combinedOut := strings.Join([]string{stdout.String(), stderr.String()}, "\n")
+	l.Printf("%s", combinedOut)
+
+	return processStageError(err, combinedOut)
 }
 
 // StageOptionalRemoteLibrary downloads a library from the cockroach edge with
@@ -333,7 +341,7 @@ curl -sfSL -o "%s" "%s" 2>/dev/null || echo 'optional library %s not found; cont
 		libraryName+ext,
 	)
 	return c.Run(
-		ctx, l, l.Stdout, l.Stderr, WithNodes(c.Nodes), fmt.Sprintf("staging library (%s)", libraryName), cmdStr,
+		ctx, l, l.Stdout, l.Stderr, OnNodes(c.Nodes), fmt.Sprintf("staging library (%s)", libraryName), cmdStr,
 	)
 }
 
@@ -357,6 +365,9 @@ func StageCockroachRelease(
 	}
 	l.Printf("Resolved release url for cockroach version %s: %s", version, binURL)
 
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+
 	// This command incantation:
 	// - Creates a temporary directory on the remote machine
 	// - Downloads and unpacks the cockroach release into the temp directory
@@ -371,7 +382,35 @@ mkdir -p ${dir}/lib && \
 if [ -d ${tmpdir}/lib ]; then mv ${tmpdir}/lib/* ${dir}/lib; fi && \
 chmod 755 ${dir}/cockroach
 `, dir, binURL)
-	return c.Run(
-		ctx, l, l.Stdout, l.Stderr, WithNodes(c.Nodes), "staging cockroach release binary", cmdStr,
+
+	err = c.Run(
+		ctx, l, &stdout, &stderr, OnNodes(c.Nodes), "staging cockroach release binary", cmdStr,
+	)
+
+	combinedOut := strings.Join([]string{stdout.String(), stderr.String()}, "\n")
+	l.Printf("%s", combinedOut)
+
+	return processStageError(err, combinedOut)
+}
+
+func processStageError(err error, output string) error {
+	if err == nil {
+		return nil
+	}
+
+	// If we get a 404 (Not Found) error when trying to download a
+	// released binary, that indicates a programming error that should
+	// be corrected by the original caller. All other errors are deemed
+	// transient (blips in the blob storage provider).
+	notFoundRegexp := regexp.MustCompile(`\b404\b`)
+	if notFoundRegexp.MatchString(output) {
+		return err
+	}
+
+	// Mark other errors as transient, which will cause the staging
+	// command to be retried.
+	return errors.Wrapf(
+		rperrors.TransientFailure(err, "stage_failure"),
+		"output:\n%s\n", output,
 	)
 }

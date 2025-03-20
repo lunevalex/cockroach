@@ -1,12 +1,7 @@
 // Copyright 2019 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package colexecjoin
 
@@ -556,6 +551,8 @@ type mergeJoinBase struct {
 	left               mergeJoinInput
 	right              mergeJoinInput
 
+	cancelChecker colexecutils.CancelChecker
+
 	// Output buffer definition.
 	output         coldata.Batch
 	outputCapacity int
@@ -578,6 +575,7 @@ var _ colexecop.Closer = &mergeJoinBase{}
 
 func (o *mergeJoinBase) Reset(ctx context.Context) {
 	o.TwoInputInitHelper.Reset(ctx)
+	o.cancelChecker.Init(ctx)
 	o.state = mjEntry
 	o.bufferedGroup.helper.Reset(ctx)
 	o.proberState.lBatch = nil
@@ -601,6 +599,7 @@ func (o *mergeJoinBase) Init(ctx context.Context) {
 		o.memoryLimit, o.diskQueueCfg, o.fdSemaphore, o.diskAcc, o.converterMemAcc,
 	)
 	o.bufferedGroup.helper.init(o.Ctx)
+	o.cancelChecker.Init(o.Ctx)
 
 	o.builderState.lGroups = make([]group, 1)
 	o.builderState.rGroups = make([]group, 1)
@@ -743,6 +742,7 @@ func (o *mergeJoinBase) sourceFinished() bool {
 // and updates the probing and buffered group states accordingly.
 func (o *mergeJoinBase) continueLeftBufferedGroup() {
 	// Get the next batch from the left.
+	o.cancelChecker.CheckEveryCall()
 	o.proberState.lIdx, o.proberState.lBatch = 0, o.InputOne.Next()
 	o.proberState.lLength = o.proberState.lBatch.Length()
 	o.bufferedGroup.leftGroupStartIdx = 0
@@ -809,6 +809,7 @@ func (o *mergeJoinBase) finishRightBufferedGroup() {
 // (or until we exhaust the right input).
 func (o *mergeJoinBase) completeRightBufferedGroup() {
 	// Get the next batch from the right.
+	o.cancelChecker.CheckEveryCall()
 	o.proberState.rIdx, o.proberState.rBatch = 0, o.InputTwo.Next()
 	o.proberState.rLength = o.proberState.rBatch.Length()
 	// The right input has been fully exhausted.
@@ -874,6 +875,7 @@ func (o *mergeJoinBase) completeRightBufferedGroup() {
 			// The buffered group is still not complete which means that we have
 			// just appended all the tuples from batch to it, so we need to get a
 			// fresh batch from the input.
+			o.cancelChecker.CheckEveryCall()
 			o.proberState.rIdx, o.proberState.rBatch = 0, o.InputTwo.Next()
 			o.proberState.rLength = o.proberState.rBatch.Length()
 			if o.proberState.rLength == 0 {

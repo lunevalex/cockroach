@@ -6,17 +6,11 @@ go_test(
         "datadriven_test.go",
         "main_test.go",
     ],
+    args = ["-test.timeout=295s"],
     data = glob(["testdata/**"]),
-    exec_properties = select({
-        "//build/toolchains:is_heavy": {
-            "dockerNetwork": "standard",
-            "Pool": "heavy",
-        },
-        "//conditions:default": {
-            "dockerNetwork": "standard",
-            "Pool": "default",
-        },
-    }),
+    exec_properties = {
+        "dockerNetwork": "standard",
+    },
     tags = ["ccl_test"],
     deps = [
         "//pkg/base",

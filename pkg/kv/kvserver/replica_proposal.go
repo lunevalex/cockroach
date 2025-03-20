@@ -1,12 +1,7 @@
 // Copyright 2016 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package kvserver
 
@@ -16,7 +11,6 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/cockroachdb/cockroach/pkg/clusterversion"
 	"github.com/cockroachdb/cockroach/pkg/keys"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvpb"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/batcheval/result"
@@ -349,13 +343,7 @@ func (r *Replica) leasePostApplyLocked(
 			// the same lease. This can happen when callers are using
 			// leasePostApply for some of its side effects, like with
 			// splitPostApply. It can also happen during lease extensions.
-			//
-			// NOTE: we pass true for expToEpochEquiv because we may be in a cluster
-			// where some node has detected the version upgrade and is considering
-			// this lease type promotion to be valid, even if our local node has not
-			// yet detected the upgrade. Passing true broadens the definition of
-			// equivalence and weakens the assertion.
-			if !prevLease.Equivalent(*newLease, true /* expToEpochEquiv */) {
+			if !prevLease.Equivalent(*newLease) {
 				log.Fatalf(ctx, "sequence identical for different leases, prevLease=%s, newLease=%s",
 					redact.Safe(prevLease), redact.Safe(newLease))
 			}
@@ -378,7 +366,7 @@ func (r *Replica) leasePostApplyLocked(
 		// Log lease acquisitions loudly when verbose logging is enabled or when the
 		// new leaseholder is draining, in which case it should be shedding leases.
 		// Otherwise, log a trace event.
-		if log.V(1) || r.store.IsDraining() {
+		if log.V(1) || (leaseChangingHands && r.store.IsDraining()) {
 			log.Infof(ctx, "new range lease %s following %s", newLease, prevLease)
 		} else {
 			log.Eventf(ctx, "new range lease %s following %s", newLease, prevLease)
@@ -433,7 +421,7 @@ func (r *Replica) leasePostApplyLocked(
 		} else {
 			sum = rspb.FromTimestamp(newLease.Start.ToTimestamp())
 		}
-		applyReadSummaryToTimestampCache(ctx, r.store.tsCache, r.descRLocked(), sum)
+		applyReadSummaryToTimestampCache(r.store.tsCache, r.descRLocked(), sum)
 
 		// Reset the request counts used to make lease placement decisions and
 		// load-based splitting/merging decisions whenever starting a new lease.
@@ -550,14 +538,14 @@ func (r *Replica) leasePostApplyLocked(
 	// lease is valid and owned by the replica before processing.
 	if iAmTheLeaseHolder && leaseChangingHands &&
 		LeaseCheckPreferencesOnAcquisitionEnabled.Get(&r.store.cfg.Settings.SV) {
-		preferenceStatus := CheckStoreAgainstLeasePreferences(r.store.StoreID(), r.store.Attrs(),
+		preferenceStatus := checkStoreAgainstLeasePreferences(r.store.StoreID(), r.store.Attrs(),
 			r.store.nodeDesc.Attrs, r.store.nodeDesc.Locality, r.mu.conf.LeasePreferences)
 		switch preferenceStatus {
-		case LeasePreferencesOK, LeasePreferencesLessPreferred:
+		case leasePreferencesOK, leasePreferencesLessPreferred:
 			// We could also enqueue the lease when we are a less preferred
 			// leaseholder, however the replicate queue will eventually get to it and
 			// we already satisfy _some_ preference.
-		case LeasePreferencesViolating:
+		case leasePreferencesViolating:
 			log.VEventf(ctx, 2,
 				"acquired lease violates lease preferences, enqueuing for transfer [lease=%v preferences=%v]",
 				newLease, r.mu.conf.LeasePreferences)
@@ -589,9 +577,11 @@ func (r *Replica) maybeLogLeaseAcquisition(
 	// cluster health, so it's useful to know their location over time.
 	if r.descRLocked().StartKey.Less(roachpb.RKey(keys.NodeLivenessKeyMax)) {
 		if r.ownsValidLeaseRLocked(ctx, now) {
-			log.Health.Infof(ctx, "acquired system range lease: %s", newLease)
+			log.Health.Infof(ctx, "acquired system range lease: %s [acquisition-type=%s]",
+				newLease, newLease.AcquisitionType)
 		} else {
-			log.Health.Warningf(ctx, "applied system range lease after it expired: %s", newLease)
+			log.Health.Warningf(ctx, "applied system range lease after it expired: %s [acquisition-type=%s]",
+				newLease, newLease.AcquisitionType)
 		}
 	}
 
@@ -616,8 +606,9 @@ func (r *Replica) maybeLogLeaseAcquisition(
 		//
 		// [^1]: https://github.com/cockroachdb/cockroach/pull/82758
 		log.Health.Warningf(ctx,
-			"applied lease after ~%.2fs replication lag, client traffic may have been delayed [lease=%v prev=%v]",
-			newLeaseAppDelay.Seconds(), newLease, prevLease)
+			"applied lease after ~%.2fs replication lag, client traffic may have "+
+				"been delayed [lease=%v prev=%v acquisition-type=%s]",
+			newLeaseAppDelay.Seconds(), newLease, prevLease, newLease.AcquisitionType)
 	} else if prevLease.Type() == roachpb.LeaseExpiration &&
 		newLease.Type() == roachpb.LeaseEpoch &&
 		prevLease.Expiration != nil && // nil when there is no previous lease
@@ -629,8 +620,9 @@ func (r *Replica) maybeLogLeaseAcquisition(
 		// actually serve any traffic). The result was likely an outage which
 		// resolves right now, so log to point this out.
 		log.Health.Warningf(ctx,
-			"lease expired before epoch lease upgrade, client traffic may have been delayed [lease=%v prev=%v]",
-			newLease, prevLease)
+			"lease expired before epoch lease upgrade, client traffic may have "+
+				"been delayed [lease=%v prev=%v acquisition-type=%s]",
+			newLease, prevLease, newLease.AcquisitionType)
 	}
 }
 
@@ -648,26 +640,20 @@ func addSSTablePreApply(
 ) bool {
 	if sst.RemoteFilePath != "" {
 		log.Infof(ctx,
-			"EXPERIMENTAL AddSSTABLE EXTERNAL %s (size %d, span %s) from %s (size %d)",
+			"EXPERIMENTAL AddSSTABLE EXTERNAL %s (size %d, span %s) from %s",
 			sst.RemoteFilePath,
-			sst.ApproximatePhysicalSize,
+			sst.BackingFileSize,
 			sst.Span,
 			sst.RemoteFileLoc,
-			sst.BackingFileSize,
 		)
 		start := storage.EngineKey{Key: sst.Span.Key}
 		end := storage.EngineKey{Key: sst.Span.EndKey}
 		externalFile := pebble.ExternalFile{
 			Locator:         remote.Locator(sst.RemoteFileLoc),
 			ObjName:         sst.RemoteFilePath,
-			Size:            sst.ApproximatePhysicalSize,
+			Size:            sst.BackingFileSize,
 			SmallestUserKey: start.Encode(),
 			LargestUserKey:  end.Encode(),
-			// TODO(dt): pass pebble the backing file size to avoid a stat call.
-
-			// TODO(msbutler): I guess we need to figure out if the backing external
-			// file has point or range keys in the target span.
-			HasPointKey: true,
 		}
 		tBegin := timeutil.Now()
 		defer func() {
@@ -986,15 +972,6 @@ func (r *Replica) evaluateProposal(
 		// Set the proposal's replicated result, which contains metadata and
 		// side-effects that are to be replicated to all replicas.
 		res.Replicated.IsLeaseRequest = ba.IsSingleRequestLeaseRequest()
-		if res.Replicated.IsLeaseRequest {
-			// NOTE: this cluster version check may return true even after the
-			// corresponding check in evalNewLease has returned false. That's ok, as
-			// this check is used to inform raft about whether an expiration-based
-			// lease **can** be promoted to an epoch-based lease without a sequence
-			// change, not that it **is** being promoted without a sequence change.
-			isV24_1 := r.ClusterSettings().Version.IsActive(ctx, clusterversion.V24_1Start)
-			res.Replicated.IsLeaseRequestWithExpirationToEpochEquivalent = isV24_1
-		}
 		if ba.AppliesTimestampCache() {
 			res.Replicated.WriteTimestamp = ba.WriteTimestamp()
 		}

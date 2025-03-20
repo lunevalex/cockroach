@@ -1,12 +1,7 @@
 // Copyright 2023 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package schemachanger_test
 
@@ -336,15 +331,6 @@ func TestAlterTableDMLInjection(t *testing.T) {
 			},
 			schemaChange: "ALTER TABLE tbl DROP COLUMN i CASCADE",
 			skipIssue:    111619,
-		},
-		{
-			desc: "drop column with composite index + fk",
-			setup: []string{
-				"ALTER TABLE tbl ADD COLUMN i INT NOT NULL DEFAULT unique_rowid()",
-				"CREATE UNIQUE INDEX idx ON tbl (val, i)",
-				"CREATE TABLE tbl_ref (val int primary key, i int, CONSTRAINT \"j_k_fk\" FOREIGN KEY (val, i) REFERENCES tbl(val, i))",
-			},
-			schemaChange: "DROP INDEX tbl@idx CASCADE",
 		},
 		{
 			desc:         "create unique index",

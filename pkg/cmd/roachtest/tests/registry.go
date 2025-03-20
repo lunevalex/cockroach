@@ -1,12 +1,7 @@
 // Copyright 2018 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package tests
 
@@ -19,11 +14,9 @@ func RegisterTests(r registry.Registry) {
 	registerActiveRecord(r)
 	registerAdmission(r)
 	registerAllocator(r)
-	registerLimitCapacity(r)
 	registerAllocationBench(r)
 	registerAlterPK(r)
 	registerAsyncpg(r)
-	registerAutoUpgrade(r)
 	registerBackup(r)
 	registerBackupMixedVersion(r)
 	registerBackupNodeShutdown(r)
@@ -57,7 +50,6 @@ func RegisterTests(r registry.Registry) {
 	registerEncryption(r)
 	registerFailover(r)
 	registerFixtures(r)
-	registerFlowable(r)
 	registerFollowerReads(r)
 	registerGORM(r)
 	registerGopg(r)
@@ -104,7 +96,6 @@ func RegisterTests(r registry.Registry) {
 	registerPebbleWriteThroughput(r)
 	registerPebbleYCSB(r)
 	registerPgjdbc(r)
-	registerPGRegress(r)
 	registerPgx(r)
 	registerPointTombstone(r)
 	registerPop(r)
@@ -118,7 +109,6 @@ func RegisterTests(r registry.Registry) {
 	registerRestart(r)
 	registerRestore(r)
 	registerRestoreNodeShutdown(r)
-	registerOnlineRestore(r)
 	registerRoachmart(r)
 	registerRoachtest(r)
 	registerRubyPG(r)
@@ -137,7 +127,6 @@ func RegisterTests(r registry.Registry) {
 	registerScrubAllChecksTPCC(r)
 	registerScrubIndexOnlyTPCC(r)
 	registerSecondaryIndexesMultiVersionCluster(r)
-	registerSecure(r)
 	registerSequelize(r)
 	registerSlowDrain(r)
 	registerSysbench(r)

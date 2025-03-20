@@ -1,12 +1,7 @@
 // Copyright 2022 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 //
 
 package roachtestutil
@@ -19,7 +14,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/kv/kvpb"
 	"github.com/cockroachdb/cockroach/pkg/roachprod/logger"
 	"github.com/cockroachdb/cockroach/pkg/testutils/sqlutils"
-	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/cockroach/pkg/util/timeutil"
 	"github.com/cockroachdb/errors"
 )
@@ -46,14 +40,6 @@ func CheckReplicaDivergenceOnDB(ctx context.Context, l *logger.Logger, db *gosql
 		return err
 	}
 
-	// EFOS can slow down consistency checks, since we need to take a snapshot for
-	// every range sequentially. Disable them.
-	_, err = db.ExecContext(ctx,
-		"SET CLUSTER SETTING kv.consistency_queue.testing_fast_efos_acquisition.enabled = true")
-	if err != nil {
-		return err
-	}
-
 	// NB: we set a statement_timeout since context cancellation won't work here.
 	// We've seen the consistency checks hang indefinitely in some cases.
 	// https://github.com/cockroachdb/cockroach/pull/34520
@@ -76,7 +62,7 @@ FROM crdb_internal.check_consistency(false, '', '') as t;`)
 	}
 	defer rows.Close()
 
-	logEvery := log.Every(time.Minute)
+	logEvery := Every(time.Minute)
 	logEvery.ShouldLog() // don't immediately log
 
 	var ranges int

@@ -1,12 +1,7 @@
 // Copyright 2017 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package settings_test
 
@@ -43,14 +38,7 @@ func init() {
 
 var _ settings.ClusterVersionImpl = &dummyVersion{}
 
-// Encode is part of the ClusterVersionImpl interface.
-func (d *dummyVersion) Encode() []byte {
-	encoded, err := d.Marshal()
-	if err != nil {
-		panic(err)
-	}
-	return encoded
-}
+func (d *dummyVersion) ClusterVersionImpl() {}
 
 // Unmarshal is part of the protoutil.Message interface.
 func (d *dummyVersion) Unmarshal(data []byte) error {
@@ -894,8 +882,12 @@ func TestSystemOnlyDisallowedOnVirtualCluster(t *testing.T) {
 func setDummyVersion(dv dummyVersion, vs *settings.VersionSetting, sv *settings.Values) error {
 	// This is a bit round about because the VersionSetting doesn't get updated
 	// through the updater, like most other settings. In order to set it, we set
-	// the internal state by hand.
-	vs.SetInternal(context.Background(), sv, &dv)
+	// the internal encoded state by hand.
+	encoded, err := protoutil.Marshal(&dv)
+	if err != nil {
+		return err
+	}
+	vs.SetInternal(context.Background(), sv, encoded)
 	return nil
 }
 

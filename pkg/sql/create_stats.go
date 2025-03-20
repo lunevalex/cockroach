@@ -1,12 +1,7 @@
 // Copyright 2017 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package sql
 
@@ -61,14 +56,38 @@ var featureStatsEnabled = settings.RegisterBoolSetting(
 	featureflag.FeatureFlagEnabledDefault,
 	settings.WithPublic)
 
+var statsOnVirtualCols = settings.RegisterBoolSetting(
+	settings.ApplicationLevel,
+	"sql.stats.virtual_computed_columns.enabled",
+	"set to true to collect table statistics on virtual computed columns",
+	false,
+	settings.WithPublic)
+
+// Collecting histograms on non-indexed JSON columns can require a lot of memory
+// when the JSON values are large. This is true even when only two histogram
+// buckets are generated because we still sample many JSON values which exist in
+// memory for the duration of the stats collection job. By default, we do not
+// collect histograms for non-indexed JSON columns.
+var nonIndexJSONHistograms = settings.RegisterBoolSetting(
+	settings.ApplicationLevel,
+	"sql.stats.non_indexed_json_histograms.enabled",
+	"set to true to collect table statistics histograms on non-indexed JSON columns",
+	true,
+	settings.WithPublic)
+
 const nonIndexColHistogramBuckets = 2
 
 // StubTableStats generates "stub" statistics for a table which are missing
-// histograms and have 0 for all values.
+// statistics on virtual computed columns, multi-column stats, and histograms,
+// and have 0 for all values.
 func StubTableStats(
-	desc catalog.TableDescriptor, name string, multiColEnabled bool, defaultHistogramBuckets uint32,
+	desc catalog.TableDescriptor, name string,
 ) ([]*stats.TableStatisticProto, error) {
-	colStats, err := createStatsDefaultColumns(desc, multiColEnabled, defaultHistogramBuckets)
+	colStats, err := createStatsDefaultColumns(
+		context.Background(), desc, false /* virtColEnabled */, false, /* multiColEnabled */
+		false,                            /* nonIndexJSONHistograms */
+		nonIndexColHistogramBuckets, nil, /* evalCtx */
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -89,6 +108,12 @@ func StubTableStats(
 // framework.
 type createStatsNode struct {
 	tree.CreateStats
+
+	// p is the "outer planner" from planning the CREATE STATISTICS
+	// statement. When we startExec the createStatsNode, it creates a job which
+	// has a second planner (the JobExecContext). When the job resumes, it does
+	// its work using a retrying internal transaction for which we create a third
+	// "inner planner".
 	p *planner
 
 	// runAsJob is true by default, and causes the code below to be executed,
@@ -149,10 +174,7 @@ func (n *createStatsNode) runJob(ctx context.Context) error {
 	if err = job.AwaitCompletion(ctx); err != nil {
 		if errors.Is(err, stats.ConcurrentCreateStatsError) {
 			// Delete the job so users don't see it and get confused by the error.
-			const stmt = `DELETE FROM system.jobs WHERE id = $1`
-			if _ /* cols */, delErr := n.p.ExecCfg().InternalDB.Executor().Exec(
-				ctx, "delete-job", nil /* txn */, stmt, jobID,
-			); delErr != nil {
+			if delErr := n.p.ExecCfg().JobRegistry.DeleteTerminalJobByID(ctx, job.ID()); delErr != nil {
 				log.Warningf(ctx, "failed to delete job: %v", delErr)
 			}
 		}
@@ -235,17 +257,20 @@ func (n *createStatsNode) makeJobRecord(ctx context.Context) (*jobs.Record, erro
 	var colStats []jobspb.CreateStatsDetails_ColStat
 	var deleteOtherStats bool
 	if len(n.ColumnNames) == 0 {
-		// Disable multi-column stats and deleting stats
-		// if partial statistics at the extremes are requested.
-		// TODO (faizaanmadhani): Add support for multi-column stats.
+		virtColEnabled := statsOnVirtualCols.Get(n.p.ExecCfg().SV())
+		// Disable multi-column stats and deleting stats if partial statistics at
+		// the extremes are requested.
+		// TODO(faizaanmadhani): Add support for multi-column stats.
 		var multiColEnabled bool
 		if !n.Options.UsingExtremes {
-			multiColEnabled = stats.MultiColumnStatisticsClusterMode.Get(&n.p.ExecCfg().Settings.SV)
+			multiColEnabled = stats.MultiColumnStatisticsClusterMode.Get(n.p.ExecCfg().SV())
 			deleteOtherStats = true
 		}
 		defaultHistogramBuckets := stats.GetDefaultHistogramBuckets(n.p.ExecCfg().SV(), tableDesc)
 		if colStats, err = createStatsDefaultColumns(
-			tableDesc, multiColEnabled, defaultHistogramBuckets,
+			ctx, tableDesc, virtColEnabled, multiColEnabled,
+			nonIndexJSONHistograms.Get(n.p.ExecCfg().SV()),
+			defaultHistogramBuckets, n.p.EvalContext(),
 		); err != nil {
 			return nil, err
 		}
@@ -257,11 +282,15 @@ func (n *createStatsNode) makeJobRecord(ctx context.Context) (*jobs.Record, erro
 
 		columnIDs := make([]descpb.ColumnID, len(columns))
 		for i := range columns {
-			if columns[i].IsVirtual() {
-				return nil, pgerror.Newf(
+			if columns[i].IsVirtual() && !statsOnVirtualCols.Get(n.p.ExecCfg().SV()) {
+				err := pgerror.Newf(
 					pgcode.InvalidColumnReference,
 					"cannot create statistics on virtual column %q",
 					columns[i].ColName(),
+				)
+				return nil, errors.WithHint(err,
+					"set cluster setting sql.stats.virtual_computed_columns.enabled to collect statistics "+
+						"on virtual columns",
 				)
 			}
 			columnIDs[i] = columns[i].GetID()
@@ -353,15 +382,54 @@ const maxNonIndexCols = 100
 // predicate expressions are also likely to appear in query filters, so stats
 // are collected for those columns as well.
 //
+// If nonIndexJsonHistograms is true, 2-bucket histograms are collected for
+// non-indexed JSON columns.
+//
 // In addition to the index columns, we collect stats on up to maxNonIndexCols
 // other columns from the table. We only collect histograms for index columns,
 // plus any other boolean or enum columns (where the "histogram" is tiny).
 func createStatsDefaultColumns(
-	desc catalog.TableDescriptor, multiColEnabled bool, defaultHistogramBuckets uint32,
+	ctx context.Context,
+	desc catalog.TableDescriptor,
+	virtColEnabled, multiColEnabled, nonIndexJSONHistograms bool,
+	defaultHistogramBuckets uint32,
+	evalCtx *eval.Context,
 ) ([]jobspb.CreateStatsDetails_ColStat, error) {
 	colStats := make([]jobspb.CreateStatsDetails_ColStat, 0, len(desc.ActiveIndexes()))
 
 	requestedStats := make(map[string]struct{})
+
+	// CREATE STATISTICS only runs as a fully-distributed plan. If statistics on
+	// virtual computed columns are enabled, we must check whether each virtual
+	// computed column expression is safe to distribute. Virtual computed columns
+	// with expressions *not* safe to distribute will be skipped, even if
+	// sql.stats.virtual_computed_columns.enabled is true.
+	// TODO(michae2): Add the ability to run CREATE STATISTICS locally if a
+	// local-only virtual computed column expression is needed.
+	cannotDistribute := make([]bool, len(desc.PublicColumns()))
+	if virtColEnabled {
+		semaCtx := tree.MakeSemaContext()
+		semaCtx.TypeResolver = evalCtx.Planner
+		exprs, _, err := schemaexpr.MakeComputedExprs(
+			ctx,
+			desc.PublicColumns(),
+			desc.PublicColumns(),
+			desc,
+			tree.NewUnqualifiedTableName(tree.Name(desc.GetName())),
+			evalCtx,
+			&semaCtx,
+		)
+		if err != nil {
+			return nil, err
+		}
+		for i, col := range desc.PublicColumns() {
+			cannotDistribute[i] = col.IsVirtual() && checkExprForDistSQL(exprs[i]) != nil
+		}
+	}
+
+	isUnsupportedVirtual := func(col catalog.Column) bool {
+		return col.IsVirtual() && (!virtColEnabled || cannotDistribute[col.Ordinal()])
+	}
 
 	// sortAndTrackStatsExists adds the given column IDs as a set to the
 	// requestedStats set. If the columnIDs were already in the set, it returns
@@ -385,11 +453,14 @@ func createStatsDefaultColumns(
 			return err
 		}
 
-		// Do not collect stats for virtual computed columns. DistSQLPlanner
-		// cannot currently collect stats for these columns because it plans
-		// table readers on the table's primary index which does not include
-		// virtual computed columns.
-		if col.IsVirtual() {
+		// There shouldn't be any non-public columns, but defensively skip over them
+		// if there are.
+		if !col.Public() {
+			return nil
+		}
+
+		// Skip unsupported virtual computed columns.
+		if isUnsupportedVirtual(col) {
 			return nil
 		}
 
@@ -434,9 +505,30 @@ func createStatsDefaultColumns(
 			continue
 		}
 
-		colIDs := make([]descpb.ColumnID, i+1)
+		colIDs := make([]descpb.ColumnID, 0, i+1)
 		for j := 0; j <= i; j++ {
-			colIDs[j] = desc.GetPrimaryIndex().GetKeyColumnID(j)
+			col, err := catalog.MustFindColumnByID(desc, desc.GetPrimaryIndex().GetKeyColumnID(j))
+			if err != nil {
+				return nil, err
+			}
+
+			// There shouldn't be any non-public columns, but defensively skip over
+			// them if there are.
+			if !col.Public() {
+				continue
+			}
+
+			// Skip unsupported virtual computed columns.
+			if isUnsupportedVirtual(col) {
+				continue
+			}
+			colIDs = append(colIDs, col.GetID())
+		}
+
+		// Do not attempt to create multi-column stats with < 2 columns. This can
+		// happen when an index contains only virtual computed columns.
+		if len(colIDs) < 2 {
+			continue
 		}
 
 		// Remember the requested stats so we don't request duplicates.
@@ -471,15 +563,23 @@ func createStatsDefaultColumns(
 				if err != nil {
 					return nil, err
 				}
-				if col.IsVirtual() {
+
+				// There shouldn't be any non-public columns, but defensively skip them
+				// if there are.
+				if !col.Public() {
+					continue
+				}
+
+				// Skip unsupported virtual computed columns.
+				if isUnsupportedVirtual(col) {
 					continue
 				}
 				colIDs = append(colIDs, col.GetID())
 			}
 
-			// Do not attempt to create multi-column stats with no columns. This
-			// can happen when an index contains only virtual computed columns.
-			if len(colIDs) == 0 {
+			// Do not attempt to create multi-column stats with < 2 columns. This can
+			// happen when an index contains only virtual computed columns.
+			if len(colIDs) < 2 {
 				continue
 			}
 
@@ -527,8 +627,8 @@ func createStatsDefaultColumns(
 	for i := 0; i < len(desc.PublicColumns()) && nonIdxCols < maxNonIndexCols; i++ {
 		col := desc.PublicColumns()[i]
 
-		// Do not collect stats for virtual computed columns.
-		if col.IsVirtual() {
+		// Skip unsupported virtual computed columns.
+		if isUnsupportedVirtual(col) {
 			continue
 		}
 
@@ -547,9 +647,13 @@ func createStatsDefaultColumns(
 		if col.GetType().Family() == types.BoolFamily || col.GetType().Family() == types.EnumFamily {
 			maxHistBuckets = defaultHistogramBuckets
 		}
+		hasHistogram := !colinfo.ColumnTypeIsOnlyInvertedIndexable(col.GetType())
+		if col.GetType().Family() == types.JsonFamily {
+			hasHistogram = nonIndexJSONHistograms
+		}
 		colStats = append(colStats, jobspb.CreateStatsDetails_ColStat{
 			ColumnIDs:           colIDs,
-			HasHistogram:        !colinfo.ColumnTypeIsOnlyInvertedIndexable(col.GetType()),
+			HasHistogram:        hasHistogram,
 			HistogramMaxBuckets: maxHistBuckets,
 		})
 		nonIdxCols++
@@ -569,40 +673,53 @@ var _ jobs.Resumer = &createStatsResumer{}
 
 // Resume is part of the jobs.Resumer interface.
 func (r *createStatsResumer) Resume(ctx context.Context, execCtx interface{}) error {
-	p := execCtx.(JobExecContext)
+	// jobsPlanner is a second planner distinct from the "outer planner" in the
+	// createStatsNode. It comes from the jobs system and does not have an
+	// associated txn.
+	jobsPlanner := execCtx.(JobExecContext)
 	details := r.job.Details().(jobspb.CreateStatsDetails)
 	if details.Name == jobspb.AutoStatsName {
 		// We want to make sure that an automatic CREATE STATISTICS job only runs if
 		// there are no other CREATE STATISTICS jobs running, automatic or manual.
-		if err := checkRunningJobs(ctx, r.job, p); err != nil {
+		if err := checkRunningJobs(ctx, r.job, jobsPlanner); err != nil {
 			return err
 		}
 	}
 
 	r.tableID = details.Table.ID
-	evalCtx := p.ExtendedEvalContext()
 
-	dsp := p.DistSQLPlanner()
-	if err := p.ExecCfg().InternalDB.Txn(ctx, func(ctx context.Context, txn isql.Txn) error {
-		// Set the transaction on the EvalContext to this txn. This allows for
-		// use of the txn during processor setup during the execution of the flow.
-		evalCtx.Txn = txn.KV()
-
+	if err := jobsPlanner.ExecCfg().InternalDB.Txn(ctx, func(ctx context.Context, txn isql.Txn) error {
+		// We create a third "inner planner" associated with this txn in order to
+		// have (a) use of the txn during type checking of any virtual computed
+		// column expressions, and (b) use of the txn during processor setup during
+		// the execution of the flow.
+		innerPlanner, cleanup := NewInternalPlanner(
+			"create-stats-resume-job",
+			txn.KV(),
+			jobsPlanner.User(),
+			&MemoryMetrics{},
+			jobsPlanner.ExecCfg(),
+			jobsPlanner.SessionData(),
+		)
+		defer cleanup()
+		innerP := innerPlanner.(*planner)
+		innerEvalCtx := innerP.ExtendedEvalContext()
 		if details.AsOf != nil {
-			p.ExtendedEvalContext().AsOfSystemTime = &eval.AsOfSystemTime{Timestamp: *details.AsOf}
-			p.ExtendedEvalContext().SetTxnTimestamp(details.AsOf.GoTime())
+			innerP.ExtendedEvalContext().AsOfSystemTime = &eval.AsOfSystemTime{Timestamp: *details.AsOf}
+			innerP.ExtendedEvalContext().SetTxnTimestamp(details.AsOf.GoTime())
 			if err := txn.KV().SetFixedTimestamp(ctx, *details.AsOf); err != nil {
 				return err
 			}
 		}
 
-		planCtx := dsp.NewPlanningCtx(ctx, evalCtx, nil /* planner */, txn.KV(),
+		dsp := innerP.DistSQLPlanner()
+		planCtx := dsp.NewPlanningCtx(ctx, innerEvalCtx, innerP, txn.KV(),
 			DistributionTypeSystemTenantOnly)
 		// CREATE STATS flow doesn't produce any rows and only emits the
 		// metadata, so we can use a nil rowContainerHelper.
 		resultWriter := NewRowResultWriter(nil /* rowContainer */)
 		if err := dsp.planAndRunCreateStats(
-			ctx, evalCtx, planCtx, txn.KV(), r.job, resultWriter,
+			ctx, innerEvalCtx, planCtx, txn.KV(), r.job, resultWriter,
 		); err != nil {
 			// Check if this was a context canceled error and restart if it was.
 			if grpcutil.IsContextCanceled(err) {
@@ -632,6 +749,9 @@ func (r *createStatsResumer) Resume(ctx context.Context, execCtx interface{}) er
 	}); err != nil {
 		return err
 	}
+
+	evalCtx := jobsPlanner.ExtendedEvalContext()
+
 	// Record this statistics creation in the event log.
 	if !createStatsPostEvents.Get(&evalCtx.Settings.SV) {
 		return nil

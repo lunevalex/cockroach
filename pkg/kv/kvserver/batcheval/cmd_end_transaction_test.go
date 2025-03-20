@@ -1,12 +1,7 @@
 // Copyright 2019 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package batcheval
 
@@ -1301,8 +1296,13 @@ func TestCommitWaitBeforeIntentResolutionIfCommitTrigger(t *testing.T) {
 				expError: false,
 			},
 			{
-				name:     "future",
-				commitTS: func(now hlc.Timestamp) hlc.Timestamp { return now.Add(100, 0) },
+				name:     "past-syn",
+				commitTS: func(now hlc.Timestamp) hlc.Timestamp { return now.WithSynthetic(true) },
+				expError: false,
+			},
+			{
+				name:     "future-syn",
+				commitTS: func(now hlc.Timestamp) hlc.Timestamp { return now.Add(100, 0).WithSynthetic(true) },
 				// If the EndTxn carried a commit trigger and its transaction will need
 				// to commit-wait because the transaction has a future-time commit
 				// timestamp, evaluating the request should return an error.
@@ -1465,7 +1465,7 @@ func TestComputeSplitRangeKeyStatsDelta(t *testing.T) {
 
 			tc.expect.LastUpdateNanos = nowNanos
 
-			msDelta, err := computeSplitRangeKeyStatsDelta(context.Background(), engine, lhsDesc, rhsDesc)
+			msDelta, err := computeSplitRangeKeyStatsDelta(engine, lhsDesc, rhsDesc)
 			require.NoError(t, err)
 			msDelta.AgeTo(nowNanos)
 			require.Equal(t, tc.expect, msDelta)

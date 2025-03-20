@@ -18,11 +18,8 @@ go_library(
 go_test(
     name = "nullsink_test",
     srcs = ["nullsink_storage_test.go"],
+    args = ["-test.timeout=295s"],
     embed = [":nullsink"],
-    exec_properties = select({
-        "//build/toolchains:is_heavy": {"Pool": "heavy"},
-        "//conditions:default": {"Pool": "default"},
-    }),
     deps = [
         "//pkg/base",
         "//pkg/cloud",

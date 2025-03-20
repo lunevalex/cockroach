@@ -13,9 +13,6 @@ go_test(
         "example_test.go",
         "ring_test.go",
     ],
+    args = ["-test.timeout=295s"],
     embed = [":ring"],
-    exec_properties = select({
-        "//build/toolchains:is_heavy": {"Pool": "heavy"},
-        "//conditions:default": {"Pool": "default"},
-    }),
 )

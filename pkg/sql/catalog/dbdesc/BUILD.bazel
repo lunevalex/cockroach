@@ -34,11 +34,8 @@ go_test(
     name = "dbdesc_test",
     size = "small",
     srcs = ["database_test.go"],
+    args = ["-test.timeout=55s"],
     embed = [":dbdesc"],
-    exec_properties = select({
-        "//build/toolchains:is_heavy": {"Pool": "heavy"},
-        "//conditions:default": {"Pool": "default"},
-    }),
     deps = [
         "//pkg/clusterversion",
         "//pkg/jobs/jobspb",

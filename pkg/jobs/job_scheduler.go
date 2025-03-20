@@ -1,12 +1,7 @@
 // Copyright 2020 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package jobs
 
@@ -33,6 +28,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/timeutil"
 	"github.com/cockroachdb/errors"
 	"github.com/cockroachdb/logtags"
+	"github.com/cockroachdb/redact"
 )
 
 // CreatedByScheduledJobs identifies the job that was created
@@ -103,10 +99,7 @@ func (s scheduledJobStorageTxn) loadCandidateScheduleForExecution(
 
 // lookupNumRunningJobs returns the number of running jobs for the specified schedule.
 func lookupNumRunningJobs(
-	ctx context.Context,
-	scheduleID jobspb.ScheduleID,
-	env scheduledjobs.JobSchedulerEnv,
-	txn isql.Txn,
+	ctx context.Context, scheduleID int64, env scheduledjobs.JobSchedulerEnv, txn isql.Txn,
 ) (int64, error) {
 	lookupStmt := fmt.Sprintf(
 		"SELECT count(*) FROM %s WHERE created_by_type = '%s' AND created_by_id = %d AND status IN %s",
@@ -264,7 +257,7 @@ func (s *jobScheduler) executeCandidateSchedule(
 	if processErr := withSavePoint(ctx, txn.KV(), func() error {
 		if timeout > 0 {
 			return timeutil.RunWithTimeout(
-				ctx, fmt.Sprintf("process-schedule-%d", schedule.ScheduleID()), timeout,
+				ctx, redact.Sprintf("process-schedule-%d", schedule.ScheduleID()), timeout,
 				func(ctx context.Context) error {
 					return s.processSchedule(ctx, schedule, numRunning, txn)
 				})

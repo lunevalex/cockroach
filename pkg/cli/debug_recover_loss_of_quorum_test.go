@@ -1,12 +1,7 @@
 // Copyright 2021 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package cli
 
@@ -92,7 +87,7 @@ func TestCollectInfoFromMultipleStores(t *testing.T) {
 		stores[r.StoreID] = struct{}{}
 	}
 	require.Equal(t, 2, len(stores), "collected replicas from stores")
-	require.Equal(t, clusterversion.Latest.Version(), replicas.Version,
+	require.Equal(t, clusterversion.ByKey(clusterversion.BinaryVersionKey), replicas.Version,
 		"collected version info from stores")
 }
 
@@ -157,7 +152,7 @@ func TestCollectInfoFromOnlineCluster(t *testing.T) {
 	require.Equal(t, totalRanges*2, totalReplicas, "number of collected replicas")
 	require.Equal(t, totalRanges, len(replicas.Descriptors),
 		"number of collected descriptors from metadata")
-	require.Equal(t, clusterversion.Latest.Version(), replicas.Version,
+	require.Equal(t, clusterversion.ByKey(clusterversion.BinaryVersionKey), replicas.Version,
 		"collected version info from stores")
 }
 
@@ -205,6 +200,9 @@ func TestLossOfQuorumRecovery(t *testing.T) {
 	// recovery, we'll check that the range is still accessible for writes as
 	// normal.
 	sk := tcBefore.ScratchRange(t)
+	// The LOQ tooling does not work when a node fails during a split/merge
+	// operation. Make sure that splitting the scratch range fully completes.
+	require.NoError(t, tcBefore.WaitForSplitAndInitialization(sk))
 	require.NoError(t,
 		tcBefore.Server(0).DB().Put(ctx, testutils.MakeKey(sk, []byte{1}), "value"),
 		"failed to write value to scratch range")
@@ -371,7 +369,7 @@ func TestStageVersionCheck(t *testing.T) {
 	tc.StopServer(3)
 
 	adminClient := tc.Server(0).GetAdminClient(t)
-	v := clusterversion.Latest.Version()
+	v := clusterversion.ByKey(clusterversion.BinaryVersionKey)
 	v.Internal++
 	// To avoid crafting real replicas we use StaleLeaseholderNodeIDs to force
 	// node to stage plan for verification.
@@ -388,6 +386,7 @@ func TestStageVersionCheck(t *testing.T) {
 		AllNodes:                  true,
 		ForcePlan:                 false,
 		ForceLocalInternalVersion: false,
+		MaxConcurrency:            -1, // no limit
 	})
 	require.ErrorContains(t, err, "doesn't match cluster active version")
 	// Enable "stuck upgrade bypass" to stage plan on the cluster.
@@ -396,6 +395,7 @@ func TestStageVersionCheck(t *testing.T) {
 		AllNodes:                  true,
 		ForcePlan:                 false,
 		ForceLocalInternalVersion: true,
+		MaxConcurrency:            -1, // no limit
 	})
 	require.NoError(t, err, "force local must fix incorrect version")
 	// Check that stored plan has version matching cluster version.
@@ -403,7 +403,7 @@ func TestStageVersionCheck(t *testing.T) {
 	p, ok, err := ps.LoadPlan()
 	require.NoError(t, err, "failed to read node 0 plan")
 	require.True(t, ok, "plan was not staged")
-	require.Equal(t, clusterversion.Latest.Version(), p.Version,
+	require.Equal(t, clusterversion.ByKey(clusterversion.BinaryVersionKey), p.Version,
 		"plan version was not updated")
 }
 

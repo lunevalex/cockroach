@@ -1,12 +1,7 @@
 // Copyright 2017 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package sql
 
@@ -15,6 +10,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/cockroachdb/cockroach/pkg/clusterversion"
 	"github.com/cockroachdb/cockroach/pkg/security/username"
 	"github.com/cockroachdb/cockroach/pkg/settings"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/descpb"
@@ -427,6 +423,9 @@ func (p *planner) processSetOrResetClause(
 }
 
 func (n *alterRoleSetNode) startExec(params runParams) error {
+	databaseRoleSettingsHasRoleIDCol := params.p.ExecCfg().Settings.Version.IsActive(params.ctx,
+		clusterversion.V23_1DatabaseRoleSettingsHasRoleIDColumn)
+
 	var opName string
 	if n.isRole {
 		sqltelemetry.IncIAMAlterCounter(sqltelemetry.Role)
@@ -450,7 +449,12 @@ func (n *alterRoleSetNode) startExec(params runParams) error {
 		sessioninit.DatabaseRoleSettingsTableName,
 	)
 
-	var upsertQuery = fmt.Sprintf(`
+	var upsertQuery = fmt.Sprintf(
+		`UPSERT INTO %s (database_id, role_name, settings) VALUES ($1, $2, $3)`,
+		sessioninit.DatabaseRoleSettingsTableName,
+	)
+	if databaseRoleSettingsHasRoleIDCol {
+		upsertQuery = fmt.Sprintf(`
 UPSERT INTO %s (database_id, role_name, settings, role_id)
 VALUES ($1, $2, $3, (
 	SELECT CASE $2
@@ -458,8 +462,9 @@ VALUES ($1, $2, $3, (
 		ELSE (SELECT user_id FROM system.users WHERE username = $2)
 	END
 ))`,
-		sessioninit.DatabaseRoleSettingsTableName, username.EmptyRole, username.EmptyRoleID,
-	)
+			sessioninit.DatabaseRoleSettingsTableName, username.EmptyRole, username.EmptyRoleID,
+		)
+	}
 
 	// Instead of inserting an empty settings array, this function will make
 	// sure the row is deleted instead.

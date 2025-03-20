@@ -1,12 +1,7 @@
 // Copyright 2023 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package jobs
 
@@ -30,11 +25,6 @@ import (
 type InfoStorage struct {
 	j   *Job
 	txn isql.Txn
-
-	// claimChecked is true if the claim session has already been
-	// checked once in this transaction. It may be set directly by
-	// callers if they know they've already checked the claim.
-	claimChecked bool
 }
 
 // InfoStorage returns a new InfoStorage with the passed in job and txn.
@@ -49,11 +39,7 @@ func InfoStorageForJob(txn isql.Txn, jobID jobspb.JobID) InfoStorage {
 	return InfoStorage{j: &Job{id: jobID}, txn: txn}
 }
 
-func (i *InfoStorage) checkClaimSession(ctx context.Context) error {
-	if i.claimChecked {
-		return nil
-	}
-
+func (i InfoStorage) checkClaimSession(ctx context.Context) error {
 	row, err := i.txn.QueryRowEx(ctx, "check-claim-session", i.txn.KV(),
 		sessiondata.NodeUserSessionDataOverride,
 		`SELECT claim_session_id FROM system.jobs WHERE id = $1`, i.j.ID())
@@ -71,7 +57,6 @@ func (i *InfoStorage) checkClaimSession(ctx context.Context) error {
 		return errors.Errorf(
 			"expected session %q but found %q", i.j.Session().ID(), sqlliveness.SessionID(storedSession))
 	}
-	i.claimChecked = true
 
 	return nil
 }
@@ -245,7 +230,10 @@ func (i InfoStorage) Write(ctx context.Context, infoKey string, value []byte) er
 	if value == nil {
 		return errors.AssertionFailedf("missing value (infoKey %q)", infoKey)
 	}
-	return i.write(ctx, infoKey, value)
+	if err := i.write(ctx, infoKey, value); err != nil {
+		return MaybeGenerateForcedRetryableError(ctx, i.txn.KV(), err)
+	}
+	return nil
 }
 
 // Delete removes the info record for the provided infoKey.

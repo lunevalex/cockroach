@@ -1,12 +1,7 @@
 // Copyright 2022 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package state
 
@@ -32,6 +27,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/spanconfig"
 	"github.com/cockroachdb/cockroach/pkg/spanconfig/spanconfigreporter"
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
+	"github.com/cockroachdb/cockroach/pkg/util/timeutil"
 	"github.com/google/btree"
 	"go.etcd.io/raft/v3"
 	"go.etcd.io/raft/v3/tracker"
@@ -1056,6 +1052,10 @@ func (s *state) ClusterUsageInfo() *ClusterUsageInfo {
 // system time source for the store pools that are spawned from this state.
 func (s *state) TickClock(tick time.Time) {
 	s.clock.Set(tick.UnixNano())
+}
+
+func (s *state) Clock() timeutil.TimeSource {
+	return s.clock
 }
 
 // UpdateStorePool modifies the state of the StorePool for the Store with

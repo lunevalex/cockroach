@@ -1,5 +1,11 @@
 #!/usr/bin/env bash
 
+# Copyright 2022 The Cockroach Authors.
+#
+# Use of this software is governed by the CockroachDB Software License
+# included in the /LICENSE file.
+
+
 set -euxo pipefail
 
 dir="$(dirname $(dirname $(dirname $(dirname $(dirname "${0}")))))"
@@ -19,6 +25,11 @@ version=$(echo ${build_name} | sed -e 's/^v//' | cut -d- -f 1)
 if [[ -z "$build_name" ]] ; then
     echo "Invalid NAME \"${NAME}\". Must be of the format \"vMAJOR.MINOR.PATCH(-PRERELEASE)?\"."
     exit 1
+fi
+
+PUBLISH_LATEST=
+if is_latest "$build_name"; then
+  PUBLISH_LATEST=true
 fi
 
 release_branch=$(echo ${build_name} | grep -E -o '^v[0-9]+\.[0-9]+')

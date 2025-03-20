@@ -1,5 +1,11 @@
 #!/usr/bin/env bash
 
+# Copyright 2021 The Cockroach Authors.
+#
+# Use of this software is governed by the CockroachDB Software License
+# included in the /LICENSE file.
+
+
 set -euo pipefail
 
 # files_unchanged_from_upstream takes file globs as arguments and checks
@@ -31,10 +37,14 @@ files_unchanged_from_upstream () {
     return 1
   fi
 
-  # Check if the files are unchanged.
-  DIFF=$(git diff --no-ext-diff --name-only $BASE -- "$@") || return 1
-  if [ -z "$DIFF" ]; then
-    # No diffs.
+  # Check if the files are unchanged. This `git diff` will return 1
+  # if there are any diffs in the given files.
+  git diff --quiet --no-ext-diff $BASE -- "$@" || return 1
+
+  # Finally we have to check if any of the files are untracked; `git diff`
+  # won't find those.
+  EXTRA=$(git status --porcelain -- "$@")
+  if [ -z "$EXTRA" ]; then
     return 0
   fi
   return 1
@@ -57,7 +67,7 @@ fi
 
 bazel run //:gazelle
 
-if files_unchanged_from_upstream WORKSPACE $(find_relevant ./pkg/sql/logictest/logictestbase -name BUILD.bazel -or -name '*.go') $(find_relevant ./pkg/sql/logictest/testdata -name '*') $(find_relevant ./pkg/sql/sqlitelogictest -name BUILD.bazel -or -name '*.go') $(find_relevant ./pkg/ccl/logictestccl/testdata -name '*') $(find_relevant pkg/sql/opt/exec/execbuilder/testdata -name '*') $(find_relevant ./pkg/cmd/generate-logictest -name BUILD.bazel -or -name '*.go'); then
+if files_unchanged_from_upstream WORKSPACE $(find_relevant ./pkg/sql/logictest/logictestbase -name BUILD.bazel -or -name '*.go') $(find_relevant ./pkg/sql/logictest/testdata -name '*') $(find_relevant ./pkg/sql/sqlitelogictest -name BUILD.bazel -or -name '*.go') $(find_relevant ./pkg/ccl/logictestccl/testdata -name '*') $(find_relevant pkg/sql/opt/exec/execbuilder/testdata -name '*'); then
   echo "Skipping //pkg/cmd/generate-logictest (relevant files are unchanged from upstream)"
 else
   bazel run pkg/cmd/generate-logictest -- -out-dir="$PWD"
@@ -82,8 +92,13 @@ else
   bazel run pkg/gen/genbzl --run_under="cd $PWD && " -- --out-dir pkg/gen
 fi
 
-if files_unchanged_from_upstream $(find_relevant ./pkg -name BUILD.bazel) $(find_relevant ./pkg/cmd/generate-bazel-extra -name BUILD.bazel -or -name '*.go'); then
+if ! (files_unchanged_from_upstream $(find_relevant ./pkg -name BUILD.bazel) $(find_relevant ./pkg/cmd/generate-bazel-extra -name BUILD.bazel -or -name '*.go')); then
+  bazel build @com_github_bazelbuild_buildtools//buildozer:buildozer
+  bazel run //pkg/cmd/generate-bazel-extra --run_under="cd $PWD && " -- -gen_test_suites -gen_tests_timeouts
+elif files_unchanged_from_upstream $(find_relevant ./pkg -name '*.bzl'); then
   echo "Skipping //pkg/cmd/generate-bazel-extra (relevant files are unchanged from upstream)."
 else
+  echo "Skipping `generate tests timeouts` from //pkg/cmd/generate-bazel-extra (relevant files are unchanged from upstream)."
+  bazel build @com_github_bazelbuild_buildtools//buildozer:buildozer
   bazel run //pkg/cmd/generate-bazel-extra --run_under="cd $PWD && " -- -gen_test_suites
 fi

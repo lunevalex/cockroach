@@ -1,10 +1,7 @@
 // Copyright 2016 The Cockroach Authors.
 //
-// Licensed as a CockroachDB Enterprise file under the Cockroach Community
-// License (the "License"); you may not use this file except in compliance with
-// the License. You may obtain a copy of the License at
-//
-//     https://github.com/cockroachdb/cockroach/blob/master/licenses/CCL.txt
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package jobsprotectedtsccl
 
@@ -234,7 +231,7 @@ func testSchedulesProtectedTimestamp(
 			require.NoError(t, schedules.Create(ctx, sj))
 			deprecatedSpansToProtect := roachpb.Spans{{Key: keys.MinKey, EndKey: keys.MaxKey}}
 			targetToProtect := ptpb.MakeClusterTarget()
-			rec = jobsprotectedts.MakeRecord(uuid.MakeV4(), int64(sj.ScheduleID()), ts,
+			rec = jobsprotectedts.MakeRecord(uuid.MakeV4(), sj.ScheduleID(), ts,
 				deprecatedSpansToProtect, jobsprotectedts.Schedules, targetToProtect)
 			return ptp.WithTxn(txn).Protect(ctx, rec)
 		}))

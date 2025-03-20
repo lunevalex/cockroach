@@ -12,6 +12,7 @@ go_library(
     importpath = "github.com/cockroachdb/cockroach/pkg/sql/sqlliveness/slstorage",
     visibility = ["//visibility:public"],
     deps = [
+        "//pkg/clusterversion",
         "//pkg/keys",
         "//pkg/kv",
         "//pkg/kv/kvpb",
@@ -22,6 +23,7 @@ go_library(
         "//pkg/settings/cluster",
         "//pkg/sql/catalog",
         "//pkg/sql/catalog/systemschema",
+        "//pkg/sql/enum",
         "//pkg/sql/sem/eval",
         "//pkg/sql/sqlliveness",
         "//pkg/util/admission/admissionpb",
@@ -51,11 +53,8 @@ go_test(
         "slstorage_internal_test.go",
         "slstorage_test.go",
     ],
+    args = ["-test.timeout=55s"],
     embed = [":slstorage"],
-    exec_properties = select({
-        "//build/toolchains:is_heavy": {"Pool": "heavy"},
-        "//conditions:default": {"Pool": "default"},
-    }),
     deps = [
         "//pkg/base",
         "//pkg/clusterversion",

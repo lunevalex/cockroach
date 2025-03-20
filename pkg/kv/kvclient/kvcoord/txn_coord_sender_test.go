@@ -1,12 +1,7 @@
 // Copyright 2014 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package kvcoord_test
 
@@ -733,8 +728,8 @@ func TestTxnCoordSenderTxnUpdatedOnError(t *testing.T) {
 func testTxnCoordSenderTxnUpdatedOnError(t *testing.T, isoLevel isolation.Level) {
 	ctx := context.Background()
 	origTS := makeTS(123, 0)
-	plus10 := origTS.Add(10, 10)
-	plus20 := origTS.Add(20, 0)
+	plus10 := origTS.Add(10, 10).WithSynthetic(false)
+	plus20 := origTS.Add(20, 0).WithSynthetic(false)
 	testCases := []struct {
 		// The test's name.
 		name                  string
@@ -1189,17 +1184,15 @@ func checkTxnMetrics(
 	t *testing.T,
 	metrics kvcoord.TxnMetrics,
 	name string,
-	commits, commits1PC, commitsReadOnly, aborts, restarts int64,
+	commits, commits1PC, aborts, restarts int64,
 ) {
 	testutils.SucceedsSoon(t, func() error {
-		return checkTxnMetricsOnce(metrics, name, commits, commits1PC, commitsReadOnly, aborts, restarts)
+		return checkTxnMetricsOnce(metrics, name, commits, commits1PC, aborts, restarts)
 	})
 }
 
 func checkTxnMetricsOnce(
-	metrics kvcoord.TxnMetrics,
-	name string,
-	commits, commits1PC, commitReadOnly, aborts, restarts int64,
+	metrics kvcoord.TxnMetrics, name string, commits, commits1PC, aborts, restarts int64,
 ) error {
 	durationCounts, _ := metrics.Durations.CumulativeSnapshot().Total()
 	restartsCounts, _ := metrics.Restarts.CumulativeSnapshot().Total()
@@ -1209,7 +1202,6 @@ func checkTxnMetricsOnce(
 	}{
 		{"commits", metrics.Commits.Count(), commits},
 		{"commits1PC", metrics.Commits1PC.Count(), commits1PC},
-		{"commitsReadOnly", metrics.CommitsReadOnly.Count(), commitReadOnly},
 		{"aborts", metrics.Aborts.Count(), aborts},
 		{"durations", durationCounts, commits + aborts},
 		{"restarts", restartsCounts, restarts},
@@ -1259,9 +1251,9 @@ func TestTxnCommit(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	checkTxnMetrics(t, metrics, "commit txn", 1 /* commits */, 0 /* commits1PC */, 0 /* commitsReadOnly */, 0, 0)
+	checkTxnMetrics(t, metrics, "commit txn", 1 /* commits */, 0 /* commits1PC */, 0, 0)
 
-	// Test a read-only get txn.
+	// Test a read-only txn.
 	if err := s.DB.Txn(context.Background(), func(ctx context.Context, txn *kv.Txn) error {
 		key := []byte("key-commit")
 		_, err := txn.Get(ctx, key)
@@ -1270,19 +1262,7 @@ func TestTxnCommit(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	checkTxnMetrics(t, metrics, "commit txn", 2 /* commits */, 0 /* commits1PC */, 1 /* commitsReadOnly */, 0, 0)
-
-	// Test a read-only scan txn.
-	if err := s.DB.Txn(context.Background(), func(ctx context.Context, txn *kv.Txn) error {
-		key := []byte("key-commit")
-		endKey := []byte("key-commit2")
-		_, err := txn.Scan(ctx, key, endKey, 5)
-		return err
-	}); err != nil {
-		t.Fatal(err)
-	}
-
-	checkTxnMetrics(t, metrics, "commit txn", 3 /* commits */, 0 /* commits1PC */, 2 /* commitsReadOnly */, 0, 0)
+	checkTxnMetrics(t, metrics, "commit txn", 2 /* commits */, 0 /* commits1PC */, 0, 0)
 }
 
 // TestTxnOnePhaseCommit verifies that 1PC metric tracking works.
@@ -1317,7 +1297,7 @@ func TestTxnOnePhaseCommit(t *testing.T) {
 	if !bytes.Equal(val, value) {
 		t.Fatalf("expected: %s, got: %s", value, val)
 	}
-	checkTxnMetrics(t, metrics, "commit 1PC txn", 1 /* commits */, 1 /* 1PC */, 0, 0, 0)
+	checkTxnMetrics(t, metrics, "commit 1PC txn", 1 /* commits */, 1 /* 1PC */, 0, 0)
 }
 
 func TestTxnAbortCount(t *testing.T) {
@@ -1337,7 +1317,7 @@ func TestTxnAbortCount(t *testing.T) {
 	}); !testutils.IsError(err, intentionalErrText) {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	checkTxnMetrics(t, metrics, "abort txn", 0, 0, 0, 1 /* aborts */, 0)
+	checkTxnMetrics(t, metrics, "abort txn", 0, 0, 1 /* aborts */, 0)
 
 	// Test aborted read-only transaction.
 	if err := s.DB.Txn(ctx, func(ctx context.Context, txn *kv.Txn) error {
@@ -1348,7 +1328,7 @@ func TestTxnAbortCount(t *testing.T) {
 	}); !testutils.IsError(err, intentionalErrText) {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	checkTxnMetrics(t, metrics, "abort txn", 0, 0, 0, 2 /* aborts */, 0)
+	checkTxnMetrics(t, metrics, "abort txn", 0, 0, 2 /* aborts */, 0)
 }
 
 func TestTxnRestartCount(t *testing.T) {
@@ -1409,7 +1389,7 @@ func TestTxnRestartCount(t *testing.T) {
 		require.NoError(t, txn.Rollback(ctx))
 	}
 	assertTransactionRetryError(t, err)
-	checkTxnMetrics(t, metrics, "restart txn", 0, 0, 0, 1 /* aborts */, 1 /* restarts */)
+	checkTxnMetrics(t, metrics, "restart txn", 0, 0, 1 /* aborts */, 1 /* restarts */)
 }
 
 func TestTxnDurations(t *testing.T) {
@@ -1434,7 +1414,7 @@ func TestTxnDurations(t *testing.T) {
 		}
 	}
 
-	checkTxnMetrics(t, metrics, "txn durations", puts, 0, 0, 0, 0)
+	checkTxnMetrics(t, metrics, "txn durations", puts, 0, 0, 0)
 
 	hist := metrics.Durations
 	// The clock is a bit odd in these tests, so I can't test the mean without
@@ -1526,7 +1506,9 @@ func TestTxnCommitWait(t *testing.T) {
 				// transaction is read-write, it will need to bump its write
 				// timestamp above the other value.
 				if futureTime {
-					ts := txn.TestingCloneTxn().WriteTimestamp.Add(futureOffset.Nanoseconds(), 0)
+					ts := txn.TestingCloneTxn().WriteTimestamp.
+						Add(futureOffset.Nanoseconds(), 0).
+						WithSynthetic(true)
 					h := kvpb.Header{Timestamp: ts}
 					put := kvpb.NewPut(key, roachpb.Value{})
 					if _, pErr := kv.SendWrappedWith(ctx, s.DB.NonTransactionalSender(), h, put); pErr != nil {
@@ -3009,64 +2991,4 @@ func TestTxnSetIsoLevel(t *testing.T) {
 		// The isolation level should not have changed.
 		require.Equal(t, prev, txn.IsoLevel())
 	}
-}
-
-// TestRefreshWithSavepoint is an integration test that ensures the correct
-// behavior of refreshes under savepoint rollback. The test sets up a write-skew
-// example where txn1 reads keyA and writes to keyB, while concurrently txn2
-// reads keyB and writes to keyA. The two txns can't be serialized so one is
-// expected to get a serialization error upon commit.
-//
-// However, with the old behavior of discarding refresh spans upon savepoint
-// rollback, the read corresponding to the discarded refresh span is not
-// refreshed, so the conflict goes unnoticed and both txns commit successfully.
-// See #111228 for more details.
-func TestRefreshWithSavepoint(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-	defer log.Scope(t).Close(t)
-
-	testutils.RunTrueAndFalse(t, "keep-refresh-spans", func(t *testing.T, keepRefreshSpans bool) {
-		s, _, kvDB := serverutils.StartServer(t, base.TestServerArgs{})
-		ctx := context.Background()
-		defer s.Stopper().Stop(context.Background())
-
-		if keepRefreshSpans {
-			kvcoord.KeepRefreshSpansOnSavepointRollback.Override(ctx, &s.ClusterSettings().SV, true)
-		} else {
-			kvcoord.KeepRefreshSpansOnSavepointRollback.Override(ctx, &s.ClusterSettings().SV, false)
-		}
-
-		keyA := roachpb.Key("a")
-		keyB := roachpb.Key("b")
-		txn1 := kvDB.NewTxn(ctx, "txn1")
-		txn2 := kvDB.NewTxn(ctx, "txn2")
-
-		spt1, err := txn1.CreateSavepoint(ctx)
-		require.NoError(t, err)
-
-		_, err = txn1.Get(ctx, keyA)
-		require.NoError(t, err)
-
-		err = txn1.RollbackToSavepoint(ctx, spt1)
-		require.NoError(t, err)
-
-		_, err = txn2.Get(ctx, keyB)
-		require.NoError(t, err)
-
-		err = txn1.Put(ctx, keyB, "bb")
-		require.NoError(t, err)
-
-		err = txn2.Put(ctx, keyA, "aa")
-		require.NoError(t, err)
-
-		err = txn1.Commit(ctx)
-		if keepRefreshSpans {
-			require.Regexp(t, ".*RETRY_SERIALIZABLE - failed preemptive refresh due to conflicting locks on \"a\"*", err)
-		} else {
-			require.NoError(t, err)
-		}
-
-		err = txn2.Commit(ctx)
-		require.NoError(t, err)
-	})
 }

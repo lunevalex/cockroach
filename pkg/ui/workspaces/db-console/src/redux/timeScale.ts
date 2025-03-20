@@ -1,12 +1,7 @@
 // Copyright 2018 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 /**
  * This module maintains a globally-available time window, currently used by all
@@ -81,10 +76,13 @@ export class TimeScaleState {
         fixedWindowEnd: val.fixedWindowEnd && moment(val.fixedWindowEnd),
       };
     } catch (e) {
-      console.warn(
-        `Couldn't retrieve or parse TimeScale options from SessionStorage`,
-        e,
-      );
+      // Don't log this in tests because it pollutes the output.
+      if (process.env.NODE_ENV !== "test") {
+        console.warn(
+          `Couldn't retrieve or parse TimeScale options from SessionStorage`,
+          e,
+        );
+      }
     }
     this.scale = timeScale || {
       ...defaultTimeScaleOptions["Past Hour"],

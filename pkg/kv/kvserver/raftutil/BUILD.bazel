@@ -16,11 +16,8 @@ go_library(
 go_test(
     name = "raftutil_test",
     srcs = ["util_test.go"],
+    args = ["-test.timeout=295s"],
     embed = [":raftutil"],
-    exec_properties = select({
-        "//build/toolchains:is_heavy": {"Pool": "heavy"},
-        "//conditions:default": {"Pool": "default"},
-    }),
     deps = [
         "@com_github_stretchr_testify//require",
         "@io_etcd_go_raft_v3//:raft",

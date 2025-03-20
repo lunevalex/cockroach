@@ -1,19 +1,13 @@
 // Copyright 2021 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package scbuildstmt
 
 import (
 	"context"
 
-	"github.com/cockroachdb/cockroach/pkg/keys"
 	"github.com/cockroachdb/cockroach/pkg/security/username"
 	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog"
@@ -56,9 +50,6 @@ type BuildCtx interface {
 	// WithNewSourceElementID wraps BuilderStateWithNewSourceElementID in a
 	// BuildCtx return type.
 	WithNewSourceElementID() BuildCtx
-
-	// Codec returns the codec for the current tenant.
-	Codec() keys.SQLCodec
 }
 
 // ClusterAndSessionInfo provides general cluster and session info.
@@ -214,30 +205,14 @@ type PrivilegeChecker interface {
 
 	// CheckPrivilege panics if the current user does not have the specified
 	// privilege for the element.
-	//
-	// Note: This function is written on the assumption that privileges are tied
-	// to descriptors. However, privileges can also live in the
-	// `system.privileges` table (i.e. system-level privileges) and checking those
-	// global privileges are done by the CheckGlobalPrivilege method below.
-	CheckPrivilege(e scpb.Element, privilege privilege.Kind) error
-
-	// CheckGlobalPrivilege panics if the current user does not have the specified
-	// global privilege.
-	CheckGlobalPrivilege(privilege privilege.Kind) error
-
-	// HasGlobalPrivilegeOrRoleOption returns a bool representing whether the current user
-	// has a global privilege or the corresponding legacy role option.
-	HasGlobalPrivilegeOrRoleOption(ctx context.Context, privilege privilege.Kind) (bool, error)
+	CheckPrivilege(e scpb.Element, privilege privilege.Kind)
 
 	// CurrentUserHasAdminOrIsMemberOf returns true iff the current user is (1)
 	// an admin or (2) has membership in the specified role.
-	CurrentUserHasAdminOrIsMemberOf(role username.SQLUsername) bool
+	CurrentUserHasAdminOrIsMemberOf(member username.SQLUsername) bool
 
 	// CurrentUser returns the user of current session.
 	CurrentUser() username.SQLUsername
-
-	// CheckRoleExists returns nil if `role` exists.
-	CheckRoleExists(ctx context.Context, role username.SQLUsername) error
 }
 
 // TableHelpers has methods useful for creating new table elements.
@@ -334,7 +309,6 @@ type ResolveParams struct {
 
 	// RequiredPrivilege defines the privilege required for the resolved
 	// descriptor.
-	// If 0, no privilege checking is performed.
 	RequiredPrivilege privilege.Kind
 
 	// RequireOwnership if set to true, requires current user be the owner of the

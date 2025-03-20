@@ -1,12 +1,7 @@
 // Copyright 2018 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package kvserver
 
@@ -284,6 +279,10 @@ type StoreTestingKnobs struct {
 	DisableProcessRaft func(roachpb.StoreID) bool
 	// DisableLastProcessedCheck disables checking on replica queue last processed times.
 	DisableLastProcessedCheck bool
+	// ReplicateQueueAcceptsUnsplit allows the replication queue to
+	// process ranges that need to be split, for use in tests that use
+	// the replication queue but disable the split queue.
+	ReplicateQueueAcceptsUnsplit bool
 	// SplitQueuePurgatoryChan allows a test to control the channel used to
 	// trigger split queue purgatory processing.
 	SplitQueuePurgatoryChan <-chan time.Time
@@ -384,7 +383,8 @@ type StoreTestingKnobs struct {
 	// This can be useful for testing conditions which require commands to be
 	// applied in separate batches.
 	MaxApplicationBatchSize int
-	// RangeFeedPushTxnsInterval overrides the default rangefeed txn push interval.
+	// RangeFeedPushTxnsInterval overrides the default value for
+	// rangefeed.Config.PushTxnsInterval.
 	RangeFeedPushTxnsInterval time.Duration
 	// RangeFeedPushTxnsAge overrides the default value for
 	// rangefeed.Config.PushTxnsAge.

@@ -1,10 +1,7 @@
 // Copyright 2020 The Cockroach Authors.
 //
-// Licensed as a CockroachDB Enterprise file under the Cockroach Community
-// License (the "License"); you may not use this file except in compliance with
-// the License. You may obtain a copy of the License at
-//
-//     https://github.com/cockroachdb/cockroach/blob/master/licenses/CCL.txt
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package streamclient
 
@@ -109,13 +106,6 @@ func (sc testStreamClient) Subscribe(
 // Complete implements the streamclient.Client interface.
 func (sc testStreamClient) Complete(_ context.Context, _ streampb.StreamID, _ bool) error {
 	return nil
-}
-
-// PriorReplicationDetails implements the streamclient.Client interface.
-func (sc testStreamClient) PriorReplicationDetails(
-	_ context.Context, _ roachpb.TenantName,
-) (string, string, hlc.Timestamp, error) {
-	return "", "", hlc.Timestamp{}, nil
 }
 
 type testStreamSubscription struct {

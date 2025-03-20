@@ -18,11 +18,8 @@ go_test(
         "decoder_test.go",
         "scanner_test.go",
     ],
+    args = ["-test.timeout=295s"],
     data = glob(["testdata/**"]),
     embed = [":tokenizer"],
-    exec_properties = select({
-        "//build/toolchains:is_heavy": {"Pool": "heavy"},
-        "//conditions:default": {"Pool": "default"},
-    }),
     deps = ["@com_github_stretchr_testify//require"],
 )

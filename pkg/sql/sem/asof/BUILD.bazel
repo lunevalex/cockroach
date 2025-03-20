@@ -2,10 +2,7 @@ load("@io_bazel_rules_go//go:def.bzl", "go_library")
 
 go_library(
     name = "asof",
-    srcs = [
-        "as_of.go",
-        "type_check.go",
-    ],
+    srcs = ["as_of.go"],
     importpath = "github.com/cockroachdb/cockroach/pkg/sql/sem/asof",
     visibility = ["//visibility:public"],
     deps = [
@@ -19,5 +16,6 @@ go_library(
         "//pkg/util/hlc",
         "@com_github_cockroachdb_apd_v3//:apd",
         "@com_github_cockroachdb_errors//:errors",
+        "@com_github_lib_pq//oid",
     ],
 )

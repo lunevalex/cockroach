@@ -1,12 +1,7 @@
 // Copyright 2017 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package jobs_test
 
@@ -37,7 +32,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
 	"github.com/cockroachdb/cockroach/pkg/sql/sessiondata"
 	"github.com/cockroachdb/cockroach/pkg/sql/sqlliveness"
-	"github.com/cockroachdb/cockroach/pkg/sql/sqlliveness/slstorage"
 	"github.com/cockroachdb/cockroach/pkg/testutils"
 	"github.com/cockroachdb/cockroach/pkg/testutils/serverutils"
 	"github.com/cockroachdb/cockroach/pkg/testutils/skip"
@@ -113,17 +107,12 @@ RETURNING id;
 	terminalStatuses := []jobs.Status{jobs.StatusSucceeded, jobs.StatusCanceled, jobs.StatusFailed}
 	terminalIDs := make([]jobspb.JobID, len(terminalStatuses))
 	terminalClaims := make([][]byte, len(terminalStatuses))
-	mkSessionID := func() []byte {
-		sessionID, err := slstorage.MakeSessionID([]byte("us"), uuid.MakeV4())
-		require.NoError(t, err)
-		return []byte(sessionID)
-	}
 	for i, s := range terminalStatuses {
-		terminalClaims[i] = mkSessionID() // bogus claim
+		terminalClaims[i] = uuid.MakeV4().GetBytes() // bogus claim
 		tdb.QueryRow(t, insertQuery, s, terminalClaims[i], 42).Scan(&terminalIDs[i])
 	}
 	var nonTerminalID jobspb.JobID
-	tdb.QueryRow(t, insertQuery, jobs.StatusRunning, mkSessionID(), 42).Scan(&nonTerminalID)
+	tdb.QueryRow(t, insertQuery, jobs.StatusRunning, uuid.MakeV4().GetBytes(), 42).Scan(&nonTerminalID)
 
 	checkClaimEqual := func(id jobspb.JobID, exp []byte) error {
 		const getClaimQuery = `SELECT claim_session_id FROM system.jobs WHERE id = $1`
@@ -753,7 +742,7 @@ func TestWaitWithRetryableError(t *testing.T) {
 		Knobs: base.TestingKnobs{
 			SQLExecutor: &sql.ExecutorTestingKnobs{
 				DisableAutoCommitDuringExec: true,
-				AfterExecute: func(ctx context.Context, stmt string, err error) {
+				AfterExecute: func(ctx context.Context, stmt string, isInternal bool, err error) {
 					if targetJobID.Load() > 0 &&
 						strings.Contains(stmt, "SELECT count(*) FROM system.jobs") &&
 						strings.Contains(stmt, fmt.Sprintf("%d", targetJobID.Load())) {

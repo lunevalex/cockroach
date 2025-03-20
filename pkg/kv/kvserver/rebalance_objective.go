@@ -1,12 +1,7 @@
 // Copyright 2023 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package kvserver
 
@@ -264,6 +259,14 @@ func ResolveLBRebalancingObjective(
 	set := LoadBasedRebalancingObjective.Get(&st.SV)
 	// Queries should always be supported, return early if set.
 	if set == int64(LBRebalancingQueries) {
+		return LBRebalancingQueries
+	}
+	// When the cluster version hasn't finalized to 23.1, some unupgraded
+	// stores will not be populating additional fields in their StoreCapacity,
+	// in such cases we cannot balance another objective since the data may not
+	// exist. Fall back to QPS balancing.
+	if !st.Version.IsActive(ctx, clusterversion.V23_1AllocatorCPUBalancing) {
+		log.Infof(ctx, "version doesn't support cpu objective, reverting to qps balance objective")
 		return LBRebalancingQueries
 	}
 	// When the cpu timekeeping utility is unsupported on this aarch, the cpu

@@ -16,12 +16,8 @@ go_test(
         "fk_test.go",
         "uniq_test.go",
     ],
-    data = glob(["testdata/**"]),
+    args = ["-test.timeout=295s"],
     embed = [":bench"],
-    exec_properties = select({
-        "//build/toolchains:is_heavy": {"Pool": "heavy"},
-        "//conditions:default": {"Pool": "default"},
-    }),
     deps = [
         "//pkg/base",
         "//pkg/security/securityassets",
@@ -43,7 +39,6 @@ go_test(
         "//pkg/sql/sem/eval",
         "//pkg/sql/sem/tree",
         "//pkg/sql/sem/volatility",
-        "//pkg/testutils/datapathutils",
         "//pkg/testutils/serverutils",
         "//pkg/testutils/sqlutils",
         "//pkg/util/log",

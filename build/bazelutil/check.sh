@@ -1,5 +1,11 @@
 #!/usr/bin/env bash
 
+# Copyright 2021 The Cockroach Authors.
+#
+# Use of this software is governed by the CockroachDB Software License
+# included in the /LICENSE file.
+
+
 set -euo pipefail
 
 # This script performs assorted checks to make sure there is nothing obviously
@@ -43,9 +49,7 @@ pkg/util/log/channels.go://go:generate go run gen/main.go logpb/log.proto log_ch
 pkg/util/log/channels.go://go:generate go run gen/main.go logpb/log.proto logging.md ../../../docs/generated/logging.md
 pkg/util/log/channels.go://go:generate go run gen/main.go logpb/log.proto severity.go severity/severity_generated.go
 pkg/util/log/sinks.go://go:generate mockgen -package=log -destination=mocks_generated_test.go --mock_names=TestingLogSink=MockLogSink . TestingLogSink
-pkg/util/span/frontier.go://go:generate ../interval/generic/gen.sh *frontierEntry span
 pkg/util/timeutil/zoneinfo.go://go:generate go run gen/main.go
-pkg/internal/team/team.go://go:generate cp ../../../TEAMS.yaml TEAMS.yaml
 "
 
 EXISTING_CRDB_TEST_BUILD_CONSTRAINTS="

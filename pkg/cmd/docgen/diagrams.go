@@ -1,12 +1,7 @@
 // Copyright 2017 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package main
 
@@ -627,22 +622,20 @@ var specs = []stmtSpec{
 		exclude: []*regexp.Regexp{regexp.MustCompile("'IN'")},
 	},
 	{
-		name: "begin_stmt",
+		name: "legacy_begin_stmt",
 		inline: []string{
 			"opt_transaction",
 			"begin_transaction",
-			"transaction_mode",
-			"transaction_user_priority",
-			"user_priority",
-			"iso_level",
 			"transaction_mode_list",
 			"opt_comma",
+			"transaction_mode",
+			"transaction_user_priority",
 			"transaction_read_mode",
 			"as_of_clause",
 			"transaction_deferrable_mode",
-		},
-		exclude: []*regexp.Regexp{
-			regexp.MustCompile("'START'"),
+			"user_priority",
+			"transaction_iso_level",
+			"iso_level",
 		},
 	},
 	{
@@ -694,8 +687,12 @@ var specs = []stmtSpec{
 		match:  []*regexp.Regexp{regexp.MustCompile("'COMMIT'|'END'")},
 	},
 	{
-		name:    "copy_stmt",
-		inline:  []string{"opt_with_copy_options", "copy_options_list", "opt_with", "opt_where_clause", "where_clause"},
+		name:   "copy_stmt",
+		inline: []string{"opt_with_copy_options", "copy_options_list", "opt_with", "opt_where_clause", "where_clause"},
+		replace: map[string]string{
+			"copy_to_stmt":                      "query",
+			"'(' copy_generic_options_list ')'": "",
+		},
 		exclude: []*regexp.Regexp{regexp.MustCompile("'WHERE'")},
 	},
 	{
@@ -1378,7 +1375,7 @@ var specs = []stmtSpec{
 	},
 	{
 		name: "set_transaction",
-		stmt: "nonpreparable_set_stmt",
+		stmt: "set_transaction_stmt",
 		inline: []string{
 			"set_transaction_stmt",
 			"transaction_mode",
@@ -1389,6 +1386,8 @@ var specs = []stmtSpec{
 			"as_of_clause",
 			"opt_comma",
 			"transaction_deferrable_mode",
+			"transaction_iso_level",
+			"iso_level",
 		},
 		match: []*regexp.Regexp{regexp.MustCompile("'SET' 'TRANSACTION'")},
 	},

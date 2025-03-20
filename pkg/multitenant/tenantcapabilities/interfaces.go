@@ -1,12 +1,7 @@
 // Copyright 2023 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package tenantcapabilities
 
@@ -24,12 +19,8 @@ import (
 // Reader provides access to the global tenant capability state. The global
 // tenant capability state may be arbitrarily stale.
 type Reader interface {
-	// GetInfo returns the tenant information for the specified tenant.
-	GetInfo(id roachpb.TenantID) (_ Entry, _ <-chan struct{}, found bool)
-
 	// GetCapabilities returns the tenant capabilities for the specified tenant.
 	GetCapabilities(id roachpb.TenantID) (_ *tenantcapabilitiespb.TenantCapabilities, found bool)
-
 	// GetGlobalCapabilityState returns the capability state for all tenants.
 	GetGlobalCapabilityState() map[roachpb.TenantID]*tenantcapabilitiespb.TenantCapabilities
 }

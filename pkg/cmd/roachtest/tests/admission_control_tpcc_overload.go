@@ -1,12 +1,7 @@
 // Copyright 2019 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package tests
 
@@ -60,7 +55,7 @@ func (s tpccOLAPSpec) run(ctx context.Context, t test.Test, c cluster.Cluster) {
 	const queryFileName = "queries.sql"
 	// querybench expects the entire query to be on a single line.
 	queryLine := `"` + strings.Replace(tpccOlapQuery, "\n", " ", -1) + `"`
-	c.Run(ctx, option.WithNodes(workloadNode), "echo", queryLine, "> "+queryFileName)
+	c.Run(ctx, workloadNode, "echo", queryLine, "> "+queryFileName)
 	t.Status("waiting")
 	m := c.NewMonitor(ctx, crdbNodes)
 	rampDuration := 2 * time.Minute
@@ -75,7 +70,7 @@ func (s tpccOLAPSpec) run(ctx context.Context, t test.Test, c cluster.Cluster) {
 				" --histograms="+t.PerfArtifactsDir()+"/stats.json "+
 				" --ramp=%s --duration=%s {pgurl:1-%d}",
 			s.Concurrency, queryFileName, rampDuration, duration, c.Spec().NodeCount-1)
-		c.Run(ctx, option.WithNodes(workloadNode), cmd)
+		c.Run(ctx, workloadNode, cmd)
 		return nil
 	})
 	m.Wait()
@@ -124,7 +119,7 @@ func verifyNodeLiveness(
 	if err := retry.WithMaxAttempts(ctx, retry.Options{
 		MaxBackoff: 500 * time.Millisecond,
 	}, 60, func() (err error) {
-		response, err = getMetrics(ctx, adminURLs[0], now.Add(-runDuration), now, []tsQuery{
+		response, err = getMetrics(ctx, c, t, adminURLs[0], now.Add(-runDuration), now, []tsQuery{
 			{
 				name:      "cr.node.liveness.heartbeatfailures",
 				queryType: total,
@@ -197,10 +192,13 @@ func registerTPCCSevereOverload(r registry.Registry) {
 			roachNodes := c.Range(1, c.Spec().NodeCount-1)
 			workloadNode := c.Spec().NodeCount
 
-			c.Start(ctx, t.L(), option.DefaultStartOptsNoBackups(), install.MakeClusterSettings(), roachNodes)
+			c.Start(
+				ctx, t.L(), option.NewStartOpts(option.NoBackupSchedule),
+				install.MakeClusterSettings(), roachNodes,
+			)
 
 			t.Status("initializing (~1h)")
-			c.Run(ctx, option.WithNodes(c.Node(workloadNode)), "./cockroach workload fixtures import tpcc --checks=false --warehouses=10000 {pgurl:1}")
+			c.Run(ctx, c.Node(workloadNode), "./cockroach workload fixtures import tpcc --checks=false --warehouses=10000 {pgurl:1}")
 
 			// This run passes through 4 "phases"
 			// 1) No admission control, low latencies (up to ~1500 warehouses).
@@ -208,7 +206,7 @@ func registerTPCCSevereOverload(r registry.Registry) {
 			// 3) High latencies (100s+), queues building (up to ~4500 warehouse).
 			// 4) Memory and goroutine unbounded growth with eventual node crashes (up to ~6000 warehouse).
 			t.Status("running workload (fails in ~3-4 hours)")
-			c.Run(ctx, option.WithNodes(c.Node(workloadNode)), "./cockroach workload run tpcc --ramp=6h --tolerate-errors --warehouses=10000 '{pgurl:1-6}'")
+			c.Run(ctx, c.Node(workloadNode), "./cockroach workload run tpcc --ramp=6h --tolerate-errors --warehouses=10000 '{pgurl:1-6}'")
 		},
 	})
 }

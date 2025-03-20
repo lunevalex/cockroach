@@ -1,12 +1,7 @@
 // Copyright 2018 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package props_test
 
@@ -1281,6 +1276,16 @@ func TestFuncDeps_RemapFrom(t *testing.T) {
 	to = opt.ColList{10, 30, 40, 50}
 	res.RemapFrom(abcde, from, to)
 	verifyFD(t, &res, "key(10); (10)-->(30,40,50)")
+
+	// Test a one-to-many relationship between remapped columns. An equality
+	// should be split into two, and the remapped key should be reduced.
+	eqFD := &props.FuncDepSet{}
+	eqFD.AddStrictKey(c(1, 2, 3), c(1, 2, 3))
+	eqFD.AddEquivalency(2, 3)
+	from = opt.ColList{1, 2, 2, 3}
+	to = opt.ColList{10, 30, 20, 50}
+	res.RemapFrom(eqFD, from, to)
+	verifyFD(t, &res, "key(10,50); (50)==(20,30), (20)==(30,50), (30)==(20,50)")
 }
 
 // Construct base table FD from figure 3.3, page 114:

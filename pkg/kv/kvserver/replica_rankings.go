@@ -1,12 +1,7 @@
 // Copyright 2018 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package kvserver
 
@@ -45,9 +40,9 @@ type CandidateReplica interface {
 	// GetFirstIndex returns the index of the first entry in the replica's Raft
 	// log.
 	GetFirstIndex() kvpb.RaftIndex
-	// LoadSpanConfig returns the span config for the replica or an error if it can't
-	// be determined.
-	LoadSpanConfig(context.Context) (*roachpb.SpanConfig, error)
+	// DescAndSpanConfig returns the authoritative range descriptor as well
+	// as the span config for the replica.
+	DescAndSpanConfig() (*roachpb.RangeDescriptor, *roachpb.SpanConfig)
 	// Desc returns the authoritative range descriptor.
 	Desc() *roachpb.RangeDescriptor
 	// RangeUsageInfo returns usage information (sizes and traffic) needed by
@@ -77,7 +72,7 @@ func (cr candidateReplica) RangeUsageInfo() allocator.RangeUsageInfo {
 	return cr.usage
 }
 
-// Repl returns the underlying replica for this CandidateReplica. It is
+// Replica returns the underlying replica for this CandidateReplica. It is
 // only used for determining timeouts in production code and not the
 // simulator.
 func (cr candidateReplica) Repl() *Replica {

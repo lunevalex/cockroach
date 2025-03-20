@@ -1,12 +1,7 @@
 // Copyright 2016 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package stateloader
 
@@ -254,7 +249,7 @@ func (rsl StateLoader) SetRangeAppliedState(
 	// in ComputeStats.
 	ms := (*enginepb.MVCCStats)(nil)
 	return storage.MVCCPutProto(ctx, readWriter, rsl.RangeAppliedStateKey(),
-		hlc.Timestamp{}, as, storage.MVCCWriteOptions{Stats: ms, Category: storage.ReplicationReadCategory})
+		hlc.Timestamp{}, as, storage.MVCCWriteOptions{Stats: ms})
 }
 
 // SetMVCCStats overwrites the MVCC stats. This needs to perform a read on the
@@ -293,7 +288,7 @@ func (rsl StateLoader) LoadGCThreshold(
 ) (*hlc.Timestamp, error) {
 	var t hlc.Timestamp
 	_, err := storage.MVCCGetProto(ctx, reader, rsl.RangeGCThresholdKey(),
-		hlc.Timestamp{}, &t, storage.MVCCGetOptions{ReadCategory: storage.MVCCGCReadCategory})
+		hlc.Timestamp{}, &t, storage.MVCCGetOptions{})
 	return &t, err
 }
 
@@ -317,7 +312,7 @@ func (rsl StateLoader) LoadGCHint(
 ) (*roachpb.GCHint, error) {
 	var h roachpb.GCHint
 	_, err := storage.MVCCGetProto(ctx, reader, rsl.RangeGCHintKey(),
-		hlc.Timestamp{}, &h, storage.MVCCGetOptions{ReadCategory: storage.MVCCGCReadCategory})
+		hlc.Timestamp{}, &h, storage.MVCCGetOptions{})
 	if err != nil {
 		return nil, err
 	}

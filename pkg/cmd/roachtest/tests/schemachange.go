@@ -1,12 +1,7 @@
 // Copyright 2018 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package tests
 
@@ -19,7 +14,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/cluster"
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/option"
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/registry"
-	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/roachtestutil"
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/spec"
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/test"
 	"github.com/cockroachdb/cockroach/pkg/roachprod/install"
@@ -59,11 +53,7 @@ func registerSchemaChangeDuringKV(r registry.Registry) {
 			})
 			m.Wait()
 
-			pgurl, err := roachtestutil.DefaultPGUrl(ctx, c, t.L(), c.Nodes(1))
-			if err != nil {
-				t.Fatal(err)
-			}
-			c.Run(ctx, option.WithNodes(c.Node(1)), `./workload init kv --drop --db=test`, pgurl)
+			c.Run(ctx, c.Node(1), `./workload init kv --drop --db=test {pgurl:1}`)
 			for node := 1; node <= c.Spec().NodeCount; node++ {
 				node := node
 				// TODO(dan): Ideally, the test would fail if this queryload failed,
@@ -75,7 +65,7 @@ func registerSchemaChangeDuringKV(r registry.Registry) {
 						t.Fatal(err)
 					}
 					defer l.Close()
-					_ = c.RunE(ctx, option.WithNodes(c.Node(node)), fmt.Sprintf(cmd, c.Nodes(node)))
+					_ = c.RunE(ctx, c.Node(node), fmt.Sprintf(cmd, c.Nodes(node)))
 				}()
 			}
 
@@ -389,7 +379,7 @@ func makeSchemaChangeBulkIngestTest(
 				aNum, bNum, cNum, payloadBytes,
 			)
 
-			c.Run(ctx, option.WithNodes(workloadNode), cmdWrite)
+			c.Run(ctx, workloadNode, cmdWrite)
 
 			m := c.NewMonitor(ctx, crdbNodes)
 
@@ -402,7 +392,7 @@ func makeSchemaChangeBulkIngestTest(
 				indexDuration.String(), c.Spec().NodeCount-1, aNum, bNum, cNum, payloadBytes,
 			)
 			m.Go(func(ctx context.Context) error {
-				c.Run(ctx, option.WithNodes(workloadNode), cmdWriteAndRead)
+				c.Run(ctx, workloadNode, cmdWriteAndRead)
 				return nil
 			})
 

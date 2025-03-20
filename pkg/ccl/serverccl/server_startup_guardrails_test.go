@@ -1,10 +1,7 @@
 // Copyright 2023 The Cockroach Authors.
 //
-// Licensed as a CockroachDB Enterprise file under the Cockroach Community
-// License (the "License"); you may not use this file except in compliance with
-// the License. You may obtain a copy of the License at
-//
-//     https://github.com/cockroachdb/cockroach/blob/master/licenses/CCL.txt
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package serverccl
 
@@ -32,8 +29,8 @@ func TestServerStartupGuardrails(t *testing.T) {
 
 	// The tests below will use the minimum supported version as the logical
 	// version.
-	logicalVersionKey := clusterversion.MinSupported
-	logicalVersion := logicalVersionKey.Version()
+	logicalVersionKey := clusterversion.BinaryMinSupportedVersionKey
+	logicalVersion := clusterversion.ByKey(logicalVersionKey)
 
 	prev := func(v roachpb.Version) roachpb.Version {
 		t.Helper()
@@ -98,6 +95,7 @@ func TestServerStartupGuardrails(t *testing.T) {
 				Knobs: base.TestingKnobs{
 					Server: &server.TestingKnobs{
 						BinaryVersionOverride:          test.storageBinaryVersion,
+						BootstrapVersionKeyOverride:    logicalVersionKey,
 						DisableAutomaticVersionUpgrade: make(chan struct{}),
 					},
 					SQLEvalContext: &eval.TestingKnobs{

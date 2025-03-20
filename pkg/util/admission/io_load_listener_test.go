@@ -1,12 +1,7 @@
 // Copyright 2022 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package admission
 
@@ -141,11 +136,6 @@ func TestIOLoadListener(t *testing.T) {
 					d.ScanArgs(t, "flush-bytes", &flushBytes)
 					d.ScanArgs(t, "flush-work-sec", &flushWorkSec)
 					d.ScanArgs(t, "flush-idle-sec", &flushIdleSec)
-				} else {
-					// Make flush utilization low, but keep peak throughput sane by
-					// setting flushWorkSec > 0.
-					flushWorkSec = 1
-					flushIdleSec = 100
 				}
 				if d.HasArg("base-level") {
 					var baseLevel int

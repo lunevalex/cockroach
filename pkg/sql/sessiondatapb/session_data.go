@@ -1,12 +1,7 @@
 // Copyright 2020 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package sessiondatapb
 
@@ -78,6 +73,25 @@ func VectorizeExecModeFromString(val string) (VectorizeExecMode, bool) {
 		return 0, false
 	}
 	return m, true
+}
+
+func (m PlanCacheMode) String() string {
+	name, ok := PlanCacheMode_name[int32(m)]
+	if !ok {
+		return fmt.Sprintf("invalid (%d)", m)
+	}
+	return name
+}
+
+// PlanCacheModeFromString converts a string into a PlanCacheMode. False is
+// returned if the conversion was unsuccessful.
+func PlanCacheModeFromString(val string) (PlanCacheMode, bool) {
+	lowerVal := strings.ToLower(val)
+	m, ok := PlanCacheMode_value[lowerVal]
+	if !ok {
+		return 0, false
+	}
+	return PlanCacheMode(m), true
 }
 
 // User retrieves the current user.

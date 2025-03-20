@@ -1,12 +1,7 @@
 // Copyright 2022 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package sctest
 
@@ -648,85 +643,89 @@ func (cs CumulativeTestCaseSpec) run(t *testing.T, fn func(t *testing.T)) bool {
 }
 
 // cumulativeTestForEachPostCommitStage invokes `tf` once for each stage in the
-// PostCommitPhase.
+// PostCommitPhase. These invocation are run in parallel.
 func cumulativeTestForEachPostCommitStage(
 	t *testing.T,
 	relTestCaseDir string,
 	factory TestServerFactory,
 	tf func(t *testing.T, spec CumulativeTestCaseSpec),
 ) {
-	testFunc := func(t *testing.T, spec CumulativeTestSpec) {
-		// Skip this test if any of the stmts is not fully supported.
-		if err := areStmtsFullySupportedAtClusterVersion(t, spec, factory); err != nil {
-			skip.IgnoreLint(t, "test is skipped because", err.Error())
-		}
-		var postCommitCount, postCommitNonRevertibleCount int
-		var after [][]string
-		var dbName string
-		prepfn := func(db *gosql.DB, p scplan.Plan) {
-			for _, s := range p.Stages {
-				switch s.Phase {
-				case scop.PostCommitPhase:
-					postCommitCount++
-				case scop.PostCommitNonRevertiblePhase:
-					postCommitNonRevertibleCount++
+	// Grouping the parallel subtests into a non-parallel subtest allows any defer
+	// calls to work as expected.
+	t.Run("group", func(t *testing.T) {
+		testFunc := func(t *testing.T, spec CumulativeTestSpec) {
+			// Skip this test if any of the stmts is not fully supported.
+			if err := areStmtsFullySupportedAtClusterVersion(t, spec, factory); err != nil {
+				skip.IgnoreLint(t, "test is skipped because", err.Error())
+			}
+			var postCommitCount, postCommitNonRevertibleCount int
+			var after [][]string
+			var dbName string
+			prepfn := func(db *gosql.DB, p scplan.Plan) {
+				for _, s := range p.Stages {
+					switch s.Phase {
+					case scop.PostCommitPhase:
+						postCommitCount++
+					case scop.PostCommitNonRevertiblePhase:
+						postCommitNonRevertibleCount++
+					}
+				}
+				tdb := sqlutils.MakeSQLRunner(db)
+				var ok bool
+				dbName, ok = maybeGetDatabaseForIDs(t, tdb, screl.AllTargetStateDescIDs(p.TargetState))
+				if ok {
+					tdb.Exec(t, fmt.Sprintf("USE %q", dbName))
+				}
+				after = tdb.QueryStr(t, fetchDescriptorStateQuery)
+			}
+			withPostCommitPlanAfterSchemaChange(t, spec, factory, prepfn)
+			if postCommitCount+postCommitNonRevertibleCount == 0 {
+				skip.IgnoreLint(t, "test case has no post-commit stages")
+				return
+			}
+			if dbName == "" {
+				skip.IgnoreLint(t, "test case has no usable database")
+				return
+			}
+			var testCases []CumulativeTestCaseSpec
+			for stageOrdinal := 1; stageOrdinal <= postCommitCount; stageOrdinal++ {
+				testCases = append(testCases, CumulativeTestCaseSpec{
+					CumulativeTestSpec: spec,
+					Phase:              scop.PostCommitPhase,
+					StageOrdinal:       stageOrdinal,
+					StagesCount:        postCommitCount,
+					After:              after,
+					DatabaseName:       dbName,
+				})
+			}
+			for stageOrdinal := 1; stageOrdinal <= postCommitNonRevertibleCount; stageOrdinal++ {
+				testCases = append(testCases, CumulativeTestCaseSpec{
+					CumulativeTestSpec: spec,
+					Phase:              scop.PostCommitNonRevertiblePhase,
+					StageOrdinal:       stageOrdinal,
+					StagesCount:        postCommitNonRevertibleCount,
+					After:              after,
+					DatabaseName:       dbName,
+				})
+			}
+			var hasFailed bool
+			for _, tc := range testCases {
+				tc := tc // capture loop variable
+				fn := func(t *testing.T) {
+					tf(t, tc)
+				}
+				if hasFailed {
+					fn = func(t *testing.T) {
+						skip.IgnoreLint(t, "skipping test cases subsequent to earlier failure")
+					}
+				}
+				if !tc.run(t, fn) {
+					hasFailed = true
 				}
 			}
-			tdb := sqlutils.MakeSQLRunner(db)
-			var ok bool
-			dbName, ok = maybeGetDatabaseForIDs(t, tdb, screl.AllTargetStateDescIDs(p.TargetState))
-			if ok {
-				tdb.Exec(t, fmt.Sprintf("USE %q", dbName))
-			}
-			after = tdb.QueryStr(t, fetchDescriptorStateQuery)
 		}
-		withPostCommitPlanAfterSchemaChange(t, spec, factory, prepfn)
-		if postCommitCount+postCommitNonRevertibleCount == 0 {
-			skip.IgnoreLint(t, "test case has no post-commit stages")
-			return
-		}
-		if dbName == "" {
-			skip.IgnoreLint(t, "test case has no usable database")
-			return
-		}
-		var testCases []CumulativeTestCaseSpec
-		for stageOrdinal := 1; stageOrdinal <= postCommitCount; stageOrdinal++ {
-			testCases = append(testCases, CumulativeTestCaseSpec{
-				CumulativeTestSpec: spec,
-				Phase:              scop.PostCommitPhase,
-				StageOrdinal:       stageOrdinal,
-				StagesCount:        postCommitCount,
-				After:              after,
-				DatabaseName:       dbName,
-			})
-		}
-		for stageOrdinal := 1; stageOrdinal <= postCommitNonRevertibleCount; stageOrdinal++ {
-			testCases = append(testCases, CumulativeTestCaseSpec{
-				CumulativeTestSpec: spec,
-				Phase:              scop.PostCommitNonRevertiblePhase,
-				StageOrdinal:       stageOrdinal,
-				StagesCount:        postCommitNonRevertibleCount,
-				After:              after,
-				DatabaseName:       dbName,
-			})
-		}
-		var hasFailed bool
-		for _, tc := range testCases {
-			tc := tc // capture loop variable
-			fn := func(t *testing.T) {
-				tf(t, tc)
-			}
-			if hasFailed {
-				fn = func(t *testing.T) {
-					skip.IgnoreLint(t, "skipping test cases subsequent to earlier failure")
-				}
-			}
-			if !tc.run(t, fn) {
-				hasFailed = true
-			}
-		}
-	}
-	cumulativeTest(t, relTestCaseDir, testFunc)
+		cumulativeTest(t, relTestCaseDir, testFunc)
+	})
 }
 
 // fetchDescriptorStateQuery returns the CREATE statements for all descriptors
@@ -749,42 +748,40 @@ func maybeGetDatabaseForIDs(
 	t *testing.T, tdb *sqlutils.SQLRunner, ids catalog.DescriptorIDSet,
 ) (dbName string, exists bool) {
 	const q = `
-	SELECT
-		name
-	FROM
-		system.namespace
-	WHERE
-		id
-		IN (
-				SELECT
-					DISTINCT
-					COALESCE(
-						d->'database'->>'id',
-						d->'schema'->>'parentId',
-						d->'type'->>'parentId',
-						d->'function'->>'parentId',
-						d->'table'->>'parentId'
-					)::INT8
-				FROM
-					(
-						SELECT
-							crdb_internal.pb_to_json('desc', descriptor) AS d
-						FROM
-							system.descriptor
-						WHERE
-							id IN (SELECT * FROM ROWS FROM (unnest($1::INT8[])))
-					)
-			)
-	`
-	results := tdb.QueryStr(t, q, pq.Array(ids.Ordered()))
-	if len(results) > 1 {
-		skip.IgnoreLintf(t, "requires all schema changes to happen within one database;"+
-			" get %v: %v", len(results), results)
-	}
-	if len(results) == 0 {
+SELECT
+	name
+FROM
+	system.namespace
+WHERE
+	id
+	IN (
+			SELECT
+				DISTINCT
+				COALESCE(
+					d->'database'->>'id',
+					d->'schema'->>'parentId',
+					d->'type'->>'parentId',
+					d->'function'->>'parentId',
+					d->'table'->>'parentId'
+				)::INT8
+			FROM
+				(
+					SELECT
+						crdb_internal.pb_to_json('desc', descriptor) AS d
+					FROM
+						system.descriptor
+					WHERE
+						id IN (SELECT * FROM ROWS FROM (unnest($1::INT8[])))
+				)
+		)
+`
+	err := tdb.DB.QueryRowContext(context.Background(), q, pq.Array(ids.Ordered())).Scan(&dbName)
+	if errors.Is(err, gosql.ErrNoRows) {
 		return "", false
 	}
-	return results[0][0], true
+
+	require.NoError(t, err)
+	return dbName, true
 }
 
 // withPostCommitPlanAfterSchemaChange
@@ -938,7 +935,7 @@ func waitForSchemaChangesToFinish(t *testing.T, tdb *sqlutils.SQLRunner) {
 
 func hasLatestSchemaChangeSucceeded(t *testing.T, tdb *sqlutils.SQLRunner) bool {
 	result := tdb.QueryStr(t, fmt.Sprintf(
-		`SELECT status FROM [SHOW JOBS] WHERE job_type IN ('%s') ORDER BY finished DESC LIMIT 1`,
+		`SELECT status FROM [SHOW JOBS] WHERE job_type IN ('%s') ORDER BY finished DESC, job_id DESC LIMIT 1`,
 		jobspb.TypeNewSchemaChange,
 	))
 	return result[0][0] == "succeeded"

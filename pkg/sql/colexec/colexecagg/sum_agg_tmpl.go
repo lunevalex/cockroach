@@ -1,12 +1,7 @@
 // Copyright 2018 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 // {{/*
 //go:build execgen_template
@@ -26,7 +21,6 @@ import (
 
 	"github.com/cockroachdb/apd/v3"
 	"github.com/cockroachdb/cockroach/pkg/col/coldata"
-	"github.com/cockroachdb/cockroach/pkg/col/typeconv"
 	"github.com/cockroachdb/cockroach/pkg/sql/colexec/execgen"
 	"github.com/cockroachdb/cockroach/pkg/sql/colexecerror"
 	"github.com/cockroachdb/cockroach/pkg/sql/colmem"
@@ -42,7 +36,6 @@ var (
 	_ tree.AggType
 	_ apd.Context
 	_ duration.Duration
-	_ = typeconv.TypeFamilyToCanonicalTypeFamily
 )
 
 // {{/*
@@ -60,27 +53,7 @@ func _ASSIGN_SUBTRACT(_, _, _, _, _, _ string) {
 	colexecerror.InternalError(errors.AssertionFailedf(""))
 }
 
-// _ALLOC_CODE is the template variable that is replaced in agg_gen_util.go by
-// the template code for sharing allocator objects.
-const _ALLOC_CODE = 0
-
 // */}}
-
-// {{if eq "_AGGKIND" "Ordered"}}
-// {{if eq .SumKind "Int"}}
-const sumIntNumOverloads = 3
-
-// {{else}}
-const sumNumOverloads = 6
-
-// {{end}}
-// {{end}}
-
-// {{with .Infos}}
-
-var _ = _ALLOC_CODE
-
-// {{end}}
 
 func newSum_SUMKIND_AGGKINDAggAlloc(
 	allocator *colmem.Allocator, t *types.T, allocSize int64,
@@ -88,7 +61,7 @@ func newSum_SUMKIND_AGGKINDAggAlloc(
 	allocBase := aggAllocBase{allocator: allocator, allocSize: allocSize}
 	switch t.Family() {
 	// {{range .Infos}}
-	case _CANONICAL_TYPE_FAMILY:
+	case _TYPE_FAMILY:
 		switch t.Width() {
 		// {{range .WidthOverloads}}
 		case _TYPE_WIDTH:

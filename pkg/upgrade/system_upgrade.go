@@ -1,12 +1,7 @@
 // Copyright 2021 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package upgrade
 
@@ -23,6 +18,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/descs"
 	"github.com/cockroachdb/cockroach/pkg/sql/sqlstats"
+	"github.com/cockroachdb/cockroach/pkg/util/retry"
 	"github.com/cockroachdb/cockroach/pkg/util/stop"
 	"github.com/cockroachdb/logtags"
 )
@@ -95,7 +91,9 @@ type Cluster interface {
 	// ensures that the old data has vanished from the system. This is similar in
 	// spirit to how schema changes are split up into multiple smaller steps that
 	// are carried out sequentially.
-	UntilClusterStable(ctx context.Context, fn func() error) error
+	//
+	// UntilClusterStable will retry according to the provided retry options.
+	UntilClusterStable(ctx context.Context, retryOpts retry.Options, fn func() error) error
 
 	// IterateRangeDescriptors provides a handle on every range descriptor in the
 	// system, which callers can then use to send out arbitrary KV requests to in
@@ -137,14 +135,11 @@ type SystemUpgrade struct {
 type SystemUpgradeFunc func(context.Context, clusterversion.ClusterVersion, SystemDeps) error
 
 // NewSystemUpgrade constructs a SystemUpgrade.
-func NewSystemUpgrade(
-	description string, v roachpb.Version, fn SystemUpgradeFunc, restore RestoreBehavior,
-) *SystemUpgrade {
+func NewSystemUpgrade(description string, v roachpb.Version, fn SystemUpgradeFunc) *SystemUpgrade {
 	return &SystemUpgrade{
 		upgrade: upgrade{
 			description: description,
 			v:           v,
-			restore:     restore,
 		},
 		fn: fn,
 	}
@@ -154,11 +149,7 @@ func NewSystemUpgrade(
 // "permanent": an upgrade that will run regardless of the cluster's bootstrap
 // version. Note however that the upgrade will still run at most once.
 func NewPermanentSystemUpgrade(
-	description string,
-	v roachpb.Version,
-	fn SystemUpgradeFunc,
-	v22_2StartupMigrationName string,
-	restore RestoreBehavior,
+	description string, v roachpb.Version, fn SystemUpgradeFunc, v22_2StartupMigrationName string,
 ) *SystemUpgrade {
 	return &SystemUpgrade{
 		upgrade: upgrade{
@@ -166,7 +157,6 @@ func NewPermanentSystemUpgrade(
 			v:                         v,
 			permanent:                 true,
 			v22_2StartupMigrationName: v22_2StartupMigrationName,
-			restore:                   restore,
 		},
 		fn: fn,
 	}

@@ -1,12 +1,7 @@
 // Copyright 2014 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package batcheval
 
@@ -244,9 +239,7 @@ func EndTxn(
 	// Fetch existing transaction.
 	var existingTxn roachpb.Transaction
 	recordAlreadyExisted, err := storage.MVCCGetProto(
-		ctx, readWriter, key, hlc.Timestamp{}, &existingTxn, storage.MVCCGetOptions{
-			ReadCategory: storage.BatchEvalReadCategory,
-		},
+		ctx, readWriter, key, hlc.Timestamp{}, &existingTxn, storage.MVCCGetOptions{},
 	)
 	if err != nil {
 		return result.Result{}, err
@@ -708,9 +701,7 @@ func updateStagingTxn(
 	txn.LockSpans = args.LockSpans
 	txn.InFlightWrites = args.InFlightWrites
 	txnRecord := txn.AsRecord()
-	return storage.MVCCPutProto(
-		ctx, readWriter, key, hlc.Timestamp{}, &txnRecord,
-		storage.MVCCWriteOptions{Stats: ms, Category: storage.BatchEvalReadCategory})
+	return storage.MVCCPutProto(ctx, readWriter, key, hlc.Timestamp{}, &txnRecord, storage.MVCCWriteOptions{Stats: ms})
 }
 
 // updateFinalizedTxn persists the COMMITTED or ABORTED transaction record with
@@ -728,7 +719,7 @@ func updateFinalizedTxn(
 	recordAlreadyExisted bool,
 	externalLocks []roachpb.Span,
 ) error {
-	opts := storage.MVCCWriteOptions{Stats: ms, Category: storage.BatchEvalReadCategory}
+	opts := storage.MVCCWriteOptions{Stats: ms}
 	if !evalCtx.EvalKnobs().DisableTxnAutoGC && len(externalLocks) == 0 {
 		if log.V(2) {
 			log.Infof(ctx, "auto-gc'ed %s (%d locks)", txn.Short(), len(args.LockSpans))
@@ -783,7 +774,7 @@ func RunCommitTrigger(
 			ctx, rec, batch, *ms, ct.SplitTrigger, txn.WriteTimestamp,
 		)
 		if err != nil {
-			return result.Result{}, kvpb.MaybeWrapReplicaCorruptionError(ctx, err)
+			return result.Result{}, kvpb.NewReplicaCorruptionError(err)
 		}
 		*ms = newMS
 		return res, nil
@@ -791,7 +782,7 @@ func RunCommitTrigger(
 	if mt := ct.GetMergeTrigger(); mt != nil {
 		res, err := mergeTrigger(ctx, rec, batch, ms, mt, txn.WriteTimestamp)
 		if err != nil {
-			return result.Result{}, kvpb.MaybeWrapReplicaCorruptionError(ctx, err)
+			return result.Result{}, kvpb.NewReplicaCorruptionError(err)
 		}
 		return res, nil
 	}
@@ -1032,7 +1023,7 @@ func splitTrigger(
 			"unable to determine whether right hand side of split is empty")
 	}
 
-	rangeKeyDeltaMS, err := computeSplitRangeKeyStatsDelta(ctx, batch, split.LeftDesc, split.RightDesc)
+	rangeKeyDeltaMS, err := computeSplitRangeKeyStatsDelta(batch, split.LeftDesc, split.RightDesc)
 	if err != nil {
 		return enginepb.MVCCStats{}, result.Result{}, errors.Wrap(err,
 			"unable to compute range key stats delta for RHS")
@@ -1083,7 +1074,7 @@ func makeScanStatsFn(
 	sideName string,
 ) splitStatsScanFn {
 	return func() (enginepb.MVCCStats, error) {
-		sideMS, err := rditer.ComputeStatsForRange(ctx, sideDesc, reader, ts.WallTime)
+		sideMS, err := rditer.ComputeStatsForRange(sideDesc, reader, ts.WallTime)
 		if err != nil {
 			return enginepb.MVCCStats{}, errors.Wrapf(err,
 				"unable to compute stats for %s range after split", sideName)
@@ -1118,9 +1109,7 @@ func splitTriggerHelper(
 	if err != nil {
 		return enginepb.MVCCStats{}, result.Result{}, errors.Wrap(err, "unable to fetch last replica GC timestamp")
 	}
-	if err := storage.MVCCPutProto(
-		ctx, batch, keys.RangeLastReplicaGCTimestampKey(split.RightDesc.RangeID), hlc.Timestamp{},
-		&replicaGCTS, storage.MVCCWriteOptions{Category: storage.BatchEvalReadCategory}); err != nil {
+	if err := storage.MVCCPutProto(ctx, batch, keys.RangeLastReplicaGCTimestampKey(split.RightDesc.RangeID), hlc.Timestamp{}, &replicaGCTS, storage.MVCCWriteOptions{}); err != nil {
 		return enginepb.MVCCStats{}, result.Result{}, errors.Wrap(err, "unable to copy last replica GC timestamp")
 	}
 
@@ -1314,7 +1303,7 @@ func mergeTrigger(
 	// adjusted for range key merges (which is the inverse of the split
 	// adjustment).
 	ms.Add(merge.RightMVCCStats)
-	msRangeKeyDelta, err := computeSplitRangeKeyStatsDelta(ctx, batch, merge.LeftDesc, merge.RightDesc)
+	msRangeKeyDelta, err := computeSplitRangeKeyStatsDelta(batch, merge.LeftDesc, merge.RightDesc)
 	if err != nil {
 		return result.Result{}, err
 	}
@@ -1333,8 +1322,7 @@ func mergeTrigger(
 	} else {
 		_ = clusterversion.V23_1 // remove this branch when 23.1 support is removed
 		ridPrefix := keys.MakeRangeIDReplicatedPrefix(merge.RightDesc.RangeID)
-		sysMS, err := storage.ComputeStats(
-			ctx, batch, ridPrefix, ridPrefix.PrefixEnd(), 0 /* nowNanos */)
+		sysMS, err := storage.ComputeStats(batch, ridPrefix, ridPrefix.PrefixEnd(), 0 /* nowNanos */)
 		if err != nil {
 			return result.Result{}, err
 		}
@@ -1424,7 +1412,7 @@ func changeReplicasTrigger(
 // range keys will already have been merged in Pebble by the time this is
 // called.
 func computeSplitRangeKeyStatsDelta(
-	ctx context.Context, r storage.Reader, lhs, rhs roachpb.RangeDescriptor,
+	r storage.Reader, lhs, rhs roachpb.RangeDescriptor,
 ) (enginepb.MVCCStats, error) {
 	var ms enginepb.MVCCStats
 
@@ -1435,11 +1423,10 @@ func computeSplitRangeKeyStatsDelta(
 		splitKey.Prevish(roachpb.PrevishKeyLength), splitKey.Next(),
 		lhs.StartKey.AsRawKey(), rhs.EndKey.AsRawKey())
 
-	iter, err := r.NewMVCCIterator(ctx, storage.MVCCKeyIterKind, storage.IterOptions{
-		KeyTypes:     storage.IterKeyTypeRangesOnly,
-		LowerBound:   leftPeekBound,
-		UpperBound:   rightPeekBound,
-		ReadCategory: storage.BatchEvalReadCategory,
+	iter, err := r.NewMVCCIterator(storage.MVCCKeyIterKind, storage.IterOptions{
+		KeyTypes:   storage.IterKeyTypeRangesOnly,
+		LowerBound: leftPeekBound,
+		UpperBound: rightPeekBound,
 	})
 	if err != nil {
 		return ms, err

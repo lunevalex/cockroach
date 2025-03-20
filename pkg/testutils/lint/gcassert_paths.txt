@@ -21,6 +21,7 @@ sql/colexec/colexecsel
 sql/colexec/colexecspan
 sql/colexec/colexecwindow
 sql/colfetcher
+sql/execinfrapb
 sql/opt
 sql/row
 storage
@@ -30,3 +31,4 @@ util
 util/admission
 util/hlc
 util/intsets
+util/mon

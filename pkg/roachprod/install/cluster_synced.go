@@ -1,12 +1,7 @@
 // Copyright 2018 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package install
 
@@ -29,7 +24,6 @@ import (
 	"text/template"
 	"time"
 
-	"github.com/cockroachdb/cockroach/pkg/cli/exit"
 	"github.com/cockroachdb/cockroach/pkg/roachprod/cloud"
 	"github.com/cockroachdb/cockroach/pkg/roachprod/config"
 	rperrors "github.com/cockroachdb/cockroach/pkg/roachprod/errors"
@@ -46,7 +40,29 @@ import (
 	"github.com/cockroachdb/errors"
 	"golang.org/x/exp/maps"
 	"golang.org/x/sync/errgroup"
+	"golang.org/x/sys/unix"
 )
+
+// scpTimeout is the timeout enforced on every `scp` command performed
+// by roachprod. The default of 10 minutes should be more than
+// sufficient for roachtests and common roachprod operations.
+//
+// Callers can customize the timeout using the ROACHPROD_SCP_TIMEOUT
+// environment variable.
+var scpTimeout = func() time.Duration {
+	var defaultTimeout = 10 * time.Minute
+
+	if durStr := os.Getenv("ROACHPROD_SCP_TIMEOUT"); durStr != "" {
+		dur, err := time.ParseDuration(durStr)
+		if err != nil {
+			panic(fmt.Errorf("invalid scp timeout %q: %w", durStr, err))
+		}
+
+		return dur
+	}
+
+	return defaultTimeout
+}()
 
 // A SyncedCluster is created from the cluster metadata in the synced clusters
 // cache and is used as the target for installing and managing various software
@@ -113,7 +129,7 @@ var DefaultRetryOpt = &retry.Options{
 	MaxRetries: 2,
 }
 
-var DefaultShouldRetryFn = func(res *RunResultDetails) bool { return errors.Is(res.Err, rperrors.ErrSSH255) }
+var DefaultShouldRetryFn = func(res *RunResultDetails) bool { return rperrors.IsTransient(res.Err) }
 
 // defaultSCPRetry won't retry if the error output contains any of the following
 // substrings, in which cases retries are unlikely to help.
@@ -129,7 +145,7 @@ var defaultSCPShouldRetryFn = func(res *RunResultDetails) bool {
 }
 
 // runWithMaybeRetry will run the specified function `f` at least once, or only
-// once if `runRetryOpts` is nil
+// once if `retryOpts` is nil
 //
 // Any RunResultDetails containing a non nil err from `f` is passed to `shouldRetryFn` which,
 // if it returns true, will result in `f` being retried using the `RetryOpts`
@@ -193,8 +209,11 @@ func runWithMaybeRetry(
 func scpWithRetry(
 	ctx context.Context, l *logger.Logger, src, dest string,
 ) (*RunResultDetails, error) {
-	return runWithMaybeRetry(ctx, l, DefaultRetryOpt, defaultSCPShouldRetryFn,
-		func(ctx context.Context) (*RunResultDetails, error) { return scp(l, src, dest) })
+	scpCtx, cancel := context.WithTimeout(ctx, scpTimeout)
+	defer cancel()
+
+	return runWithMaybeRetry(scpCtx, l, DefaultRetryOpt, defaultSCPShouldRetryFn,
+		func(ctx context.Context) (*RunResultDetails, error) { return scp(ctx, l, src, dest) })
 }
 
 // Host returns the public IP of a node.
@@ -358,7 +377,7 @@ func (c *SyncedCluster) validateHost(ctx context.Context, l *logger.Logger, node
 		return nil
 	}
 	cmd := c.validateHostnameCmd("", node)
-	return c.Run(ctx, l, l.Stdout, l.Stderr, WithNodes(Nodes{node}), "validate-ssh-host", cmd)
+	return c.Run(ctx, l, l.Stdout, l.Stderr, OnNodes(Nodes{node}), "validate-ssh-host", cmd)
 }
 
 // cmdDebugName is the suffix of the generated ssh debug file
@@ -392,14 +411,15 @@ func (c *SyncedCluster) newSession(
 // for shared-process configurations.)
 //
 // When Stop needs to kill a process without other flags, the signal
-// is 9 (SIGKILL) and wait is true. If maxWait is non-zero, Stop stops
-// waiting after that approximate number of seconds.
+// is 9 (SIGKILL) and wait is true. If gracePeriod is non-zero, Stop
+// stops waiting after that approximate number of seconds, sending a
+// SIGKILL if the process is still running after that time.
 func (c *SyncedCluster) Stop(
 	ctx context.Context,
 	l *logger.Logger,
 	sig int,
 	wait bool,
-	maxWait int,
+	gracePeriod int,
 	virtualClusterLabel string,
 ) error {
 	// virtualClusterDisplay includes information about the virtual
@@ -443,7 +463,7 @@ func (c *SyncedCluster) Stop(
 		if wait {
 			display += " and waiting"
 		}
-		return c.kill(ctx, l, "stop", display, sig, wait, maxWait, virtualClusterLabel)
+		return c.kill(ctx, l, "stop", display, sig, wait, gracePeriod, virtualClusterLabel)
 	} else {
 		res, err := c.ExecSQL(ctx, l, c.Nodes[:1], "", 0, []string{
 			"-e", fmt.Sprintf("ALTER TENANT '%s' STOP SERVICE", virtualClusterName),
@@ -463,27 +483,29 @@ func (c *SyncedCluster) Stop(
 // Signal sends a signal to the CockroachDB process.
 func (c *SyncedCluster) Signal(ctx context.Context, l *logger.Logger, sig int) error {
 	display := fmt.Sprintf("%s: sending signal %d", c.Name, sig)
-	return c.kill(ctx, l, "signal", display, sig, false /* wait */, 0 /* maxWait */, "")
+	return c.kill(ctx, l, "signal", display, sig, false /* wait */, 0 /* gracePeriod */, "")
 }
 
 // kill sends the signal sig to all nodes in the cluster using the kill command.
 // cmdName and display specify the roachprod subcommand and a status message,
 // for output/logging. If wait is true, the command will wait for the processes
-// to exit, up to maxWait seconds.
+// to exit, up to gracePeriod seconds.
 func (c *SyncedCluster) kill(
 	ctx context.Context,
 	l *logger.Logger,
 	cmdName, display string,
 	sig int,
 	wait bool,
-	maxWait int,
+	gracePeriod int,
 	virtualClusterLabel string,
 ) error {
-	if sig == 9 {
+	const timedOutMessage = "timed out"
+
+	if sig == int(unix.SIGKILL) {
 		// `kill -9` without wait is never what a caller wants. See #77334.
 		wait = true
 	}
-	return c.Parallel(ctx, l, WithNodes(c.Nodes).WithDisplay(display).WithRetryDisabled(),
+	return c.Parallel(ctx, l, OnNodes(c.Nodes).WithDisplay(display).WithRetryDisabled(),
 		func(ctx context.Context, node Node) (*RunResultDetails, error) {
 			var waitCmd string
 			if wait {
@@ -494,6 +516,7 @@ func (c *SyncedCluster) kill(
     while kill -0 ${pid}; do
       if [ %[2]d -gt 0 -a $waitcnt -gt %[2]d ]; then
          echo "${pid}: max %[2]d attempts reached, aborting wait" >>%[1]s/roachprod.log
+         echo "%[3]s"
          break
       fi
       kill -0 ${pid} >> %[1]s/roachprod.log 2>&1
@@ -505,7 +528,8 @@ func (c *SyncedCluster) kill(
     echo "${pid}: dead" >> %[1]s/roachprod.log
   done`,
 					c.LogDir(node, "", 0), // [1]
-					maxWait,               // [2]
+					gracePeriod,           // [2]
+					timedOutMessage,       // [3]
 				)
 			}
 
@@ -540,36 +564,54 @@ fi`,
 				waitCmd,                   // [6]
 			)
 
-			return c.runCmdOnSingleNode(ctx, l, node, cmd, defaultCmdOpts("kill"))
+			res, err := c.runCmdOnSingleNode(ctx, l, node, cmd, defaultCmdOpts("kill"))
+			if err != nil {
+				return res, err
+			}
+
+			// If the process has not terminated after the grace period,
+			// perform a forceful termination.
+			if wait && sig != int(unix.SIGKILL) && strings.Contains(res.CombinedOut, timedOutMessage) {
+				l.Printf("n%d did not shutdown after %ds, performing a SIGKILL", node, gracePeriod)
+				return res, errors.Wrapf(
+					c.kill(ctx, l, cmdName, display, int(unix.SIGKILL), true, 0, virtualClusterLabel),
+					"failed to forcefully terminate n%d", node,
+				)
+			}
+
+			return res, nil
 		})
 }
 
 // Wipe TODO(peter): document
 func (c *SyncedCluster) Wipe(ctx context.Context, l *logger.Logger, preserveCerts bool) error {
 	display := fmt.Sprintf("%s: wiping", c.Name)
-	if err := c.Stop(ctx, l, 9, true /* wait */, 0 /* maxWait */, ""); err != nil {
+	if err := c.Stop(ctx, l, int(unix.SIGKILL), true /* wait */, 0 /* gracePeriod */, ""); err != nil {
 		return err
 	}
-	return c.Parallel(ctx, l, WithNodes(c.Nodes).WithDisplay(display), func(ctx context.Context, node Node) (*RunResultDetails, error) {
+	return c.Parallel(ctx, l, OnNodes(c.Nodes).WithDisplay(display), func(ctx context.Context, node Node) (*RunResultDetails, error) {
 		var cmd string
 		if c.IsLocal() {
 			// Not all shells like brace expansion, so we'll do it here
-			dirs := []string{"data", "logs"}
+			dirs := []string{"data*", "logs*"}
 			if !preserveCerts {
-				dirs = append(dirs, "certs*")
-				dirs = append(dirs, "tenant-certs*")
+				dirs = append(dirs, fmt.Sprintf("%s*", CockroachNodeCertsDir))
+				dirs = append(dirs, fmt.Sprintf("%s*", CockroachNodeTenantCertsDir))
 			}
 			for _, dir := range dirs {
 				cmd += fmt.Sprintf(`rm -fr %s/%s ;`, c.localVMDir(node), dir)
 			}
 		} else {
 			rmCmds := []string{
-				`sudo find /mnt/data* -maxdepth 1 -type f -exec rm -f {} \;`,
+				`sudo find /mnt/data* -maxdepth 1 -type f -not -name .roachprod-initialized -exec rm -f {} \;`,
 				`sudo rm -fr /mnt/data*/{auxiliary,local,tmp,cassandra,cockroach,cockroach-temp*,mongo-data}`,
-				`sudo rm -fr logs`,
+				`sudo rm -fr logs* data*`,
 			}
 			if !preserveCerts {
-				rmCmds = append(rmCmds, "sudo rm -fr certs*", "sudo rm -fr tenant-certs*")
+				rmCmds = append(rmCmds,
+					fmt.Sprintf("sudo rm -fr %s*", CockroachNodeCertsDir),
+					fmt.Sprintf("sudo rm -fr %s*", CockroachNodeTenantCertsDir),
+				)
 			}
 
 			cmd = strings.Join(rmCmds, " && ")
@@ -590,7 +632,7 @@ type NodeStatus struct {
 // Status TODO(peter): document
 func (c *SyncedCluster) Status(ctx context.Context, l *logger.Logger) ([]NodeStatus, error) {
 	display := fmt.Sprintf("%s: status", c.Name)
-	res, _, err := c.ParallelE(ctx, l, WithNodes(c.Nodes).WithDisplay(display), func(ctx context.Context, node Node) (*RunResultDetails, error) {
+	res, _, err := c.ParallelE(ctx, l, OnNodes(c.Nodes).WithDisplay(display), func(ctx context.Context, node Node) (*RunResultDetails, error) {
 		binary := cockroachNodeBinary(c, node)
 		cmd := fmt.Sprintf(`out=$(ps axeww -o pid -o ucomm -o command | \
   sed 's/export ROACHPROD=//g' | \
@@ -1136,14 +1178,20 @@ func defaultCmdOpts(debugName string) RunCmdOptions {
 // - specifying the stdin, stdout, and stderr streams
 // - specifying the remote session options
 // - whether the command should be run with the ROACHPROD env variable (true for all user commands)
+//
+// NOTE: do *not* return a `nil` `*RunResultDetails` in this function:
+// we want to support callers being able to use
+// `errors.CombineErrors(err, res.Err)` when they don't care about the
+// origin of the error.
 func (c *SyncedCluster) runCmdOnSingleNode(
 	ctx context.Context, l *logger.Logger, node Node, cmd string, opts RunCmdOptions,
 ) (*RunResultDetails, error) {
+	var noResult RunResultDetails
 	// Argument template expansion is node specific (e.g. for {store-dir}).
 	e := expander{node: node}
 	expandedCmd, err := e.expand(ctx, l, c, cmd)
 	if err != nil {
-		return nil, errors.WithDetailf(err, "error expanding command: %s", cmd)
+		return &noResult, errors.WithDetailf(err, "error expanding command: %s", cmd)
 	}
 
 	nodeCmd := expandedCmd
@@ -1351,14 +1399,43 @@ func (c *SyncedCluster) RunWithDetails(
 	return results, nil
 }
 
+var roachprodRetryOptions = retry.Options{
+	InitialBackoff: 10 * time.Second,
+	Multiplier:     2,
+	MaxBackoff:     5 * time.Minute,
+	MaxRetries:     10,
+}
+
+// RepeatRun is the same function as c.Run, but with an automatic retry loop.
+func (c *SyncedCluster) RepeatRun(
+	ctx context.Context, l *logger.Logger, stdout, stderr io.Writer, nodes Nodes, title,
+	cmd string,
+) error {
+	var lastError error
+	for attempt, r := 0, retry.StartWithCtx(ctx, roachprodRetryOptions); r.Next(); {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		attempt++
+		l.Printf("attempt %d - %s", attempt, title)
+		lastError = c.Run(ctx, l, stdout, stderr, OnNodes(nodes), title, cmd)
+		if lastError != nil {
+			l.Printf("error - retrying: %s", lastError)
+			continue
+		}
+		return nil
+	}
+	return errors.Wrapf(lastError, "all attempts failed for %s", title)
+}
+
 // Wait TODO(peter): document
 func (c *SyncedCluster) Wait(ctx context.Context, l *logger.Logger) error {
 	display := fmt.Sprintf("%s: waiting for nodes to start", c.Name)
-	_, hasError, err := c.ParallelE(ctx, l, WithNodes(c.Nodes).WithDisplay(display).WithRetryDisabled(),
+	_, hasError, err := c.ParallelE(ctx, l, OnNodes(c.Nodes).WithDisplay(display).WithRetryDisabled(),
 		func(ctx context.Context, node Node) (*RunResultDetails, error) {
 			res := &RunResultDetails{Node: node}
 			var err error
-			cmd := "test -e /mnt/data1/.roachprod-initialized"
+			cmd := fmt.Sprintf("test -e %s", vm.DisksInitializedFile)
 			opts := defaultCmdOpts("wait-init")
 			for j := 0; j < 600; j++ {
 				res, err = c.runCmdOnSingleNode(ctx, l, node, cmd, opts)
@@ -1414,7 +1491,7 @@ func (c *SyncedCluster) SetupSSH(ctx context.Context, l *logger.Logger) error {
 
 	// Generate an ssh key that we'll distribute to all the nodes in the
 	// cluster in order to allow inter-node ssh.
-	results, _, err := c.ParallelE(ctx, l, WithNodes(c.Nodes[0:1]).WithDisplay("generating ssh key"),
+	results, _, err := c.ParallelE(ctx, l, OnNodes(c.Nodes[0:1]).WithDisplay("generating ssh key"),
 		func(ctx context.Context, n Node) (*RunResultDetails, error) {
 			// Create the ssh key and then tar up the public, private and
 			// authorized_keys files and output them to stdout. We'll take this output
@@ -1437,7 +1514,7 @@ tar cf - .ssh/id_rsa .ssh/id_rsa.pub .ssh/authorized_keys
 	sshTar := []byte(results[0].Stdout)
 	// Skip the first node which is where we generated the key.
 	nodes := c.Nodes[1:]
-	if err := c.Parallel(ctx, l, WithNodes(nodes).WithDisplay("distributing ssh key"),
+	if err := c.Parallel(ctx, l, OnNodes(nodes).WithDisplay("distributing ssh key"),
 		func(ctx context.Context, node Node) (*RunResultDetails, error) {
 			runOpts := defaultCmdOpts("ssh-dist-key")
 			runOpts.stdin = bytes.NewReader(sshTar)
@@ -1475,7 +1552,7 @@ tar cf - .ssh/id_rsa .ssh/id_rsa.pub .ssh/authorized_keys
 	for i, provider := range providers {
 		firstNodes[i] = providerPrivateIPs[provider][0].node
 	}
-	if err := c.Parallel(ctx, l, WithNodes(firstNodes).WithDisplay("scanning hosts"),
+	if err := c.Parallel(ctx, l, OnNodes(firstNodes).WithDisplay("scanning hosts"),
 		func(ctx context.Context, node Node) (*RunResultDetails, error) {
 			// Scan a combination of all remote IPs and local IPs pertaining to this
 			// node's cloud provider.
@@ -1525,7 +1602,7 @@ exit 1
 		return err
 	}
 
-	if err := c.Parallel(ctx, l, WithNodes(c.Nodes).WithDisplay("distributing known_hosts"),
+	if err := c.Parallel(ctx, l, OnNodes(c.Nodes).WithDisplay("distributing known_hosts"),
 		func(ctx context.Context, node Node) (*RunResultDetails, error) {
 			provider := c.VMs[node-1].Provider
 			const cmd = `
@@ -1563,12 +1640,11 @@ fi
 	}
 
 	if len(c.AuthorizedKeys) > 0 {
-		// When clusters are created using cloud APIs they only have a subset of
-		// desired keys installed on a subset of users. This code distributes
-		// additional authorized_keys to both the current user (your username on
-		// gce and the shared user on aws) as well as to the shared user on both
-		// platforms.
-		if err := c.Parallel(ctx, l, WithNodes(c.Nodes).WithDisplay("adding additional authorized keys"),
+		// When clusters are created using cloud APIs they only have a
+		// subset of desired keys installed on a subset of users. This
+		// code distributes additional authorized_keys the current user
+		// (i.e., the shared user).
+		if err := c.Parallel(ctx, l, OnNodes(c.Nodes).WithDisplay("adding additional authorized keys"),
 			func(ctx context.Context, node Node) (*RunResultDetails, error) {
 				const cmd = `
 keys_data="$(cat)"
@@ -1579,20 +1655,11 @@ on_exit() {
     rm -f "${tmp1}" "${tmp2}"
 }
 trap on_exit EXIT
-if [[ -f ~/.ssh/authorized_keys ]]; then
-    cat ~/.ssh/authorized_keys > "${tmp1}"
-fi
+cat ~/.ssh/authorized_keys > "${tmp1}"
 echo "${keys_data}" >> "${tmp1}"
 sort -u < "${tmp1}" > "${tmp2}"
 install --mode 0600 "${tmp2}" ~/.ssh/authorized_keys
-if [[ "$(whoami)" != "` + config.SharedUser + `" ]]; then
-    sudo install --mode 0600 \
-        --owner ` + config.SharedUser + `\
-        --group ` + config.SharedUser + `\
-        "${tmp2}" ~` + config.SharedUser + `/.ssh/authorized_keys
-fi
 `
-
 				runOpts := defaultCmdOpts("ssh-add-extra-keys")
 				runOpts.stdin = bytes.NewReader(c.AuthorizedKeys)
 				return c.runCmdOnSingleNode(ctx, l, node, cmd, runOpts)
@@ -1605,10 +1672,17 @@ fi
 }
 
 const (
-	certsTarName       = "certs.tar"
-	tenantCertsTarName = "tenant-certs.tar"
-	tenantCertFile     = "client-tenant.%d.crt"
+	// CockroachNodeCertsDir is the certs directory that lives
+	// on the cockroach node itself.
+	CockroachNodeCertsDir       = "certs"
+	CockroachNodeTenantCertsDir = "tenant-certs"
+	certsTarName                = "certs.tar"
+	tenantCertFile              = "client-tenant.%d.crt"
 )
+
+func tenantCertsTarName(virtualClusterID int) string {
+	return fmt.Sprintf("%s-%d.tar", CockroachNodeTenantCertsDir, virtualClusterID)
+}
 
 // DistributeCerts will generate and distribute certificates to all the nodes.
 func (c *SyncedCluster) DistributeCerts(ctx context.Context, l *logger.Logger) error {
@@ -1623,33 +1697,32 @@ func (c *SyncedCluster) DistributeCerts(ctx context.Context, l *logger.Logger) e
 
 	// Generate the ca, client and node certificates on the first node.
 	display := fmt.Sprintf("%s: initializing certs", c.Name)
-	if err := c.Parallel(ctx, l, WithNodes(c.Nodes[0:1]).WithDisplay(display),
+	if err := c.Parallel(ctx, l, OnNodes(c.Nodes[0:1]).WithDisplay(display),
 		func(ctx context.Context, node Node) (*RunResultDetails, error) {
 			var cmd string
 			if c.IsLocal() {
 				cmd = fmt.Sprintf(`cd %s ; `, c.localVMDir(1))
 			}
 			cmd += fmt.Sprintf(`
-rm -fr certs
-mkdir -p certs
+rm -fr %[2]s
+mkdir -p %[2]s
 VERSION=$(%[1]s version --build-tag)
-VERSION=${VERSION::5}
+VERSION=${VERSION::3}
 TENANT_SCOPE_OPT=""
-if [[ $VERSION = v22.2 ]]; then
+if [[ $VERSION = v22 ]]; then
        TENANT_SCOPE_OPT="--tenant-scope 1,2,3,4,11,12,13,14"
 fi
-%[1]s cert create-ca --certs-dir=certs --ca-key=certs/ca.key
-%[1]s cert create-client root --certs-dir=certs --ca-key=certs/ca.key $TENANT_SCOPE_OPT
-%[1]s cert create-client testuser --certs-dir=certs --ca-key=certs/ca.key $TENANT_SCOPE_OPT
-%[1]s cert create-node %[2]s --certs-dir=certs --ca-key=certs/ca.key
-tar cvf %[3]s certs
-`, cockroachNodeBinary(c, 1), strings.Join(nodeNames, " "), certsTarName)
+%[1]s cert create-ca --certs-dir=%[2]s --ca-key=%[2]s/ca.key
+%[1]s cert create-client root --certs-dir=%[2]s --ca-key=%[2]s/ca.key $TENANT_SCOPE_OPT
+%[1]s cert create-client %[3]s --certs-dir=%[2]s --ca-key=%[2]s/ca.key $TENANT_SCOPE_OPT
+%[1]s cert create-node %[4]s --certs-dir=%[2]s --ca-key=%[2]s/ca.key
+tar cvf %[5]s %[2]s
+`, cockroachNodeBinary(c, 1), CockroachNodeCertsDir, DefaultUser, strings.Join(nodeNames, " "), certsTarName)
 
 			return c.runCmdOnSingleNode(ctx, l, node, cmd, defaultCmdOpts("init-certs"))
 		},
 	); err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		exit.WithCode(exit.UnspecifiedError())
+		return err
 	}
 
 	tarfile, cleanup, err := c.getFileFromFirstNode(ctx, l, certsTarName)
@@ -1681,11 +1754,14 @@ func (c *SyncedCluster) DistributeTenantCerts(
 		return err
 	}
 
-	if err := hostCluster.createTenantCertBundle(ctx, l, tenantCertsTarName, virtualClusterID, nodeNames); err != nil {
+	certsTar := tenantCertsTarName(virtualClusterID)
+	if err := hostCluster.createTenantCertBundle(
+		ctx, l, tenantCertsTarName(virtualClusterID), virtualClusterID, nodeNames,
+	); err != nil {
 		return err
 	}
 
-	tarfile, cleanup, err := hostCluster.getFileFromFirstNode(ctx, l, tenantCertsTarName)
+	tarfile, cleanup, err := hostCluster.getFileFromFirstNode(ctx, l, certsTar)
 	if err != nil {
 		return err
 	}
@@ -1707,32 +1783,33 @@ func (c *SyncedCluster) createTenantCertBundle(
 	nodeNames []string,
 ) error {
 	display := fmt.Sprintf("%s: initializing tenant certs", c.Name)
-	return c.Parallel(ctx, l, WithNodes(c.Nodes[0:1]).WithDisplay(display),
+	return c.Parallel(ctx, l, OnNodes(c.Nodes[0:1]).WithDisplay(display),
 		func(ctx context.Context, node Node) (*RunResultDetails, error) {
 			cmd := "set -e;"
 			if c.IsLocal() {
 				cmd += fmt.Sprintf(`cd %s ; `, c.localVMDir(1))
 			}
 			cmd += fmt.Sprintf(`
-CERT_DIR=tenant-certs/certs
-CA_KEY=certs/ca.key
+CERT_DIR=%[1]s-%[5]d/certs
+CA_KEY=%[2]s/ca.key
 
 rm -fr $CERT_DIR
 mkdir -p $CERT_DIR
-cp certs/ca.crt $CERT_DIR
+cp %[2]s/ca.crt $CERT_DIR
 SHARED_ARGS="--certs-dir=$CERT_DIR --ca-key=$CA_KEY"
-VERSION=$(%[1]s version --build-tag)
+VERSION=$(%[3]s version --build-tag)
 VERSION=${VERSION::3}
 TENANT_SCOPE_OPT=""
 if [[ $VERSION = v22 ]]; then
-        TENANT_SCOPE_OPT="--tenant-scope %[3]d"
+        TENANT_SCOPE_OPT="--tenant-scope %[5]d"
 fi
-%[1]s cert create-node %[2]s $SHARED_ARGS
-%[1]s cert create-tenant-client %[3]d %[2]s $SHARED_ARGS
-%[1]s cert create-client root $TENANT_SCOPE_OPT $SHARED_ARGS
-%[1]s cert create-client testuser $TENANT_SCOPE_OPT $SHARED_ARGS
-tar cvf %[4]s $CERT_DIR
+%[3]s cert create-node %[4]s $SHARED_ARGS
+%[3]s cert create-tenant-client %[5]d %[4]s $SHARED_ARGS
+%[3]s cert create-client root $TENANT_SCOPE_OPT $SHARED_ARGS
+tar cvf %[6]s $CERT_DIR
 `,
+				CockroachNodeTenantCertsDir,
+				CockroachNodeCertsDir,
 				cockroachNodeBinary(c, node),
 				strings.Join(nodeNames, " "),
 				virtualClusterID,
@@ -1793,7 +1870,7 @@ func (c *SyncedCluster) checkForTenantCertificates(
 	if c.IsLocal() {
 		dir = c.localVMDir(1)
 	}
-	if !c.fileExistsOnFirstNode(ctx, l, filepath.Join(dir, tenantCertsTarName)) {
+	if !c.fileExistsOnFirstNode(ctx, l, filepath.Join(dir, tenantCertsTarName(virtualClusterID))) {
 		return false
 	}
 	return c.fileExistsOnFirstNode(ctx, l, filepath.Join(c.CertsDir(1), fmt.Sprintf(tenantCertFile, virtualClusterID)))
@@ -1850,7 +1927,7 @@ func (c *SyncedCluster) distributeLocalCertsTar(
 	}
 
 	display := c.Name + ": distributing certs"
-	return c.Parallel(ctx, l, WithNodes(nodes).WithDisplay(display),
+	return c.Parallel(ctx, l, OnNodes(nodes).WithDisplay(display),
 		func(ctx context.Context, node Node) (*RunResultDetails, error) {
 			var cmd string
 			if c.IsLocal() {
@@ -2171,7 +2248,7 @@ func (c *SyncedCluster) Put(
 	}
 
 	if finalErr != nil {
-		return errors.Wrapf(finalErr, "put %s failed", src)
+		return errors.Wrapf(finalErr, "put %q failed", src)
 	}
 	return nil
 }
@@ -2577,7 +2654,7 @@ func (c *SyncedCluster) pgurls(
 		if err != nil {
 			return nil, err
 		}
-		m[node] = c.NodeURL(host, desc.Port, virtualClusterName, desc.ServiceMode)
+		m[node] = c.NodeURL(host, desc.Port, virtualClusterName, desc.ServiceMode, AuthUserCert)
 	}
 	return m, nil
 }
@@ -2692,7 +2769,7 @@ func sshVersion3() bool {
 // scp return type conforms to what runWithMaybeRetry expects. A nil error
 // is always returned here since the only error that can happen is an scp error
 // which we do want to be able to retry.
-func scp(l *logger.Logger, src, dest string) (*RunResultDetails, error) {
+func scp(ctx context.Context, l *logger.Logger, src, dest string) (*RunResultDetails, error) {
 	args := []string{
 		// Enable recursive copies, compression.
 		"scp", "-r", "-C",
@@ -2706,11 +2783,12 @@ func scp(l *logger.Logger, src, dest string) (*RunResultDetails, error) {
 	}
 	args = append(args, sshAuthArgs()...)
 	args = append(args, src, dest)
-	cmd := exec.Command(args[0], args[1:]...)
+	cmd := exec.CommandContext(ctx, args[0], args[1:]...)
+	cmd.WaitDelay = time.Second // make sure the call below returns when the context is canceled
 
 	out, err := cmd.CombinedOutput()
 	if err != nil {
-		err = errors.Wrapf(err, "~ %s\n%s", strings.Join(args, " "), out)
+		err = rperrors.NewSSHError(errors.Wrapf(err, "~ %s\n%s", strings.Join(args, " "), out))
 	}
 
 	res := newRunResultDetails(-1, err)
@@ -2766,7 +2844,7 @@ type ParallelResult struct {
 // By default, this will fail fast, unless explicitly specified otherwise in the
 // RunOptions, if a command error occurs on any node, and return a slice
 // containing all results up to that point, along with a boolean indicating that
-// at least one error occurred. If `WithFailSlow()` is passed in, then the
+// at least one error occurred. If `WithFailSlow(true)` is passed in, then the
 // function will wait for all invocations to complete before returning.
 //
 // ParallelE only returns an error for roachprod itself, not any command errors run
@@ -2789,7 +2867,13 @@ func (c *SyncedCluster) ParallelE(
 	options RunOptions,
 	fn func(ctx context.Context, n Node) (*RunResultDetails, error),
 ) ([]*RunResultDetails, bool, error) {
-	// Function specific default for FailOption if not specified.
+	// Defaults for RunOptions if not specified.
+	if options.RetryOptions == nil {
+		options.RetryOptions = DefaultRetryOpt
+	}
+	if options.ShouldRetryFn == nil {
+		options.ShouldRetryFn = DefaultShouldRetryFn
+	}
 	if options.FailOption == FailDefault {
 		options.FailOption = FailFast
 	}
@@ -2920,8 +3004,8 @@ func (c *SyncedCluster) ParallelE(
 // to maintain parity with auto-init behavior of `roachprod start` (when
 // --skip-init) is not specified.
 func (c *SyncedCluster) Init(ctx context.Context, l *logger.Logger, node Node) error {
-	if res, err := c.initializeCluster(ctx, l, node); err != nil || (res != nil && res.Err != nil) {
-		return errors.WithDetail(errors.CombineErrors(err, res.Err), "install.Init() failed: unable to initialize cluster.")
+	if err := c.initializeCluster(ctx, l, node); err != nil {
+		return errors.WithDetail(err, "install.Init() failed: unable to initialize cluster.")
 	}
 
 	if err := c.setClusterSettings(ctx, l, node, ""); err != nil {
@@ -2929,6 +3013,21 @@ func (c *SyncedCluster) Init(ctx context.Context, l *logger.Logger, node Node) e
 	}
 
 	return nil
+}
+
+// allPublicAddrs returns a string that can be used when starting cockroach to
+// indicate the location of all nodes in the cluster.
+func (c *SyncedCluster) allPublicAddrs(ctx context.Context) (string, error) {
+	var addrs []string
+	for _, node := range c.Nodes {
+		port, err := c.NodePort(ctx, node, "" /* virtualClusterName */, 0 /* sqlInstance */)
+		if err != nil {
+			return "", err
+		}
+		addrs = append(addrs, fmt.Sprintf("%s:%d", c.Host(node), port))
+	}
+
+	return strings.Join(addrs, ","), nil
 }
 
 // GenFilenameFromArgs given a list of cmd args, returns an alphahumeric string up to

@@ -1,12 +1,7 @@
 // Copyright 2022 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package tree_test
 
@@ -26,7 +21,6 @@ func TestConflictingFunctionOptions(t *testing.T) {
 	testCases := []struct {
 		testName    string
 		options     tree.RoutineOptions
-		isProc      bool
 		expectedErr string
 	}{
 		{
@@ -78,35 +72,11 @@ func TestConflictingFunctionOptions(t *testing.T) {
 			},
 			expectedErr: "AS $$others$$: conflicting or redundant options",
 		},
-		{
-			testName: "proc volatility",
-			options: tree.RoutineOptions{
-				tree.RoutineVolatile,
-			},
-			isProc:      true,
-			expectedErr: "volatility attribute not allowed in procedure definition",
-		},
-		{
-			testName: "proc leakproof",
-			options: tree.RoutineOptions{
-				tree.RoutineLeakproof(true),
-			},
-			isProc:      true,
-			expectedErr: "leakproof attribute not allowed in procedure definition",
-		},
-		{
-			testName: "proc null input",
-			options: tree.RoutineOptions{
-				tree.RoutineStrict,
-			},
-			isProc:      true,
-			expectedErr: "null input attribute not allowed in procedure definition",
-		},
 	}
 
 	for _, tc := range testCases {
 		t.Run(tc.testName, func(t *testing.T) {
-			err := tree.ValidateRoutineOptions(tc.options, tc.isProc)
+			err := tree.ValidateRoutineOptions(tc.options)
 			if tc.expectedErr == "" {
 				require.NoError(t, err)
 				return

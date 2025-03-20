@@ -1,12 +1,7 @@
 // Copyright 2019 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package execbuilder
 
@@ -397,9 +392,19 @@ func (b *Builder) buildExport(export *memo.ExportExpr) (execPlan, error) {
 			return execPlan{}, err
 		}
 	}
-	notNullColsSet, err := input.getNodeColumnOrdinalSet(export.Input.Relational().NotNullCols)
-	if err != nil {
-		return execPlan{}, err
+
+	var notNullOrds exec.NodeColumnOrdinalSet
+	notNullCols := export.Input.Relational().NotNullCols
+	for col, ok := notNullCols.Next(0); ok; col, ok = notNullCols.Next(col + 1) {
+		// Ignore NOT NULL columns that are not part of the input execPlan's
+		// output columns. This can happen when applyPresentation projects-away
+		// some output columns of the input expression. For example, a Sort
+		// expression must output a column it orders by, but that column must be
+		// projected-away after the sort if the presentation does not require
+		// the column.
+		if ord, ok := input.outputCols.Get(int(col)); ok {
+			notNullOrds.Add(ord)
+		}
 	}
 
 	node, err := b.factory.ConstructExport(
@@ -407,7 +412,7 @@ func (b *Builder) buildExport(export *memo.ExportExpr) (execPlan, error) {
 		fileName,
 		export.FileFormat,
 		opts,
-		notNullColsSet,
+		notNullOrds,
 	)
 	if err != nil {
 		return execPlan{}, err

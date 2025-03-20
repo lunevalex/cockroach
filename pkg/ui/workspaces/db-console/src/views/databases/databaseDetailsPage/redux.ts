@@ -1,12 +1,7 @@
 // Copyright 2021 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 import { RouteComponentProps } from "react-router";
 import { LocalSetting } from "src/redux/localsettings";
@@ -20,6 +15,7 @@ import {
 
 import {
   refreshDatabaseDetails,
+  refreshNodes,
   refreshTableDetails,
 } from "src/redux/apiReducers";
 import { AdminUIState } from "src/redux/state";
@@ -77,6 +73,8 @@ export const mapStateToProps = (
   const dbTables =
     databaseDetails[database]?.data?.results.tablesResp.tables || [];
   const nodeRegions = nodeRegionsByIDSelector(state);
+  const nodeStatuses = state?.cachedData.nodes.data;
+
   return {
     loading: !!databaseDetails[database]?.inFlight,
     loaded: !!databaseDetails[database]?.valid,
@@ -97,6 +95,7 @@ export const mapStateToProps = (
       tableDetails,
       nodeRegions,
       isTenant,
+      nodeStatuses,
     }),
     showIndexRecommendations: selectIndexRecommendationsEnabled(state),
     csIndexUnusedDuration: selectDropUnusedIndexDuration(state),
@@ -134,4 +133,5 @@ export const mapDispatchToProps = {
     }),
   onSearchComplete: (query: string) => searchLocalTablesSetting.set(query),
   onFilterChange: (filters: Filters) => filtersLocalTablesSetting.set(filters),
+  refreshNodes,
 };

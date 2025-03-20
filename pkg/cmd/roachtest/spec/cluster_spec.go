@@ -1,12 +1,7 @@
 // Copyright 2021 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package spec
 
@@ -59,6 +54,22 @@ func (m MemPerCPU) String() string {
 	return "unknown"
 }
 
+// ParseMemCPU parses a string into a MemPerCPU value. Returns -1 if no match is found.
+func ParseMemCPU(s string) MemPerCPU {
+	s = strings.ToLower(s)
+	switch s {
+	case "auto":
+		return Auto
+	case "standard":
+		return Standard
+	case "high":
+		return High
+	case "low":
+		return Low
+	}
+	return -1
+}
+
 // LocalSSDSetting controls whether test cluster nodes use an instance-local SSD
 // as storage.
 type LocalSSDSetting int
@@ -94,8 +105,7 @@ type ClusterSpec struct {
 	ReusePolicy          clusterReusePolicy
 	TerminateOnMigration bool
 	UbuntuVersion        vm.UbuntuVersion
-	// Use a spot instance or equivalent of a cloud provider.
-	UseSpotVMs bool
+
 	// FileSystem determines the underlying FileSystem
 	// to be used. The default is ext4.
 	FileSystem fileSystemType
@@ -197,7 +207,6 @@ func getGCEOpts(
 	minCPUPlatform string,
 	arch vm.CPUArch,
 	volumeType string,
-	useSpot bool,
 ) vm.ProviderOpts {
 	opts := gce.DefaultProviderOpts()
 	opts.MachineType = machineType
@@ -222,7 +231,6 @@ func getGCEOpts(
 		opts.UseMultipleDisks = !RAID0
 	}
 	opts.TerminateOnMigration = terminateOnMigration
-	opts.UseSpot = useSpot
 	if volumeType != "" {
 		opts.PDVolumeType = volumeType
 	}
@@ -230,11 +238,14 @@ func getGCEOpts(
 	return opts
 }
 
-func getAzureOpts(machineType string, zones []string) vm.ProviderOpts {
+func getAzureOpts(machineType string, zones []string, volumeSize int) vm.ProviderOpts {
 	opts := azure.DefaultProviderOpts()
 	opts.MachineType = machineType
 	if len(zones) != 0 {
 		opts.Locations = zones
+	}
+	if volumeSize != 0 {
+		opts.NetworkDiskSize = int32(volumeSize)
 	}
 	return opts
 }
@@ -276,11 +287,12 @@ type RoachprodClusterConfig struct {
 
 // RoachprodOpts returns the opts to use when calling `roachprod.Create()`
 // in order to create the cluster described in the spec.
+// If
 func (s *ClusterSpec) RoachprodOpts(
 	params RoachprodClusterConfig,
-) (vm.CreateOpts, vm.ProviderOpts, error) {
+) (vm.CreateOpts, vm.ProviderOpts, vm.CPUArch, error) {
 	useIOBarrier := params.UseIOBarrierOnLocalSSD
-	arch := params.PreferredArch
+	requestedArch := params.PreferredArch
 
 	preferLocalSSD := params.Defaults.PreferLocalSSD
 	switch s.LocalSSD {
@@ -302,26 +314,20 @@ func (s *ClusterSpec) RoachprodOpts(
 	case Local:
 		createVMOpts.VMProviders = []string{cloud}
 		// remaining opts are not applicable to local clusters
-		return createVMOpts, nil, nil
+		return createVMOpts, nil, requestedArch, nil
 	case AWS, GCE, Azure:
 		createVMOpts.VMProviders = []string{cloud}
 	default:
-		return vm.CreateOpts{}, nil, errors.Errorf("unsupported cloud %v", cloud)
-	}
-
-	if cloud != GCE && cloud != AWS {
-		if s.VolumeSize != 0 {
-			return vm.CreateOpts{}, nil, errors.Errorf("specifying volume size is not yet supported on %s", cloud)
-		}
+		return vm.CreateOpts{}, nil, "", errors.Errorf("unsupported cloud %v", cloud)
 	}
 	if cloud != GCE {
 		if s.SSDs != 0 {
-			return vm.CreateOpts{}, nil, errors.Errorf("specifying SSD count is not yet supported on %s", cloud)
+			return vm.CreateOpts{}, nil, "", errors.Errorf("specifying SSD count is not yet supported on %s", cloud)
 		}
 	}
 
 	createVMOpts.GeoDistributed = s.Geo
-	createVMOpts.Arch = string(arch)
+	createVMOpts.Arch = string(requestedArch)
 	ssdCount := s.SSDs
 
 	machineType := params.Defaults.MachineType
@@ -335,11 +341,12 @@ func (s *ClusterSpec) RoachprodOpts(
 			machineType = s.GCE.MachineType
 		}
 	}
+	// Assume selected machine type has the same arch as requested unless SelectXXXMachineType says otherwise.
+	selectedArch := requestedArch
 
 	if s.CPUs != 0 {
 		// Default to the user-supplied machine type, if any.
 		// Otherwise, pick based on requested CPU count.
-		var selectedArch vm.CPUArch
 
 		if machineType == "" {
 			// If no machine type was specified, choose one
@@ -347,20 +354,20 @@ func (s *ClusterSpec) RoachprodOpts(
 			var err error
 			switch cloud {
 			case AWS:
-				machineType, selectedArch, err = SelectAWSMachineType(s.CPUs, s.Mem, preferLocalSSD && s.VolumeSize == 0, arch)
+				machineType, selectedArch, err = SelectAWSMachineType(s.CPUs, s.Mem, preferLocalSSD && s.VolumeSize == 0, requestedArch)
 			case GCE:
-				machineType, selectedArch = SelectGCEMachineType(s.CPUs, s.Mem, arch)
+				machineType, selectedArch = SelectGCEMachineType(s.CPUs, s.Mem, requestedArch)
 			case Azure:
-				machineType, err = SelectAzureMachineType(s.CPUs, s.Mem, preferLocalSSD)
+				machineType, selectedArch, err = SelectAzureMachineType(s.CPUs, s.Mem, requestedArch)
 			}
 
 			if err != nil {
-				return vm.CreateOpts{}, nil, err
+				return vm.CreateOpts{}, nil, "", err
 			}
-			if selectedArch != "" && selectedArch != arch {
+			if requestedArch != "" && selectedArch != requestedArch {
 				// TODO(srosenberg): we need a better way to monitor the rate of this mismatch, i.e.,
 				// other than grepping cluster creation logs.
-				fmt.Printf("WARN: requested arch %s for machineType %s, but selected %s\n", arch, machineType, selectedArch)
+				fmt.Printf("WARN: requested arch %s for machineType %s, but selected %s\n", requestedArch, machineType, selectedArch)
 				createVMOpts.Arch = string(selectedArch)
 			}
 		}
@@ -385,7 +392,7 @@ func (s *ClusterSpec) RoachprodOpts(
 
 	if s.FileSystem == Zfs {
 		if cloud != GCE {
-			return vm.CreateOpts{}, nil, errors.Errorf(
+			return vm.CreateOpts{}, nil, "", errors.Errorf(
 				"node creation with zfs file system not yet supported on %s", cloud,
 			)
 		}
@@ -417,7 +424,7 @@ func (s *ClusterSpec) RoachprodOpts(
 	}
 
 	if createVMOpts.Arch == string(vm.ArchFIPS) && !(cloud == GCE || cloud == AWS) {
-		return vm.CreateOpts{}, nil, errors.Errorf(
+		return vm.CreateOpts{}, nil, "", errors.Errorf(
 			"FIPS not yet supported on %s", cloud,
 		)
 	}
@@ -429,13 +436,13 @@ func (s *ClusterSpec) RoachprodOpts(
 	case GCE:
 		providerOpts = getGCEOpts(machineType, zones, s.VolumeSize, ssdCount,
 			createVMOpts.SSDOpts.UseLocalSSD, s.RAID0, s.TerminateOnMigration,
-			s.GCE.MinCPUPlatform, vm.ParseArch(createVMOpts.Arch), s.GCE.VolumeType, s.UseSpotVMs,
+			s.GCE.MinCPUPlatform, vm.ParseArch(createVMOpts.Arch), s.GCE.VolumeType,
 		)
 	case Azure:
-		providerOpts = getAzureOpts(machineType, zones)
+		providerOpts = getAzureOpts(machineType, zones, s.VolumeSize)
 	}
 
-	return createVMOpts, providerOpts, nil
+	return createVMOpts, providerOpts, selectedArch, nil
 }
 
 // Expiration is the lifetime of the cluster. It may be destroyed after

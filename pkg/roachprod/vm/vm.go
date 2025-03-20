@@ -1,12 +1,7 @@
 // Copyright 2018 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package vm
 
@@ -35,6 +30,8 @@ const (
 	TagLifetime = "lifetime"
 	// TagRoachprod is roachprod tag const, value is true & false.
 	TagRoachprod = "roachprod"
+	// TagSpotInstance is a tag added to spot instance vms with value as true.
+	TagSpotInstance = "spot"
 	// TagUsage indicates where a certain resource is used. "roachtest" is used
 	// as the key for roachtest created resources.
 	TagUsage = "usage"
@@ -45,6 +42,19 @@ const (
 	ArchAMD64   = CPUArch("amd64")
 	ArchFIPS    = CPUArch("fips")
 	ArchUnknown = CPUArch("unknown")
+
+	// InitializedFile is the base name of the initialization paths defined below.
+	InitializedFile = ".roachprod-initialized"
+	// OSInitializedFile is a marker file that is created on a VM to indicate
+	// that it has been initialized at least once by the VM start-up script. This
+	// is used to avoid re-initializing a VM that has been stopped and restarted.
+	OSInitializedFile = "/" + InitializedFile
+	// DisksInitializedFile is a marker file that is created on a VM to indicate
+	// that the disks have been initialized by the VM start-up script. This is
+	// separate from OSInitializedFile, because the disks may be ephemeral and
+	// need to be re-initialized on every start. The presence of this file
+	// automatically implies the presence of OSInitializedFile.
+	DisksInitializedFile = "/mnt/data1/" + InitializedFile
 )
 
 type CPUArch string
@@ -137,6 +147,9 @@ type VM struct {
 
 	// NonBootAttachedVolumes are the non-bootable, _persistent_ volumes attached to the VM.
 	NonBootAttachedVolumes []Volume `json:"non_bootable_volumes"`
+
+	// BootVolume is the bootable, _persistent_ volume attached to the VM.
+	BootVolume Volume `json:"bootable_volume"`
 
 	// LocalDisks are the ephemeral SSD disks attached to the VM.
 	LocalDisks []Volume `json:"local_disks"`
@@ -420,11 +433,6 @@ type ListOptions struct {
 	ComputeEstimatedCost bool
 }
 
-type PreemptedVM struct {
-	Name        string
-	PreemptedAt time.Time
-}
-
 // A Provider is a source of virtual machines running on some hosting platform.
 type Provider interface {
 	CreateProviderOpts() ProviderOpts
@@ -476,14 +484,6 @@ type Provider interface {
 	ListVolumeSnapshots(l *logger.Logger, vslo VolumeSnapshotListOpts) ([]VolumeSnapshot, error)
 	// DeleteVolumeSnapshots permanently deletes the given snapshots.
 	DeleteVolumeSnapshots(l *logger.Logger, snapshot ...VolumeSnapshot) error
-
-	// SpotVM related APIs.
-
-	// SupportsSpotVMs returns if the provider supports spot VMs.
-	SupportsSpotVMs() bool
-	// GetPreemptedSpotVMs returns a list of Spot VMs that were preempted since the time specified.
-	// Returns nil, nil when SupportsSpotVMs() is false.
-	GetPreemptedSpotVMs(l *logger.Logger, vms List, since time.Time) ([]PreemptedVM, error)
 }
 
 // DeleteCluster is an optional capability for a Provider which can
@@ -673,21 +673,31 @@ func ExpandZonesFlag(zoneFlag []string) (zones []string, err error) {
 	return zones, nil
 }
 
-// DNSSafeAccount takes a string and returns a cleaned version of the string that can be used in DNS entries.
+// DNSSafeName takes a string and returns a cleaned version of the string that can be used in DNS entries.
 // Unsafe characters are dropped. No length check is performed.
-func DNSSafeAccount(account string) string {
+func DNSSafeName(name string) string {
 	safe := func(r rune) rune {
 		switch {
 		case r >= 'a' && r <= 'z':
 			return r
 		case r >= 'A' && r <= 'Z':
 			return unicode.ToLower(r)
+		case r >= '0' && r <= '9':
+			return r
+		case r == '-':
+			return r
 		default:
 			// Negative value tells strings.Map to drop the rune.
 			return -1
 		}
 	}
-	return strings.Map(safe, account)
+	name = strings.Map(safe, name)
+
+	// DNS entries cannot start or end with hyphens.
+	name = strings.Trim(name, "-")
+
+	// Consecutive hyphens are allowed in DNS entries, but disallow it for readability.
+	return regexp.MustCompile(`-+`).ReplaceAllString(name, "-")
 }
 
 // SanitizeLabel returns a version of the string that can be used as a label.

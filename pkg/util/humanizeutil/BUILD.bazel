@@ -24,11 +24,8 @@ go_test(
         "duration_test.go",
         "humanize_test.go",
     ],
+    args = ["-test.timeout=55s"],
     embed = [":humanizeutil"],
-    exec_properties = select({
-        "//build/toolchains:is_heavy": {"Pool": "heavy"},
-        "//conditions:default": {"Pool": "default"},
-    }),
     deps = [
         "//pkg/util/leaktest",
         "@com_github_cockroachdb_redact//:redact",

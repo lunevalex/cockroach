@@ -1,12 +1,7 @@
 // Copyright 2020 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package server
 
@@ -14,9 +9,7 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/cockroachdb/cockroach/pkg/base"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/kvstorage"
-	"github.com/cockroachdb/cockroach/pkg/obs"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/errors"
@@ -32,18 +25,12 @@ import (
 func (s *topLevelServer) RunInitialSQL(
 	ctx context.Context, startSingleNode bool, adminUser, adminPassword string,
 ) error {
-	if s.cfg.ObsServiceAddr == base.ObsServiceEmbedFlagValue {
-		var knobs *obs.EventExporterTestingKnobs
-		if s.cfg.TestingKnobs.EventExporter != nil {
-			knobs = s.cfg.TestingKnobs.EventExporter.(*obs.EventExporterTestingKnobs)
-		}
-		if err := s.startEmbeddedObsService(ctx, knobs); err != nil {
-			return err
-		}
+	if startSingleNode {
+		s.sqlServer.disableLicenseEnforcement(ctx)
 	}
 
 	newCluster := s.InitialStart() && s.NodeID() == kvstorage.FirstNodeID
-	if !newCluster || s.cfg.DisableSQLServer {
+	if !newCluster {
 		// The initial SQL code only runs the first time the cluster is initialized.
 		return nil
 	}

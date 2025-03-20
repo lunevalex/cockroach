@@ -1,12 +1,7 @@
 // Copyright 2021 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package tests
 
@@ -37,34 +32,25 @@ func runConnectionLatencyTest(
 	err := c.PutE(ctx, t.L(), t.DeprecatedWorkload(), "./workload")
 	require.NoError(t, err)
 
-	settings := install.MakeClusterSettings(install.SecureOption(true))
+	settings := install.MakeClusterSettings()
 	// Don't start a backup schedule as this roachtest reports roachperf results.
-	err = c.StartE(ctx, t.L(), option.DefaultStartOptsNoBackups(), settings)
+	err = c.StartE(ctx, t.L(), option.NewStartOpts(option.NoBackupSchedule), settings)
 	require.NoError(t, err)
 
-	urlTemplate := func(user string) string {
+	urlTemplate := func(host string) string {
 		if password {
-			return fmt.Sprintf("postgres://testuser:123@%s:{pgport:1}?sslmode=require&sslrootcert=certs/ca.crt", user)
+			return fmt.Sprintf("postgres://%s:%s@%s:{pgport:1}?sslmode=require&sslrootcert=%s/ca.crt", install.DefaultUser, install.DefaultPassword, host, install.CockroachNodeCertsDir)
 		}
 
-		return fmt.Sprintf("postgres://testuser@%s:{pgport:1}?sslcert=certs/client.testuser.crt&sslkey=certs/client.testuser.key&sslrootcert=certs/ca.crt&sslmode=require", user)
+		return fmt.Sprintf("postgres://%[1]s@%[2]s:{pgport:1}?sslcert=%[3]s/client.%[1]s.crt&sslkey=%[3]s/client.%[1]s.key&sslrootcert=%[3]s/ca.crt&sslmode=require", install.DefaultUser, host, install.CockroachNodeCertsDir)
 	}
 
-	var passwordFlag string
 	// Only create the user once.
-	t.L().Printf("creating testuser")
 	if password {
-		err = c.RunE(ctx, option.WithNodes(c.Node(1)), `./cockroach sql --certs-dir certs --port={pgport:1} -e "CREATE USER testuser WITH PASSWORD '123' CREATEDB"`)
+		err = c.RunE(ctx, c.Node(1), fmt.Sprintf("./workload init connectionlatency --secure '%s'", urlTemplate("localhost")))
 		require.NoError(t, err)
-		err = c.RunE(ctx, option.WithNodes(c.Node(1)), fmt.Sprintf("./workload init connectionlatency --user testuser --password '123' --secure '%s'", urlTemplate("localhost")))
-		require.NoError(t, err)
-		passwordFlag = "--password 123 "
 	} else {
-		// NB: certs for `testuser` are created by `roachprod start --secure`.
-		err = c.RunE(ctx, option.WithNodes(c.Node(1)), `./cockroach sql --certs-dir certs --port={pgport:1} -e "CREATE USER testuser CREATEDB"`)
-		require.NoError(t, err)
-		require.NoError(t, err)
-		err = c.RunE(ctx, option.WithNodes(c.Node(1)), fmt.Sprintf("./workload init connectionlatency --user testuser --secure '%s'", urlTemplate("localhost")))
+		err = c.RunE(ctx, c.Node(1), fmt.Sprintf("./workload init connectionlatency --secure '%s'", urlTemplate("localhost")))
 		require.NoError(t, err)
 	}
 
@@ -83,13 +69,12 @@ func runConnectionLatencyTest(
 		t.L().Printf("running workload in %q against urls:\n%s", locality, strings.Join(urls, "\n"))
 
 		workloadCmd := fmt.Sprintf(
-			`./workload run connectionlatency %s --user testuser --secure %s --duration 30s --histograms=%s/stats.json --locality %s`,
+			`./workload run connectionlatency %s --secure --duration 30s --histograms=%s/stats.json --locality %s`,
 			urlString,
-			passwordFlag,
 			t.PerfArtifactsDir(),
 			locality,
 		)
-		err = c.RunE(ctx, option.WithNodes(loadNode), workloadCmd)
+		err = c.RunE(ctx, loadNode, workloadCmd)
 		require.NoError(t, err)
 	}
 

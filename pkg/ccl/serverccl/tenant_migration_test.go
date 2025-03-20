@@ -1,10 +1,7 @@
 // Copyright 2022 The Cockroach Authors.
 //
-// Licensed as a CockroachDB Enterprise file under the Cockroach Community
-// License (the "License"); you may not use this file except in compliance with
-// the License. You may obtain a copy of the License at
-//
-//     https://github.com/cockroachdb/cockroach/blob/master/licenses/CCL.txt
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package serverccl
 
@@ -29,8 +26,8 @@ import (
 func TestValidateTargetTenantClusterVersion(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 
-	prev := clusterversion.ClusterVersion{Version: clusterversion.MinSupported.Version()}
-	cur := clusterversion.ClusterVersion{Version: clusterversion.Latest.Version()}
+	prev := clusterversion.ClusterVersion{Version: clusterversion.TestingBinaryMinSupportedVersion}
+	cur := clusterversion.ClusterVersion{Version: clusterversion.TestingBinaryVersion}
 	// In cases where we use prev as the binary version for the test, set the
 	// minimum supported version to prev's binary version - 1 Major version.
 	prevMsv := clusterversion.ClusterVersion{
@@ -137,8 +134,8 @@ func TestValidateTargetTenantClusterVersion(t *testing.T) {
 func TestBumpTenantClusterVersion(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 
-	prev := clusterversion.ClusterVersion{Version: clusterversion.MinSupported.Version()}
-	cur := clusterversion.ClusterVersion{Version: clusterversion.Latest.Version()}
+	prev := clusterversion.ClusterVersion{Version: clusterversion.TestingBinaryMinSupportedVersion}
+	cur := clusterversion.ClusterVersion{Version: clusterversion.TestingBinaryVersion}
 	// In cases where we use prev as the binary version for the test, set the
 	// minimum supported version to prev's binary version - 1 Major version.
 	prevMsv := clusterversion.ClusterVersion{

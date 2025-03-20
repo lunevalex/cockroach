@@ -1,12 +1,7 @@
 // Copyright 2015 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package kvserver
 
@@ -111,6 +106,22 @@ var EnqueueInReplicateQueueOnSpanConfigUpdateEnabled = settings.RegisterBoolSett
 	"controls whether replicas are enqueued into the replicate queue for "+
 		"processing, when a span config update occurs, which affects the replica",
 	true,
+)
+
+// EnqueueProblemRangeInReplicateQueueInterval controls the interval at which
+// problem ranges are enqueued into the replicate queue for processing, outside
+// of the normal scanner interval. A problem range is one which is
+// underreplicated or has a replica on a decommissioning store. The setting is
+// disabled when set to 0. By default, the setting is disabled.
+var EnqueueProblemRangeInReplicateQueueInterval = settings.RegisterDurationSetting(
+	settings.SystemOnly,
+	"kv.enqueue_in_replicate_queue_on_problem.interval",
+	"interval at which problem ranges are enqueued into the replicate queue for "+
+		"processing, outside of the normal scanner interval; a problem range is "+
+		"one which is underreplicated or has a replica on a decommissioning store, "+
+		"disabled when set to 0",
+	0,
+	settings.NonNegativeDuration,
 )
 
 var (
@@ -578,7 +589,7 @@ func newReplicateQueue(store *Store, allocator allocatorimpl.Allocator) *replica
 			maxSize:              defaultQueueMaxSize,
 			needsLease:           true,
 			needsSpanConfigs:     true,
-			acceptsUnsplitRanges: false,
+			acceptsUnsplitRanges: store.TestingKnobs().ReplicateQueueAcceptsUnsplit,
 			// The processing of the replicate queue often needs to send snapshots
 			// so we use the raftSnapshotQueueTimeoutFunc. This function sets a
 			// timeout based on the range size and the sending rate in addition
@@ -939,7 +950,6 @@ func (rq *replicateQueue) processOneChange(
 // preProcessCheck checks the lease  and destroy status of the replica. This is
 // done to ensure that the replica has a valid lease, correct lease type and is
 // not destroyed.
-// TODO(baptist): Remove this check. It is redundant with Queue.replicaCanBeProcessed
 func (rq *replicateQueue) preProcessCheck(ctx context.Context, repl *Replica) error {
 	// Check lease and destroy status here. The queue does this higher up already, but
 	// adminScatter (and potential other future callers) also call this method and don't
@@ -961,11 +971,11 @@ func (rq *replicateQueue) preProcessCheck(ctx context.Context, repl *Replica) er
 	// TODO(erikgrinaker): This is also done more eagerly during Raft ticks, but
 	// that doesn't work for quiesced epoch-based ranges, so we have a fallback
 	// here that usually runs within 10 minutes.
-	leaseStatus, pErr := repl.redirectOnOrAcquireLease(ctx)
+	_, pErr := repl.redirectOnOrAcquireLease(ctx)
 	if pErr != nil {
 		return pErr.GoError()
 	}
-	pErr = repl.maybeSwitchLeaseType(ctx, leaseStatus)
+	pErr = repl.maybeSwitchLeaseType(ctx)
 	if pErr != nil {
 		return pErr.GoError()
 	}

@@ -1,12 +1,7 @@
 // Copyright 2021 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package admission
 
@@ -285,12 +280,7 @@ type WorkQueue struct {
 
 	onAdmittedReplicatedWork onAdmittedReplicatedWork
 
-	// Prevents more than one caller to be in Admit and calling tryGet or adding
-	// to the queue. It allows WorkQueue to release mu before calling tryGet and
-	// be assured that it is not competing with another Admit.
-	// Lock ordering is admitMu < mu.
-	admitMu syncutil.Mutex
-	mu      struct {
+	mu struct {
 		syncutil.Mutex
 		// Tenants with waiting work.
 		tenantHeap tenantHeap
@@ -395,7 +385,7 @@ func initWorkQueue(
 	}
 
 	if queueKind == "" {
-		queueKind = QueueKind(workKind.String())
+		queueKind = QueueKind(workKindString(workKind))
 	}
 
 	q.ambientCtx = ambientCtx.AnnotateCtx(context.Background())
@@ -550,7 +540,7 @@ func (q *WorkQueue) tryCloseEpoch(timeNow time.Time) {
 			// specifically all the store WorkQueues share the same metric. We
 			// should eliminate that sharing and make those per store metrics.
 			log.Infof(q.ambientCtx, "%s: FIFO threshold for tenant %d %s %d",
-				q.workKind, tenant.id, logVerb, tenant.fifoPriorityThreshold)
+				workKindString(q.workKind), tenant.id, logVerb, tenant.fifoPriorityThreshold)
 		}
 		// Note that we are ignoring the new priority threshold and only
 		// dequeueing the ones that are in the closed epoch. It is possible to
@@ -598,11 +588,10 @@ func (q *WorkQueue) Admit(ctx context.Context, info WorkInfo) (enabled bool, err
 	q.metrics.incRequested(info.Priority)
 	tenantID := info.TenantID.ToUint64()
 
-	// The code in this method does not use defer to unlock the mutexes because
-	// it needs the flexibility of selectively unlocking one of these on a
-	// certain code path. When changing the code, be careful in making sure the
-	// mutexes are properly unlocked on all code paths.
-	q.admitMu.Lock()
+	// The code in this method does not use defer to unlock the mutex because it
+	// needs the flexibility of selectively unlocking on a certain code path.
+	// When changing the code, be careful in making sure the mutex is properly
+	// unlocked on all code paths.
 	q.mu.Lock()
 	tenant, ok := q.mu.tenants[tenantID]
 	if !ok {
@@ -630,7 +619,6 @@ func (q *WorkQueue) Admit(ctx context.Context, info WorkInfo) (enabled bool, err
 			q.mu.tenantHeap.fix(tenant)
 		}
 		q.mu.Unlock()
-		q.admitMu.Unlock()
 		q.granter.tookWithoutPermission(info.RequestedCount)
 		q.metrics.incAdmitted(info.Priority)
 		q.metrics.recordBypassedAdmission(info.Priority)
@@ -648,8 +636,10 @@ func (q *WorkQueue) Admit(ctx context.Context, info WorkInfo) (enabled bool, err
 		// Optimistically update used to avoid locking again.
 		tenant.used += uint64(info.RequestedCount)
 		q.mu.Unlock()
+		// We have unlocked q.mu, so another concurrent request can also do tryGet
+		// and get ahead of this request. We don't need to be fair for such
+		// concurrent requests.
 		if q.granter.tryGet(info.RequestedCount) {
-			q.admitMu.Unlock()
 			q.metrics.incAdmitted(info.Priority)
 			if info.ReplicatedWorkInfo.Enabled {
 				// TODO(irfansharif): There's a race here, and could lead to
@@ -724,12 +714,11 @@ func (q *WorkQueue) Admit(ctx context.Context, info WorkInfo) (enabled bool, err
 		// Already canceled. More likely to happen if cpu starvation is
 		// causing entering into the work queue to be delayed.
 		q.mu.Unlock()
-		q.admitMu.Unlock()
 		q.metrics.incErrored(info.Priority)
 		deadline, _ := ctx.Deadline()
 		return true,
 			errors.Newf("work %s deadline already expired: deadline: %v, now: %v",
-				q.workKind, deadline, startTime)
+				workKindString(q.workKind), deadline, startTime)
 	}
 	// Push onto heap(s).
 	ordering := fifoWorkOrdering
@@ -750,16 +739,18 @@ func (q *WorkQueue) Admit(ctx context.Context, info WorkInfo) (enabled bool, err
 	}
 	// Else already in tenantHeap.
 
-	// Release all locks.
+	// Release the lock.
 	q.mu.Unlock()
-	q.admitMu.Unlock()
 
 	q.metrics.recordStartWait(info.Priority)
 	if info.ReplicatedWorkInfo.Enabled {
 		if log.V(1) {
+			q.mu.Lock()
+			queueLen := tenant.waitingWorkHeap.Len()
+			q.mu.Unlock()
+
 			log.Infof(ctx, "async-path: len(waiting-work)=%d: enqueued t%d pri=%s r%s origin=n%s log-position=%s ingested=%t",
-				tenant.waitingWorkHeap.Len(),
-				tenant.id, info.Priority,
+				queueLen, tenantID, info.Priority,
 				info.ReplicatedWorkInfo.RangeID,
 				info.ReplicatedWorkInfo.Origin,
 				info.ReplicatedWorkInfo.LogPosition,
@@ -908,6 +899,9 @@ func (q *WorkQueue) granted(grantChainID grantChainID) int64 {
 	// releasing Admit can notice that item is no longer in the heap and call
 	// releaseWaitingWork to return item to the waitingWorkPool.
 	requestedCount := item.requestedCount
+	// Cannot read tenant after release q.mu, since tenant may get GC'd and
+	// reused.
+	tenantID := tenant.id
 	q.mu.Unlock()
 
 	if !item.replicated.Enabled {
@@ -917,9 +911,12 @@ func (q *WorkQueue) granted(grantChainID grantChainID) int64 {
 		// NB: We don't use grant chains for store tokens, so they don't apply
 		// to replicated writes.
 		if log.V(1) {
+			q.mu.Lock()
+			queueLen := tenant.waitingWorkHeap.Len()
+			q.mu.Unlock()
+
 			log.Infof(q.ambientCtx, "async-path: len(waiting-work)=%d dequeued t%d pri=%s r%s origin=n%s log-position=%s ingested=%t",
-				tenant.waitingWorkHeap.Len(),
-				tenant.id, item.priority,
+				queueLen, tenantID, item.priority,
 				item.replicated.RangeID,
 				item.replicated.Origin,
 				item.replicated.LogPosition,
@@ -928,7 +925,7 @@ func (q *WorkQueue) granted(grantChainID grantChainID) int64 {
 		}
 		defer releaseWaitingWork(item)
 		q.onAdmittedReplicatedWork.admittedReplicatedWork(
-			roachpb.MustMakeTenantID(tenant.id),
+			roachpb.MustMakeTenantID(tenantID),
 			item.priority,
 			item.replicated,
 			item.requestedCount,

@@ -1,12 +1,7 @@
 // Copyright 2023 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package privchecker
 
@@ -21,7 +16,10 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/isql"
 	"github.com/cockroachdb/cockroach/pkg/sql/privilege"
 	"github.com/cockroachdb/cockroach/pkg/sql/roleoption"
+	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
+	"github.com/cockroachdb/cockroach/pkg/sql/sessiondata"
 	"github.com/cockroachdb/cockroach/pkg/sql/syntheticprivilege"
+	"github.com/cockroachdb/errors"
 	"google.golang.org/grpc/codes"
 	grpcstatus "google.golang.org/grpc/status"
 )
@@ -244,20 +242,58 @@ func (c *adminPrivilegeChecker) GetUserAndRole(
 func (c *adminPrivilegeChecker) HasAdminRole(
 	ctx context.Context, user username.SQLUsername,
 ) (bool, error) {
-	aa, cleanup := c.makeAuthzAccessor("check-admin-role")
-	defer cleanup()
-	return aa.UserHasAdminRole(ctx, user)
+	if user.IsRootUser() {
+		// Shortcut.
+		return true, nil
+	}
+	row, err := c.ie.QueryRowEx(
+		ctx, "check-is-admin", nil, /* txn */
+		sessiondata.InternalExecutorOverride{User: user},
+		"SELECT crdb_internal.is_admin()")
+	if err != nil {
+		return false, err
+	}
+	if row == nil {
+		return false, errors.AssertionFailedf("hasAdminRole: expected 1 row, got 0")
+	}
+	if len(row) != 1 {
+		return false, errors.AssertionFailedf("hasAdminRole: expected 1 column, got %d", len(row))
+	}
+	dbDatum, ok := tree.AsDBool(row[0])
+	if !ok {
+		return false, errors.AssertionFailedf("hasAdminRole: expected bool, got %T", row[0])
+	}
+	return bool(dbDatum), nil
 }
 
-// HasRoleOption is part of the SQLPrivilegeChecker interface.
+// HasRoleOptions is part of the SQLPrivilegeChecker interface.
 // Note that the function returns plain errors, and it is the caller's
 // responsibility to convert them to serverErrors.
 func (c *adminPrivilegeChecker) HasRoleOption(
 	ctx context.Context, user username.SQLUsername, roleOption roleoption.Option,
 ) (bool, error) {
-	aa, cleanup := c.makeAuthzAccessor("check-role-option")
-	defer cleanup()
-	return aa.UserHasRoleOption(ctx, user, roleOption)
+	if user.IsRootUser() {
+		// Shortcut.
+		return true, nil
+	}
+	row, err := c.ie.QueryRowEx(
+		ctx, "check-role-option", nil, /* txn */
+		sessiondata.InternalExecutorOverride{User: user},
+		"SELECT crdb_internal.has_role_option($1)", roleOption.String())
+	if err != nil {
+		return false, err
+	}
+	if row == nil {
+		return false, errors.AssertionFailedf("hasRoleOption: expected 1 row, got 0")
+	}
+	if len(row) != 1 {
+		return false, errors.AssertionFailedf("hasRoleOption: expected 1 column, got %d", len(row))
+	}
+	dbDatum, ok := tree.AsDBool(row[0])
+	if !ok {
+		return false, errors.AssertionFailedf("hasRoleOption: expected bool, got %T", row[0])
+	}
+	return bool(dbDatum), nil
 }
 
 // HasPrivilegeOrRoleOption is a helper function which calls both HasGlobalPrivilege and HasRoleOption.

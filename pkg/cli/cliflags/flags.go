@@ -1,12 +1,7 @@
 // Copyright 2015 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package cliflags
 
@@ -832,6 +827,36 @@ certificate can only be used if an identity map has been configured server-side.
 		Description: `Prompt for the new user's password.`,
 	}
 
+	InitToken = FlagInfo{
+		Name: "init-token",
+		Description: `Shared token for initialization of node TLS certificates.
+
+This flag is optional for the 'start' command. When omitted, the 'start'
+command expects the operator to prepare TLS certificates beforehand using
+the 'cert' command.
+
+This flag must be combined with --num-expected-initial-nodes.`,
+	}
+
+	NumExpectedInitialNodes = FlagInfo{
+		Name: "num-expected-initial-nodes",
+		Description: `Number of expected nodes during TLS certificate creation,
+including the node where the connect command is run.
+
+This flag must be combined with --init-token.`,
+	}
+
+	SingleNode = FlagInfo{
+		Name: "single-node",
+		Description: `Prepare the certificates for a subsequent 'start-single-node'
+command. The 'connect' command only runs cursory checks on the network
+configuration and does not wait for peers to auto-negotiate a common
+set of credentials.
+
+The --single-node flag is exclusive with the --init-num-peers and --init-token
+flags.`,
+	}
+
 	CertsDir = FlagInfo{
 		Name:        "certs-dir",
 		EnvVar:      "COCKROACH_CERTS_DIR",
@@ -1643,15 +1668,16 @@ necessary to support CockroachDB.
 	ZipIncludeRangeInfo = FlagInfo{
 		Name: "include-range-info",
 		Description: `
-Include one file per node with information about the KV ranges stored on that node, 
-in nodes/{node ID}/ranges.json. This information can be vital when debugging issues 
-that involve the KV storage layer, such as data placement, load balancing, performance 
-or other behaviors. In certain situations, on large clusters with large numbers of ranges, 
-these files can be omitted if and only if the issue being investigated is already known to
-be in another layer of the system (for example, an error message about an unsupported 
-feature or incompatible value in a SQL schema change or statement). Note however many 
-higher-level issues are ultimately related to the underlying KV storage layer described 
-by these files so only set this to false if directed to do so by Cockroach Labs support.
+Include one file per node with information about the KV ranges stored on that node,
+in nodes/{node ID}/ranges.json. Additionally, include problem ranges information.
+This information can be vital when debugging issues that involve the KV storage layer,
+such as data placement, load balancing, performance or other behaviors. In certain situations,
+on large clusters with large numbers of ranges, these files can be omitted if and only if the
+issue being investigated is already known to be in another layer of the system (for example,
+an error message about an unsupported feature or incompatible value in a SQL schema change or
+statement). Note however many higher-level issues are ultimately related to the underlying KV
+storage layer described by these files so only set this to false if directed to do so by Cockroach
+Labs support.
 `,
 	}
 
@@ -1808,15 +1834,6 @@ commands, WARNING for client commands.`,
 	SQLAuditLogDirOverride = FlagInfo{
 		Name:        "sql-audit-dir",
 		Description: `--sql-audit-dir=XXX is an alias for --log='sinks: {file-groups: {sql-audit: {channels: SENSITIVE_ACCESS, dir: ...}}}'.`,
-	}
-
-	ObsServiceAddr = FlagInfo{
-		Name:   "obsservice-addr",
-		EnvVar: "",
-		Description: `Address of an OpenTelemetry OTLP sink such as the
-Observability Service or the OpenTelemetry Collector. If set, telemetry
-events are exported to this address. The special value "embed" causes
-the Cockroach node to run the Observability Service internally.`,
 	}
 
 	BuildTag = FlagInfo{

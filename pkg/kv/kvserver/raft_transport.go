@@ -1,12 +1,7 @@
 // Copyright 2015 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package kvserver
 
@@ -177,9 +172,6 @@ type RaftTransport struct {
 	// level. When new raftSendQueues are instantiated, or old ones deleted, we
 	// also maintain kvflowControl.mu.connectedTracker. So writing to this field
 	// is done while holding kvflowControl.mu.
-	//
-	// TODO(pav-kv): only SystemClass and "default" raft class slots are used.
-	// Find an efficient way to have only the necessary number of slots.
 	queues [rpc.NumConnectionClasses]syncutil.IntMap
 
 	dialer                  *nodedialer.Dialer
@@ -284,8 +276,8 @@ type raftSendQueue struct {
 // NewDummyRaftTransport returns a dummy raft transport for use in tests which
 // need a non-nil raft transport that need not function.
 func NewDummyRaftTransport(st *cluster.Settings, tracer *tracing.Tracer) *RaftTransport {
-	resolver := func(roachpb.NodeID) (net.Addr, error) {
-		return nil, errors.New("dummy resolver")
+	resolver := func(roachpb.NodeID) (net.Addr, roachpb.Locality, error) {
+		return nil, roachpb.Locality{}, errors.New("dummy resolver")
 	}
 	return NewRaftTransport(log.MakeTestingAmbientContext(tracer), st, tracer,
 		nodedialer.New(nil, resolver), nil, nil,

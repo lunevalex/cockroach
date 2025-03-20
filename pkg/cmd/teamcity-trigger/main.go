@@ -1,12 +1,7 @@
 // Copyright 2016 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 // teamcity-trigger launches a variety of nightly build jobs on TeamCity using
 // its REST API. It is intended to be run from a meta-build on a schedule
@@ -180,6 +175,7 @@ func runTC(queueBuild func(string, map[string]string)) {
 
 		opts["env.STRESSFLAGS"] = fmt.Sprintf("-maxruns %d -maxtime %s -maxfails %d -p %d",
 			maxRuns, maxTime, maxFails, parallelism)
+		queueBuildThenWait(buildID, opts)
 
 		// Run non-race build with deadlock detection.
 		opts["env.TAGS"] = "deadlock"

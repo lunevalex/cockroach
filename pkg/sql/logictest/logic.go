@@ -1,12 +1,7 @@
 // Copyright 2015 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package logictest
 
@@ -18,6 +13,7 @@ import (
 	gosql "database/sql"
 	"flag"
 	"fmt"
+	"io/fs"
 	"math/rand"
 	"net"
 	"net/url"
@@ -39,6 +35,7 @@ import (
 
 	"github.com/cockroachdb/cockroach-go/v2/testserver"
 	"github.com/cockroachdb/cockroach/pkg/base"
+	"github.com/cockroachdb/cockroach/pkg/build"
 	"github.com/cockroachdb/cockroach/pkg/build/bazel"
 	_ "github.com/cockroachdb/cockroach/pkg/cloud/externalconn/providers" // imported to register ExternalConnection providers
 	"github.com/cockroachdb/cockroach/pkg/clusterversion"
@@ -79,6 +76,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/randutil"
 	"github.com/cockroachdb/cockroach/pkg/util/timeutil"
 	"github.com/cockroachdb/cockroach/pkg/util/tracing"
+	"github.com/cockroachdb/cockroach/pkg/util/version"
 	"github.com/cockroachdb/errors"
 	"github.com/kr/pretty"
 	"github.com/lib/pq"
@@ -306,12 +304,11 @@ import (
 //      - colnames: column names are verified (the expected column names
 //            are the first line in the expected results).
 //      - retry: if the expected results do not match the actual results, the
-//            test will be retried with exponential backoff up to the duration
-//            given by retry_duration. If the test succeeds at any time during
-//            that period, it is considered successful. Otherwise, it is a
-//            failure. See testutils.SucceedsSoon for more information. If run
-//            with the -rewrite flag, the query will be run only once after a
-//            2s sleep.
+//            test will be retried with exponential backoff up to some maximum
+//            duration. If the test succeeds at any time during that period, it
+//            is considered successful. Otherwise, it is a failure. See
+//            testutils.SucceedsSoon for more information. If run with the
+//            -rewrite flag, the query will be run only once after a 2s sleep.
 //      - async: runs the query asynchronously, marking it as a pending
 //            query using the label parameter as a unique name, to be completed
 //            and validated later with "awaitquery". This is intended for use
@@ -418,10 +415,6 @@ import (
 //    (including those which expect errors) will be retried for a fixed
 //    duration until the test passes, or the alloted time has elapsed.
 //    This is similar to the retry option of the query directive.
-//
-//  - retry_duration <duration>
-//    Specifies the amount of time to retry when using the retry directive.
-//    Defaults to testutils.DefaultSucceedsSoonDuration (45 seconds).
 //
 // The overall architecture of TestLogic is as follows:
 //
@@ -995,6 +988,9 @@ type logicTest struct {
 	cluster serverutils.TestClusterInterface
 	// testserverCluster is the testserver cluster. This uses real binaries.
 	testserverCluster testserver.TestServer
+	// logsDir is the directory where logs are located when using a
+	// testserverCluster.
+	logsDir string
 	// sharedIODir is the ExternalIO directory that is shared between all clusters
 	// created in the same logicTest. It is populated during setup() of the logic
 	// test.
@@ -1085,10 +1081,6 @@ type logicTest struct {
 	// to false after every successful statement or query test point, including
 	// those which are supposed to error out.
 	retry bool
-
-	// retryDuration is the maximum duration to retry a statement when using
-	// the retry directive.
-	retryDuration time.Duration
 }
 
 func (t *logicTest) t() *testing.T {
@@ -1221,7 +1213,7 @@ func (t *logicTest) getOrOpenClient(user string, nodeIdx int, newSession bool) *
 		pgURL.Host = net.JoinHostPort("127.0.0.1", port)
 		pgURL.User = url.User(pgUser)
 	} else {
-		addr := t.cluster.Server(nodeIdx).ApplicationLayer().AdvSQLAddr()
+		addr := t.cluster.Server(nodeIdx).AdvSQLAddr()
 		if len(t.tenantAddrs) > 0 && !strings.HasPrefix(user, "host-cluster-") {
 			addr = t.tenantAddrs[nodeIdx]
 		}
@@ -1299,6 +1291,7 @@ func (t *logicTest) newTestServerCluster(bootstrapBinaryPath, upgradeBinaryPath 
 			_ = os.RemoveAll(logsDir)
 		}
 	}
+	t.logsDir = logsDir
 
 	// During config initialization, NumNodes is required to be 3.
 	opts := []testserver.TestServerOpt{
@@ -1323,18 +1316,11 @@ func (t *logicTest) newTestServerCluster(bootstrapBinaryPath, upgradeBinaryPath 
 
 	ts, err := testserver.NewTestServer(opts...)
 	if err != nil {
-		t.Fatal(err)
+		t.handleWaitForInitErr(ts, err)
 	}
-	for i := 0; i < t.cfg.NumNodes; i++ {
-		// Wait for each node to be reachable.
-		if err := ts.WaitForInitFinishForNode(i); err != nil {
-			t.Fatal(err)
-		}
-	}
-
 	t.testserverCluster = ts
 	t.clusterCleanupFuncs = append(t.clusterCleanupFuncs, ts.Stop, cleanupLogsDir)
-
+	t.waitForAllNodes()
 	t.setSessionUser(username.RootUser, 0 /* nodeIdx */, false /* newSession */)
 
 	// These tests involve stopping and starting nodes, so to reduce flakiness,
@@ -1344,6 +1330,67 @@ func (t *logicTest) newTestServerCluster(bootstrapBinaryPath, upgradeBinaryPath 
 	if _, err := t.db.Exec("SET CLUSTER SETTING server.shutdown.lease_transfer_wait = '40s'"); err != nil {
 		t.Fatal(err)
 	}
+}
+
+// waitForAllNodes waits for each node to initialize when under
+// cockroach-go-testserver logic test configurations.
+func (t *logicTest) waitForAllNodes() {
+	if !t.cfg.UseCockroachGoTestserver {
+		return
+	}
+	for i := 0; i < t.cfg.NumNodes; i++ {
+		// Wait for each node to be reachable.
+		if err := t.testserverCluster.WaitForInitFinishForNode(i); err != nil {
+			t.handleWaitForInitErr(t.testserverCluster, err)
+		}
+	}
+}
+
+// Check for `Can't find decompressor for snappy` error in the logs.
+// This error appears to be some sort of infra issue where CRDB is
+// unable to connect to another node, possibly because there is
+// another non-CRDB server listening on that port. Since this is a rare
+// issue, and we haven't been able to investigate it effectively, we
+// will ignore this error.
+// See https://github.com/cockroachdb/cockroach/issues/128759.
+func (t *logicTest) handleWaitForInitErr(ts testserver.TestServer, err error) {
+	if testutils.IsError(err, "init did not finish for node") {
+		foundSnappyErr := false
+		walkErr := filepath.WalkDir(t.logsDir, func(path string, d fs.DirEntry, err error) error {
+			if err != nil {
+				return err
+			}
+			if d.IsDir() {
+				return nil
+			}
+			file, err := os.Open(path)
+			if err != nil {
+				return err
+			}
+			defer file.Close()
+
+			scanner := bufio.NewScanner(file)
+			for scanner.Scan() {
+				if strings.Contains(scanner.Text(), "Can't find decompressor for snappy") {
+					foundSnappyErr = true
+					return filepath.SkipAll
+				}
+			}
+			if err := scanner.Err(); err != nil {
+				return err
+			}
+			return nil
+		})
+		if walkErr != nil {
+			t.t().Logf("error while walking logs directory: %v", walkErr)
+		} else if foundSnappyErr {
+			if ts != nil {
+				ts.Stop()
+			}
+			t.t().Skip("ignoring init did not finish for node error due to snappy error")
+		}
+	}
+	t.Fatal(err)
 }
 
 // newCluster creates a new cluster. It should be called after the logic tests's
@@ -1480,7 +1527,8 @@ func (t *logicTest) newCluster(
 		if params.ServerArgs.Knobs.Server == nil {
 			params.ServerArgs.Knobs.Server = &server.TestingKnobs{}
 		}
-		params.ServerArgs.Knobs.Server.(*server.TestingKnobs).BinaryVersionOverride = cfg.BootstrapVersion.Version()
+		params.ServerArgs.Knobs.Server.(*server.TestingKnobs).BootstrapVersionKeyOverride = cfg.BootstrapVersion
+		params.ServerArgs.Knobs.Server.(*server.TestingKnobs).BinaryVersionOverride = clusterversion.ByKey(cfg.BootstrapVersion)
 	}
 	if cfg.DisableUpgrade {
 		if params.ServerArgs.Knobs.Server == nil {
@@ -1885,7 +1933,6 @@ func (t *logicTest) setup(
 	tempExternalIODir, tempExternalIODirCleanup := testutils.TempDir(t.rootT)
 	t.sharedIODir = tempExternalIODir
 	t.testCleanupFuncs = append(t.testCleanupFuncs, tempExternalIODirCleanup)
-	t.retryDuration = testutils.DefaultSucceedsSoonDuration
 
 	if cfg.UseCockroachGoTestserver {
 		skip.UnderRace(t.t(), "test uses a different binary, so the race detector doesn't work")
@@ -1897,8 +1944,11 @@ func (t *logicTest) setup(
 			t.Fatal("cockroach-go testserver tests must use 3 nodes")
 		}
 
-		versionStr := clusterversion.RemoveDevOffset(cfg.BootstrapVersion.Version()).String()
-		bootstrapVersion, err := release.LatestPatch(versionStr)
+		upgradeVersion, err := version.Parse(build.BinaryVersion())
+		if err != nil {
+			t.Fatal(err)
+		}
+		bootstrapVersion, err := release.LatestPredecessor(upgradeVersion)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -2435,7 +2485,7 @@ func (t *logicTest) purgeZoneConfig() {
 		return
 	}
 	for i := 0; i < t.cluster.NumServers(); i++ {
-		sysconfigProvider := t.cluster.Server(i).ApplicationLayer().SystemConfigProvider()
+		sysconfigProvider := t.cluster.Server(i).SystemConfigProvider()
 		sysconfig := sysconfigProvider.GetSystemConfig()
 		if sysconfig != nil {
 			sysconfig.PurgeZoneConfigCache()
@@ -2493,21 +2543,6 @@ func (t *logicTest) processSubtest(
 				)
 			}
 			repeat = count
-
-		case "retry_duration":
-			var duration time.Duration
-			var err error
-			if len(fields) != 2 {
-				err = errors.New("invalid line format")
-			} else {
-				duration, err = time.ParseDuration(fields[1])
-			}
-			if err != nil {
-				return errors.Wrapf(err, "%s:%d invalid retry_duration line",
-					path, s.Line+subtest.lineLineIndexIntoFile)
-			}
-			t.retryDuration = duration
-
 		case "skip_on_retry":
 			t.skipOnRetry = true
 
@@ -2592,12 +2627,12 @@ func (t *logicTest) processSubtest(
 					var cont bool
 					var err error
 					if t.retry {
-						err = testutils.SucceedsWithinError(func() error {
+						err = testutils.SucceedsSoonError(func() error {
 							t.purgeZoneConfig()
 							var tempErr error
 							cont, tempErr = t.execStatement(stmt)
 							return tempErr
-						}, t.retryDuration)
+						})
 					} else {
 						cont, err = t.execStatement(stmt)
 					}
@@ -2928,10 +2963,10 @@ func (t *logicTest) processSubtest(
 
 				for i := 0; i < repeat; i++ {
 					if t.retry && !*rewriteResultsInTestfiles {
-						if err := testutils.SucceedsWithinError(func() error {
+						if err := testutils.SucceedsSoonError(func() error {
 							t.purgeZoneConfig()
 							return t.execQuery(query)
-						}, t.retryDuration); err != nil {
+						}); err != nil {
 							t.Error(err)
 						}
 					} else {
@@ -3127,14 +3162,10 @@ func (t *logicTest) processSubtest(
 				if err := t.testserverCluster.UpgradeNode(nodeIdx); err != nil {
 					t.Fatal(err)
 				}
-				for i := 0; i < t.cfg.NumNodes; i++ {
-					// Wait for each node to be reachable, since UpgradeNode uses `kill`
-					// to terminate nodes, and may introduce temporary unavailability in
-					// the system range.
-					if err := t.testserverCluster.WaitForInitFinishForNode(i); err != nil {
-						t.Fatal(err)
-					}
-				}
+				// Wait for each node to be reachable, since UpgradeNode uses `kill`
+				// to terminate nodes, and may introduce temporary unavailability in
+				// the system range.
+				t.waitForAllNodes()
 				// The port may have changed, so we must remove all the cached connections
 				// to this node.
 				for _, m := range t.clients {
@@ -3347,11 +3378,18 @@ func (t *logicTest) execStatement(stmt logicStatement) (bool, error) {
 	return t.finishExecStatement(stmt, execSQL, res, err)
 }
 
+var uniqueHashPattern = regexp.MustCompile(`UNIQUE.*USING\s+HASH`)
+
 func (t *logicTest) finishExecStatement(
 	stmt logicStatement, execSQL string, res gosql.Result, err error,
 ) (bool, error) {
 	if err == nil {
-		sqlutils.VerifyStatementPrettyRoundtrip(t.t(), stmt.sql)
+		// TODO(#65929, #107398): Roundtrips for unique, hash-sharded indexes do
+		// not work because only unique hash-sharded indexes are allowed, yet we
+		// format them as unique constraints.
+		if !uniqueHashPattern.MatchString(stmt.sql) {
+			sqlutils.VerifyStatementPrettyRoundtrip(t.t(), stmt.sql)
+		}
 	}
 	if err == nil && stmt.expectCount >= 0 {
 		var count int64
@@ -3434,7 +3472,12 @@ func (t *logicTest) execQuery(query logicQuery) error {
 
 func (t *logicTest) finishExecQuery(query logicQuery, rows *gosql.Rows, err error) error {
 	if err == nil {
-		sqlutils.VerifyStatementPrettyRoundtrip(t.t(), query.sql)
+		// TODO(#65929, #107398): Roundtrips for unique, hash-sharded indexes do
+		// not work because only unique hash-sharded indexes are allowed, yet we
+		// format them as unique constraints.
+		if !uniqueHashPattern.MatchString(query.sql) {
+			sqlutils.VerifyStatementPrettyRoundtrip(t.t(), query.sql)
+		}
 
 		// If expecting an error, then read all result rows, since some errors are
 		// only triggered after initial rows are returned.
@@ -4080,6 +4123,8 @@ func RunLogicTest(
 	// Note: there is special code in teamcity-trigger/main.go to run this package
 	// with less concurrency in the nightly stress runs. If you see problems
 	// please make adjustments there.
+	// As of 6/4/2019, the logic tests never complete under race.
+	skip.UnderRace(t, "logic tests and race detector don't mix: #37993")
 
 	// This test relies on repeated sequential storage.EventuallyFileOnlySnapshot
 	// acquisitions. Reduce the max wait time for each acquisition to speed up

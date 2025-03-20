@@ -1,12 +1,7 @@
 // Copyright 2023 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package application_api_test
 
@@ -197,9 +192,6 @@ func TestStatusAPICombinedTransactions(t *testing.T) {
 func TestStatusAPITransactions(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
-
-	skip.UnderDeadlock(t, "test is very slow under deadlock")
-	skip.UnderStressRace(t, "test is too slow to run under stressrace")
 
 	testCluster := serverutils.StartCluster(t, 3, base.TestClusterArgs{})
 	ctx := context.Background()
@@ -679,7 +671,7 @@ func TestStatusAPICombinedStatementsWithFullScans(t *testing.T) {
 	if skip.Stress() {
 		additionalTimeout = additionalTimeoutUnderStress
 	}
-	skip.UnderStressRace(t, "test is too slow to run under stressrace")
+	skip.UnderStressRace(t, "test is too slow to run under race")
 
 	// Aug 30 2021 19:50:00 GMT+0000
 	aggregatedTs := int64(1630353000)

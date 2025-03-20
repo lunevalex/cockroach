@@ -1,23 +1,15 @@
 // Copyright 2022 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package sql
 
 import (
-	"context"
-
 	"github.com/cockroachdb/cockroach/pkg/settings"
 	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
 	"github.com/cockroachdb/cockroach/pkg/sql/appstatspb"
 	"github.com/cockroachdb/cockroach/pkg/util/cache"
-	"github.com/cockroachdb/cockroach/pkg/util/mon"
 	"github.com/cockroachdb/cockroach/pkg/util/syncutil"
 )
 
@@ -39,19 +31,13 @@ type TxnFingerprintIDCache struct {
 
 	mu struct {
 		syncutil.RWMutex
-		acc   *mon.BoundAccount
 		cache *cache.UnorderedCache
 	}
-
-	mon *mon.BytesMonitor
 }
 
 // NewTxnFingerprintIDCache returns a new TxnFingerprintIDCache.
-func NewTxnFingerprintIDCache(
-	st *cluster.Settings, parentMon *mon.BytesMonitor,
-) *TxnFingerprintIDCache {
+func NewTxnFingerprintIDCache(st *cluster.Settings) *TxnFingerprintIDCache {
 	b := &TxnFingerprintIDCache{st: st}
-
 	b.mu.cache = cache.NewUnorderedCache(cache.Config{
 		Policy: cache.CacheFIFO,
 		ShouldEvict: func(size int, _, _ interface{}) bool {
@@ -62,31 +48,18 @@ func NewTxnFingerprintIDCache(
 			capacity := TxnFingerprintIDCacheCapacity.Get(&st.SV)
 			return int64(size) > capacity
 		},
-		OnEvictedEntry: func(entry *cache.Entry) {
-			b.mu.acc.Shrink(context.Background(), 1)
-		},
 	})
-
-	monitor := mon.NewMonitorInheritWithLimit("txn-fingerprint-id-cache", 0 /* limit */, parentMon)
-	b.mon = monitor
-	b.mon.StartNoReserved(context.Background(), parentMon)
-
 	return b
 }
 
-// Add adds a TxnFingerprintID to the cache, truncating the cache to the cache's capacity
-// if necessary.
-func (b *TxnFingerprintIDCache) Add(value appstatspb.TransactionFingerprintID) error {
+// Add adds a TxnFingerprintID to the cache, truncating the cache to the cache's
+// capacity if necessary.
+func (b *TxnFingerprintIDCache) Add(id appstatspb.TransactionFingerprintID) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-
-	if err := b.mu.acc.Grow(context.Background(), 1); err != nil {
-		return err
-	}
-
-	b.mu.cache.Add(value, value)
-
-	return nil
+	// TODO(yuzefovich): we should perform memory accounting for this. Note that
+	// it can be quite tricky to get right - see #121844.
+	b.mu.cache.Add(id, nil /* value */)
 }
 
 // GetAllTxnFingerprintIDs returns a slice of all TxnFingerprintIDs in the cache.
@@ -105,7 +78,7 @@ func (b *TxnFingerprintIDCache) GetAllTxnFingerprintIDs() []appstatspb.Transacti
 	txnFingerprintIDsRemoved := make([]appstatspb.TransactionFingerprintID, 0)
 
 	b.mu.cache.Do(func(entry *cache.Entry) {
-		id := entry.Value.(appstatspb.TransactionFingerprintID)
+		id := entry.Key.(appstatspb.TransactionFingerprintID)
 
 		if int64(len(txnFingerprintIDs)) == size {
 			txnFingerprintIDsRemoved = append(txnFingerprintIDsRemoved, id)

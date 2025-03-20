@@ -1,12 +1,7 @@
 // Copyright 2023 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package jobsprofiler_test
 
@@ -77,11 +72,14 @@ func TestProfilerStorePlanDiagram(t *testing.T) {
 			sql:  "RESTORE TABLE foo FROM LATEST IN 'userfile:///foo' WITH into_db='test'",
 			typ:  jobspb.TypeRestore,
 		},
-		{
-			name: "changefeed",
-			sql:  "CREATE CHANGEFEED FOR foo INTO 'null://sink'",
-			typ:  jobspb.TypeChangefeed,
-		},
+		/*
+			TODO(dt): re-enable this once #126083 is fixed.
+			 {
+				name: "changefeed",
+				sql:  "CREATE CHANGEFEED FOR foo INTO 'null://sink'",
+				typ:  jobspb.TypeChangefeed,
+			},
+		*/
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			_, err := sqlDB.Exec(tc.sql)

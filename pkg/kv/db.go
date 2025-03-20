@@ -1,12 +1,7 @@
 // Copyright 2015 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package kv
 
@@ -1164,7 +1159,9 @@ func getOneRow(runErr error, b *Batch) (KeyValue, error) {
 func IncrementValRetryable(ctx context.Context, db *DB, key roachpb.Key, inc int64) (int64, error) {
 	var err error
 	var res KeyValue
-	for r := retry.Start(base.DefaultRetryOptions()); r.Next(); {
+	retryOpts := base.DefaultRetryOptions()
+	retryOpts.Closer = db.Context().Stopper.ShouldQuiesce()
+	for r := retry.StartWithCtx(ctx, retryOpts); r.Next(); {
 		res, err = db.Inc(ctx, key, inc)
 		if errors.HasType(err, (*kvpb.UnhandledRetryableError)(nil)) ||
 			errors.HasType(err, (*kvpb.AmbiguousResultError)(nil)) {

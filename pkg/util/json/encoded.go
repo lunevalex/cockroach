@@ -1,18 +1,12 @@
 // Copyright 2017 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package json
 
 import (
 	"bytes"
-	"fmt"
 	"sort"
 	"strconv"
 	"unsafe"
@@ -695,15 +689,6 @@ func (j *jsonEncoded) FetchValKeyOrIdx(key string) (JSON, error) {
 		return j.FetchValIdx(idx)
 	}
 	return nil, nil
-}
-
-func (j *jsonEncoded) Format(buf *bytes.Buffer) {
-	decoded, err := j.decode()
-	if err != nil {
-		fmt.Fprintf(buf, `<corrupt JSON data: %s>`, err.Error())
-	} else {
-		decoded.Format(buf)
-	}
 }
 
 // RemoveIndex implements the JSON interface.

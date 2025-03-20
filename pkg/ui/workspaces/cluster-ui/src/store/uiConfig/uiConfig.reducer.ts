@@ -1,12 +1,7 @@
 // Copyright 2021 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 import { createSlice, PayloadAction } from "@reduxjs/toolkit";
 import { merge } from "lodash";
@@ -19,7 +14,6 @@ export type UIConfigState = {
   userSQLRoles: string[];
   hasViewActivityRedactedRole: boolean;
   hasAdminRole: boolean;
-  useObsService: boolean;
   pages: {
     statementDetails: {
       showStatementDiagnosticsLink: boolean;
@@ -35,7 +29,6 @@ const initialState: UIConfigState = {
   userSQLRoles: [],
   hasViewActivityRedactedRole: false,
   hasAdminRole: false,
-  useObsService: false,
   pages: {
     statementDetails: {
       showStatementDiagnosticsLink: true,

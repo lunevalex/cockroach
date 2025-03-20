@@ -1,12 +1,7 @@
 // Copyright 2021 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package scbuildstmt
 
@@ -47,26 +42,25 @@ var supportedStatements = map[reflect.Type]supportedStatement{
 	// supportedAlterTableStatements list, so wwe will consider it fully supported
 	// here.
 	reflect.TypeOf((*tree.AlterTable)(nil)):          {fn: AlterTable, statementTags: []string{tree.AlterTableTag}, on: true, checks: alterTableChecks},
-	reflect.TypeOf((*tree.CreateIndex)(nil)):         {fn: CreateIndex, statementTags: []string{tree.CreateIndexTag}, on: true, checks: nil},
+	reflect.TypeOf((*tree.CreateIndex)(nil)):         {fn: CreateIndex, statementTags: []string{tree.CreateIndexTag}, on: true, checks: isV231Active},
 	reflect.TypeOf((*tree.DropDatabase)(nil)):        {fn: DropDatabase, statementTags: []string{tree.DropDatabaseTag}, on: true, checks: nil},
-	reflect.TypeOf((*tree.DropOwnedBy)(nil)):         {fn: DropOwnedBy, statementTags: []string{tree.DropOwnedByTag}, on: true, checks: nil},
+	reflect.TypeOf((*tree.DropOwnedBy)(nil)):         {fn: DropOwnedBy, statementTags: []string{tree.DropOwnedByTag}, on: true, checks: isV222Active},
 	reflect.TypeOf((*tree.DropSchema)(nil)):          {fn: DropSchema, statementTags: []string{tree.DropSchemaTag}, on: true, checks: nil},
 	reflect.TypeOf((*tree.DropSequence)(nil)):        {fn: DropSequence, statementTags: []string{tree.DropSequenceTag}, on: true, checks: nil},
 	reflect.TypeOf((*tree.DropTable)(nil)):           {fn: DropTable, statementTags: []string{tree.DropTableTag}, on: true, checks: nil},
 	reflect.TypeOf((*tree.DropType)(nil)):            {fn: DropType, statementTags: []string{tree.DropTypeTag}, on: true, checks: nil},
 	reflect.TypeOf((*tree.DropView)(nil)):            {fn: DropView, statementTags: []string{tree.DropViewTag}, on: true, checks: nil},
-	reflect.TypeOf((*tree.CommentOnConstraint)(nil)): {fn: CommentOnConstraint, statementTags: []string{tree.CommentOnConstraintTag}, on: true, checks: nil},
-	reflect.TypeOf((*tree.CommentOnDatabase)(nil)):   {fn: CommentOnDatabase, statementTags: []string{tree.CommentOnDatabaseTag}, on: true, checks: nil},
-	reflect.TypeOf((*tree.CommentOnSchema)(nil)):     {fn: CommentOnSchema, statementTags: []string{tree.CommentOnSchemaTag}, on: true, checks: nil},
-	reflect.TypeOf((*tree.CommentOnTable)(nil)):      {fn: CommentOnTable, statementTags: []string{tree.CommentOnTableTag}, on: true, checks: nil},
-	reflect.TypeOf((*tree.CommentOnColumn)(nil)):     {fn: CommentOnColumn, statementTags: []string{tree.CommentOnColumnTag}, on: true, checks: nil},
-	reflect.TypeOf((*tree.CommentOnIndex)(nil)):      {fn: CommentOnIndex, statementTags: []string{tree.CommentOnIndexTag}, on: true, checks: nil},
-	reflect.TypeOf((*tree.DropIndex)(nil)):           {fn: DropIndex, statementTags: []string{tree.DropIndexTag}, on: true, checks: nil},
-	reflect.TypeOf((*tree.DropRoutine)(nil)):         {fn: DropFunction, statementTags: []string{tree.DropFunctionTag, tree.DropProcedureTag}, on: true, checks: nil},
-	reflect.TypeOf((*tree.CreateRoutine)(nil)):       {fn: CreateFunction, statementTags: []string{tree.CreateFunctionTag, tree.CreateProcedureTag}, on: true, checks: nil},
+	reflect.TypeOf((*tree.CommentOnConstraint)(nil)): {fn: CommentOnConstraint, statementTags: []string{tree.CommentOnConstraintTag}, on: true, checks: isV222Active},
+	reflect.TypeOf((*tree.CommentOnDatabase)(nil)):   {fn: CommentOnDatabase, statementTags: []string{tree.CommentOnDatabaseTag}, on: true, checks: isV222Active},
+	reflect.TypeOf((*tree.CommentOnSchema)(nil)):     {fn: CommentOnSchema, statementTags: []string{tree.CommentOnSchemaTag}, on: true, checks: isV222Active},
+	reflect.TypeOf((*tree.CommentOnTable)(nil)):      {fn: CommentOnTable, statementTags: []string{tree.CommentOnTableTag}, on: true, checks: isV222Active},
+	reflect.TypeOf((*tree.CommentOnColumn)(nil)):     {fn: CommentOnColumn, statementTags: []string{tree.CommentOnColumnTag}, on: true, checks: isV222Active},
+	reflect.TypeOf((*tree.CommentOnIndex)(nil)):      {fn: CommentOnIndex, statementTags: []string{tree.CommentOnIndexTag}, on: true, checks: isV222Active},
+	reflect.TypeOf((*tree.DropIndex)(nil)):           {fn: DropIndex, statementTags: []string{tree.DropIndexTag}, on: true, checks: isV231Active},
+	reflect.TypeOf((*tree.DropRoutine)(nil)):         {fn: DropFunction, statementTags: []string{tree.DropFunctionTag, tree.DropProcedureTag}, on: true, checks: isV231Active},
+	reflect.TypeOf((*tree.CreateRoutine)(nil)):       {fn: CreateFunction, statementTags: []string{tree.CreateFunctionTag, tree.CreateProcedureTag}, on: true, checks: isV231Active},
 	reflect.TypeOf((*tree.CreateSchema)(nil)):        {fn: CreateSchema, statementTags: []string{tree.CreateSchemaTag}, on: false, checks: isV232Active},
 	reflect.TypeOf((*tree.CreateSequence)(nil)):      {fn: CreateSequence, statementTags: []string{tree.CreateSequenceTag}, on: false, checks: isV232Active},
-	reflect.TypeOf((*tree.CreateDatabase)(nil)):      {fn: CreateDatabase, statementTags: []string{tree.CreateDatabaseTag}, on: true, checks: isV241Active},
 }
 
 // supportedStatementTags tracks statement tags which are implemented
@@ -206,10 +200,14 @@ func getDeclarativeSchemaChangerModeForStmt(
 	return ret
 }
 
-var isV232Active = func(_ tree.NodeFormatter, _ sessiondatapb.NewSchemaChangerMode, activeVersion clusterversion.ClusterVersion) bool {
-	return activeVersion.IsActive(clusterversion.V23_2)
+var isV222Active = func(_ tree.NodeFormatter, _ sessiondatapb.NewSchemaChangerMode, activeVersion clusterversion.ClusterVersion) bool {
+	return activeVersion.IsActive(clusterversion.V22_2)
 }
 
-var isV241Active = func(_ tree.NodeFormatter, _ sessiondatapb.NewSchemaChangerMode, activeVersion clusterversion.ClusterVersion) bool {
-	return activeVersion.IsActive(clusterversion.V24_1)
+var isV231Active = func(_ tree.NodeFormatter, _ sessiondatapb.NewSchemaChangerMode, activeVersion clusterversion.ClusterVersion) bool {
+	return activeVersion.IsActive(clusterversion.V23_1)
+}
+
+var isV232Active = func(_ tree.NodeFormatter, _ sessiondatapb.NewSchemaChangerMode, activeVersion clusterversion.ClusterVersion) bool {
+	return activeVersion.IsActive(clusterversion.V23_2)
 }

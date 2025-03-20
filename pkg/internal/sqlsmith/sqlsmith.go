@@ -1,12 +1,7 @@
 // Copyright 2019 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package sqlsmith
 
@@ -16,7 +11,6 @@ import (
 	"math/rand"
 	"net/http/httptest"
 	"regexp"
-	"strconv"
 	"strings"
 
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
@@ -60,14 +54,17 @@ const retryCount = 20
 
 // Smither is a sqlsmith generator.
 type Smither struct {
-	rnd              *rand.Rand
-	db               *gosql.DB
-	lock             syncutil.RWMutex
-	dbName           string
-	schemas          []*schemaRef
-	tables           []*tableRef
-	columns          map[tree.TableName]map[tree.Name]*tree.ColumnTableDef
-	indexes          map[tree.TableName]map[tree.Name]*tree.CreateIndex
+	rnd     *rand.Rand
+	db      *gosql.DB
+	lock    syncutil.RWMutex
+	dbName  string
+	schemas []*schemaRef
+	tables  []*tableRef
+	columns map[tree.TableName]map[tree.Name]*tree.ColumnTableDef
+	indexes map[tree.TableName]map[tree.Name]*tree.CreateIndex
+	// Only one of nameCounts and nameGens will be used. nameCounts is used when
+	// simpleNames is true.
+	nameCounts       map[string]int
 	nameGens         map[string]*nameGenInfo
 	nameGenCfg       randidentcfg.Config
 	activeSavepoints []string
@@ -82,32 +79,34 @@ type Smither struct {
 	scalarExprWeights, boolExprWeights []scalarExprWeight
 	scalarExprSampler, boolExprSampler *scalarExprSampler
 
-	disableWith                bool
-	disableNondeterministicFns bool
-	disableLimits              bool
-	disableWindowFuncs         bool
-	disableAggregateFuncs      bool
-	disableMutations           bool
-	simpleDatums               bool
-	avoidConsts                bool
-	outputSort                 bool
-	postgres                   bool
-	ignoreFNs                  []*regexp.Regexp
-	complexity                 float64
-	scalarComplexity           float64
-	unlikelyConstantPredicate  bool
-	favorCommonData            bool
-	unlikelyRandomNulls        bool
-	stringConstPrefix          string
-	disableJoins               bool
-	disableCrossJoins          bool
-	disableIndexHints          bool
-	lowProbWhereWithJoinTables bool
-	disableInsertSelect        bool
-	disableDivision            bool
-	disableDecimals            bool
-	disableOIDs                bool
-	disableUDFs                bool
+	disableWith                   bool
+	disableNondeterministicFns    bool
+	disableLimits                 bool
+	disableNondeterministicLimits bool
+	disableWindowFuncs            bool
+	disableAggregateFuncs         bool
+	disableMutations              bool
+	simpleDatums                  bool
+	simpleNames                   bool
+	avoidConsts                   bool
+	outputSort                    bool
+	postgres                      bool
+	ignoreFNs                     []*regexp.Regexp
+	complexity                    float64
+	scalarComplexity              float64
+	unlikelyConstantPredicate     bool
+	favorCommonData               bool
+	unlikelyRandomNulls           bool
+	stringConstPrefix             string
+	disableJoins                  bool
+	disableCrossJoins             bool
+	disableIndexHints             bool
+	lowProbWhereWithJoinTables    bool
+	disableInsertSelect           bool
+	disableDivision               bool
+	disableDecimals               bool
+	disableOIDs                   bool
+	disableUDFs                   bool
 
 	bulkSrv     *httptest.Server
 	bulkFiles   map[string][]byte
@@ -128,6 +127,7 @@ func NewSmither(db *gosql.DB, rnd *rand.Rand, opts ...SmitherOption) (*Smither, 
 	s := &Smither{
 		rnd:        rnd,
 		db:         db,
+		nameCounts: map[string]int{},
 		nameGens:   map[string]*nameGenInfo{},
 		nameGenCfg: randident.DefaultNameGeneratorConfig(),
 
@@ -214,6 +214,11 @@ type nameGenInfo struct {
 func (s *Smither) name(prefix string) tree.Name {
 	s.lock.Lock()
 	defer s.lock.Unlock()
+	if s.simpleNames {
+		s.nameCounts[prefix]++
+		count := s.nameCounts[prefix]
+		return tree.Name(fmt.Sprintf("%s_%d", prefix, count))
+	}
 	g := s.nameGens[prefix]
 	if g == nil {
 		g = &nameGenInfo{
@@ -222,7 +227,7 @@ func (s *Smither) name(prefix string) tree.Name {
 		s.nameGens[prefix] = g
 	}
 	g.count++
-	return tree.Name(g.g.GenerateOne(strconv.Itoa(g.count)))
+	return tree.Name(g.g.GenerateOne(g.count))
 }
 
 // SmitherOption is an option for the Smither client.
@@ -388,6 +393,11 @@ var SimpleDatums = simpleOption("simple datums", func(s *Smither) {
 	s.simpleDatums = true
 })
 
+// SimpleNames specifies that complex name generation should be disabled.
+var SimpleNames = simpleOption("simple names", func(s *Smither) {
+	s.simpleNames = true
+})
+
 // MutationsOnly causes the Smither to emit 80% INSERT, 10% UPDATE, and 10%
 // DELETE statements.
 var MutationsOnly = simpleOption("mutations only", func(s *Smither) {
@@ -420,6 +430,12 @@ func IgnoreFNs(regex string) SmitherOption {
 // DisableLimits causes the Smither to disable LIMIT clauses.
 var DisableLimits = simpleOption("disable LIMIT", func(s *Smither) {
 	s.disableLimits = true
+})
+
+// DisableNondeterministicLimits causes the Smither to disable non-deterministic
+// LIMIT clauses.
+var DisableNondeterministicLimits = simpleOption("disable non-deterministic LIMIT", func(s *Smither) {
+	s.disableNondeterministicLimits = true
 })
 
 // AvoidConsts causes the Smither to prefer column references over generating
@@ -536,7 +552,7 @@ var CompareMode = multiOption(
 	DisableNondeterministicFns(),
 	DisableCRDBFns(),
 	IgnoreFNs("^version"),
-	DisableLimits(),
+	DisableNondeterministicLimits(),
 	OutputSort(),
 )
 

@@ -1,12 +1,7 @@
 // Copyright 2021 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 //
 // persistedsqlstats is a subsystem that is responsible for flushing node-local
 // in-memory stats into persisted system tables.
@@ -46,9 +41,11 @@ type Config struct {
 	JobRegistry             *jobs.Registry
 
 	// Metrics.
-	FlushCounter   *metric.Counter
-	FlushDuration  metric.IHistogram
-	FailureCounter *metric.Counter
+	FlushCounter            *metric.Counter
+	FlushDuration           metric.IHistogram
+	FlushDoneSignalsIgnored *metric.Counter
+	FailureCounter          *metric.Counter
+	FlushedFingerprintCount *metric.Counter
 
 	// Testing knobs.
 	Knobs *sqlstats.TestingKnobs
@@ -207,6 +204,14 @@ func (s *PersistedSQLStats) startSQLStatsFlushLoop(ctx context.Context, stopper 
 					return
 				case <-s.drain:
 					return
+				default:
+					// Don't block the flush loop if the sql activity update job is not
+					// ready to receive. We should at least continue to collect and flush
+					// stats for this node.
+					if log.V(1) {
+						log.Warning(ctx, "sql-stats-worker: unable to signal flush completion")
+					}
+					s.cfg.FlushDoneSignalsIgnored.Inc(1)
 				}
 			}
 		}

@@ -1,10 +1,7 @@
 // Copyright 2021 The Cockroach Authors.
 //
-// Licensed as a CockroachDB Enterprise file under the Cockroach Community
-// License (the "License"); you may not use this file except in compliance with
-// the License. You may obtain a copy of the License at
-//
-//     https://github.com/cockroachdb/cockroach/blob/master/licenses/CCL.txt
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package streamingccl
 
@@ -34,6 +31,17 @@ var StreamReplicationStreamLivenessTrackFrequency = settings.RegisterDurationSet
 	settings.WithName("physical_replication.producer.stream_liveness_track_frequency"),
 )
 
+// StreamReplicationJobLivenessTimeout controls how long we wait for to kill
+// an inactive producer job.
+var StreamReplicationJobLivenessTimeout = settings.RegisterDurationSetting(
+	settings.SystemOnly,
+	"stream_replication.job_liveness_timeout",
+	"controls how long we wait for to kill an inactive producer job",
+	3*24*time.Hour,
+	settings.WithRetiredName("stream_replication.job_liveness.timeout"),
+	settings.WithName("physical_replication.producer.job_liveness.timeout"),
+)
+
 // StreamReplicationMinCheckpointFrequency controls the minimum frequency the stream replication
 // source cluster sends checkpoints to destination cluster.
 var StreamReplicationMinCheckpointFrequency = settings.RegisterDurationSetting(
@@ -44,6 +52,14 @@ var StreamReplicationMinCheckpointFrequency = settings.RegisterDurationSetting(
 	10*time.Second,
 	settings.NonNegativeDuration,
 	settings.WithName("physical_replication.producer.min_checkpoint_frequency"),
+)
+
+// StreamProducerMuxRangefeeds controls whether we start event streams using the mux rangefeeds.
+var StreamProducerMuxRangefeeds = settings.RegisterBoolSetting(
+	settings.SystemOnly,
+	"physical_replication.producer.mux_rangefeeds.enabled",
+	"controls whether rangefeeds used for physical replication use mux rangefeeds",
+	true,
 )
 
 // StreamReplicationConsumerHeartbeatFrequency controls frequency the stream replication

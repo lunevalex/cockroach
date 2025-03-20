@@ -10,15 +10,14 @@ go_library(
 go_test(
     name = "compare_test",
     srcs = ["compare_test.go"],
+    args = ["-test.timeout=295s"],
     embed = [":compare"],
     gotags = ["compose"],
-    tags = [
-        "integration",
-        "no-remote-exec",
-    ],
+    tags = ["integration"],
     visibility = ["//pkg/compose:__subpackages__"],
     deps = [
         "//pkg/cmd/cmpconn",
+        "//pkg/geo/geos",
         "//pkg/internal/sqlsmith",
         "//pkg/sql/randgen",
         "//pkg/testutils",

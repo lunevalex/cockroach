@@ -1,12 +1,7 @@
 // Copyright 2022 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package tree
 
@@ -85,7 +80,7 @@ type CreateRoutine struct {
 	Replace     bool
 	Name        RoutineName
 	Params      RoutineParams
-	ReturnType  *RoutineReturnType
+	ReturnType  RoutineReturnType
 	Options     RoutineOptions
 	RoutineBody *RoutineBody
 	// BodyStatements is not assigned during initial parsing of user input. It's
@@ -114,7 +109,7 @@ func (node *CreateRoutine) Format(ctx *FmtCtx) {
 	ctx.WriteByte('(')
 	ctx.FormatNode(node.Params)
 	ctx.WriteString(")\n\t")
-	if !node.IsProcedure && node.ReturnType != nil {
+	if !node.IsProcedure {
 		ctx.WriteString("RETURNS ")
 		if node.ReturnType.SetOf {
 			ctx.WriteString("SETOF ")
@@ -122,7 +117,6 @@ func (node *CreateRoutine) Format(ctx *FmtCtx) {
 		ctx.FormatTypeReference(node.ReturnType.Type)
 		ctx.WriteString("\n\t")
 	}
-	var isPLpgSQL bool
 	var funcBody RoutineBodyStr
 	for _, option := range node.Options {
 		switch t := option.(type) {
@@ -133,8 +127,6 @@ func (node *CreateRoutine) Format(ctx *FmtCtx) {
 			if node.IsProcedure {
 				continue
 			}
-		case RoutineLanguage:
-			isPLpgSQL = t == RoutineLangPLpgSQL
 		}
 		ctx.FormatNode(option)
 		ctx.WriteString("\n\t")
@@ -150,10 +142,7 @@ func (node *CreateRoutine) Format(ctx *FmtCtx) {
 			oldAnn := ctx.ann
 			ctx.ann = node.BodyAnnotations[i]
 			ctx.FormatNode(stmt)
-			if !isPLpgSQL {
-				// PL/pgSQL statements handle printing semicolons themselves.
-				ctx.WriteByte(';')
-			}
+			ctx.WriteByte(';')
 			ctx.ann = oldAnn
 		}
 		ctx.WriteString("$$")
@@ -161,11 +150,7 @@ func (node *CreateRoutine) Format(ctx *FmtCtx) {
 		ctx.WriteString("BEGIN ATOMIC ")
 		for _, stmt := range node.RoutineBody.Stmts {
 			ctx.FormatNode(stmt)
-			if !isPLpgSQL {
-				// PL/pgSQL statements handle printing semicolons themselves.
-				ctx.WriteByte(';')
-			}
-			ctx.WriteByte(' ')
+			ctx.WriteString("; ")
 		}
 		ctx.WriteString("END")
 	} else {
@@ -396,10 +381,6 @@ const (
 	RoutineParamVariadic
 )
 
-func (node *RoutineParam) IsOutParam() bool {
-	return node.Class == RoutineParamOut || node.Class == RoutineParamInOut
-}
-
 // RoutineReturnType represent the return type of UDF.
 type RoutineReturnType struct {
 	Type  ResolvableTypeReference
@@ -465,7 +446,7 @@ func (node *RoutineObj) Format(ctx *FmtCtx) {
 func (node RoutineObj) ParamTypes(
 	ctx context.Context, res TypeReferenceResolver,
 ) ([]*types.T, error) {
-	// TODO(#100405): handle INOUT, OUT and VARIADIC argument classes when we
+	// TODO(chengxiong): handle INOUT, OUT and VARIADIC argument classes when we
 	// support them. This is because only IN and INOUT arg types need to be
 	// considered to match a overload.
 	var argTypes []*types.T
@@ -629,7 +610,7 @@ func ComputedColumnExprContext(isVirtual bool) SchemaExprContext {
 
 // ValidateRoutineOptions checks whether there are conflicting or redundant
 // routine options in the given slice.
-func ValidateRoutineOptions(options RoutineOptions, isProc bool) error {
+func ValidateRoutineOptions(options RoutineOptions) error {
 	var hasLang, hasBody, hasLeakProof, hasVolatility, hasNullInputBehavior bool
 	conflictingErr := func(opt RoutineOption) error {
 		return errors.Wrapf(ErrConflictingRoutineOption, "%s", AsString(opt))
@@ -647,25 +628,16 @@ func ValidateRoutineOptions(options RoutineOptions, isProc bool) error {
 			}
 			hasBody = true
 		case RoutineLeakproof:
-			if isProc {
-				return pgerror.Newf(pgcode.InvalidFunctionDefinition, "leakproof attribute not allowed in procedure definition")
-			}
 			if hasLeakProof {
 				return conflictingErr(option)
 			}
 			hasLeakProof = true
 		case RoutineVolatility:
-			if isProc {
-				return pgerror.Newf(pgcode.InvalidFunctionDefinition, "volatility attribute not allowed in procedure definition")
-			}
 			if hasVolatility {
 				return conflictingErr(option)
 			}
 			hasVolatility = true
 		case RoutineNullInputBehavior:
-			if isProc {
-				return pgerror.Newf(pgcode.InvalidFunctionDefinition, "null input attribute not allowed in procedure definition")
-			}
 			if hasNullInputBehavior {
 				return conflictingErr(option)
 			}

@@ -34,10 +34,7 @@ go_library(
 go_test(
     name = "keyside_test",
     srcs = ["keyside_test.go"],
-    exec_properties = select({
-        "//build/toolchains:is_heavy": {"Pool": "heavy"},
-        "//conditions:default": {"Pool": "default"},
-    }),
+    args = ["-test.timeout=295s"],
     deps = [
         ":keyside",
         "//pkg/settings/cluster",

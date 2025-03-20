@@ -1,10 +1,7 @@
 // Copyright 2019 The Cockroach Authors.
 //
-// Licensed as a CockroachDB Enterprise file under the Cockroach Community
-// License (the "License"); you may not use this file except in compliance with
-// the License. You may obtain a copy of the License at
-//
-//     https://github.com/cockroachdb/cockroach/blob/master/licenses/CCL.txt
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package engineccl
 
@@ -254,7 +251,7 @@ func TestPebbleEncryption(t *testing.T) {
 		storage.PebbleConfig{
 			StorageConfig: base.StorageConfig{
 				Attrs:             roachpb.Attributes{},
-				MaxSize:           512 << 20,
+				MaxSize:           base.StoreSize{Bytes: 512 << 20},
 				Settings:          cluster.MakeTestingClusterSettings(),
 				UseFileRegistry:   true,
 				EncryptionOptions: encOptionsBytes,
@@ -273,10 +270,11 @@ func TestPebbleEncryption(t *testing.T) {
 
 	stats, err := db.GetEnvStats()
 	require.NoError(t, err)
-	// Opening the DB should've created OPTIONS, MANIFEST, and the WAL.
-	require.GreaterOrEqual(t, stats.TotalFiles, uint64(3))
+	// Opening the DB should've created OPTIONS, CURRENT, MANIFEST and the
+	// WAL.
+	require.GreaterOrEqual(t, stats.TotalFiles, uint64(4))
 	// We also created markers for the format version and the manifest.
-	require.Equal(t, uint64(5), stats.ActiveKeyFiles)
+	require.Equal(t, uint64(6), stats.ActiveKeyFiles)
 	var s enginepbccl.EncryptionStatus
 	require.NoError(t, protoutil.Unmarshal(stats.EncryptionStatus, &s))
 	require.Equal(t, "16.key", s.ActiveStoreKey.Source)
@@ -302,7 +300,7 @@ func TestPebbleEncryption(t *testing.T) {
 			StorageConfig: base.StorageConfig{
 				Settings:          cluster.MakeTestingClusterSettings(),
 				Attrs:             roachpb.Attributes{},
-				MaxSize:           512 << 20,
+				MaxSize:           base.StoreSize{Bytes: 512 << 20},
 				UseFileRegistry:   true,
 				EncryptionOptions: encOptionsBytes,
 			},
@@ -389,7 +387,7 @@ func TestPebbleEncryption2(t *testing.T) {
 				StorageConfig: base.StorageConfig{
 					Settings:          cluster.MakeTestingClusterSettings(),
 					Attrs:             roachpb.Attributes{},
-					MaxSize:           512 << 20,
+					MaxSize:           base.StoreSize{Bytes: 512 << 20},
 					UseFileRegistry:   true,
 					EncryptionOptions: encOptionsBytes,
 				},
@@ -454,9 +452,9 @@ type errorInjector struct {
 	startInjecting bool
 }
 
-func (i *errorInjector) MaybeError(op errorfs.Op) error {
-	if i.startInjecting && op.Kind.ReadOrWrite() == errorfs.OpIsWrite &&
-		!strings.HasPrefix(op.Path, "TEST") && i.rand.Float64() < i.prob {
+func (i *errorInjector) MaybeError(op errorfs.Op, path string) error {
+	if i.startInjecting && op.OpKind() == errorfs.OpKindWrite &&
+		!strings.HasPrefix(path, "TEST") && i.rand.Float64() < i.prob {
 		return errors.WithStack(errorfs.ErrInjected)
 	}
 	return nil
@@ -465,9 +463,6 @@ func (i *errorInjector) MaybeError(op errorfs.Op) error {
 func (i *errorInjector) startErrors() {
 	i.startInjecting = true
 }
-
-// String implements fmt.Stringer.
-func (i *errorInjector) String() string { return "<opaque>" }
 
 // testFS is the interface implemented by a plain FS and encrypted FS being
 // tested.

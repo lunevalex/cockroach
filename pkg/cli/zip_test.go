@@ -1,12 +1,7 @@
 // Copyright 2020 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package cli
 
@@ -80,7 +75,9 @@ table_name NOT IN (
 	'cluster_contended_keys',
 	'cluster_contended_indexes',
 	'cluster_contended_tables',
+	'cluster_execution_insights',
 	'cluster_inflight_traces',
+	'cluster_txn_execution_insights',
 	'cross_db_references',
 	'databases',
 	'forward_dependencies',
@@ -147,6 +144,7 @@ ORDER BY name ASC`)
 // This tests the operation of zip over secure clusters.
 func TestZip(t *testing.T) {
 	defer leaktest.AfterTest(t)()
+	defer log.Scope(t).Close(t)
 
 	skip.UnderRace(t, "test too slow under race")
 
@@ -178,6 +176,8 @@ func TestZip(t *testing.T) {
 // This tests the operation of zip using --include-goroutine-stacks.
 func TestZipIncludeGoroutineStacks(t *testing.T) {
 	defer leaktest.AfterTest(t)()
+	defer log.Scope(t).Close(t)
+
 	skip.UnderRace(t, "test too slow under race")
 
 	tests := []struct {
@@ -234,6 +234,7 @@ func TestZipIncludeGoroutineStacks(t *testing.T) {
 // This tests the operation of zip using --include-range-info.
 func TestZipIncludeRangeInfo(t *testing.T) {
 	defer leaktest.AfterTest(t)()
+	defer log.Scope(t).Close(t)
 
 	skip.UnderRace(t, "test too slow under race")
 
@@ -264,9 +265,45 @@ func TestZipIncludeRangeInfo(t *testing.T) {
 	)
 }
 
+// This tests the operation of zip using --include-range-info=false.
+func TestZipExcludeRangeInfo(t *testing.T) {
+	defer leaktest.AfterTest(t)()
+	defer log.Scope(t).Close(t)
+
+	skip.UnderRace(t, "test too slow under race")
+
+	dir, cleanupFn := testutils.TempDir(t)
+	defer cleanupFn()
+
+	c := NewCLITest(TestCLIParams{
+		StoreSpecs: []base.StoreSpec{{
+			Path: dir,
+		}},
+	})
+	defer c.Cleanup()
+
+	out, err := c.RunWithCapture(
+		"debug zip --concurrency=1 --cpu-profile-duration=1s --include-range-info=false " + os.DevNull)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Strip any non-deterministic messages.
+	out = eraseNonDeterministicZipOutput(out)
+
+	// We use datadriven simply to read the golden output file; we don't actually
+	// run any commands. Using datadriven allows TESTFLAGS=-rewrite.
+	datadriven.RunTest(t, datapathutils.TestDataPath(t, "zip", "testzip_exclude_range_info"),
+		func(t *testing.T, td *datadriven.TestData) string {
+			return out
+		},
+	)
+}
+
 // This tests the operation of zip running concurrently.
 func TestConcurrentZip(t *testing.T) {
 	defer leaktest.AfterTest(t)()
+	defer log.Scope(t).Close(t)
 
 	// We want a low timeout so that the test doesn't take forever;
 	// however low timeouts make race runs flaky with false positives.
@@ -321,6 +358,7 @@ func TestConcurrentZip(t *testing.T) {
 
 func TestZipSpecialNames(t *testing.T) {
 	defer leaktest.AfterTest(t)()
+	defer log.Scope(t).Close(t)
 
 	dir, cleanupFn := testutils.TempDir(t)
 	defer cleanupFn()
@@ -366,6 +404,7 @@ create table defaultdb."../system"(x int);
 // need the SSL certs dir to run a CLI test securely.
 func TestUnavailableZip(t *testing.T) {
 	defer leaktest.AfterTest(t)()
+	defer log.Scope(t).Close(t)
 
 	skip.UnderShort(t)
 	// Race builds make the servers so slow that they report spurious
@@ -432,62 +471,62 @@ func TestUnavailableZip(t *testing.T) {
 		"debug zip --concurrency=1 --cpu-profile-duration=0 " + os.
 			DevNull + " --timeout=.5s"
 
-	t.Run("server 1", func(t *testing.T) {
-		c := TestCLI{
-			Server:   tc.Server(0),
-			Insecure: true,
+	c := TestCLI{
+		t:        t,
+		Server:   tc.Server(0),
+		Insecure: true,
+	}
+	defer func(prevStderr *os.File) { stderr = prevStderr }(stderr)
+	stderr = os.Stdout
+
+	out, err := c.RunWithCapture(debugZipCommand)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Assert debug zip output for cluster, node 1, node 2, node 3.
+	assert.NotEmpty(t, out)
+	clusterOut := []string{
+		"[cluster] requesting nodes... received response...",
+		"[cluster] requesting liveness... received response...",
+	}
+	expectedOut := clusterOut
+	for i := 1; i < tc.NumServers()+1; i++ {
+		nodeOut := baseZipOutput(i)
+
+		expectedOut = append(expectedOut, nodeOut...)
+
+		// If the request to nodes failed, we can't expect the remaining
+		// nodes to be present in the debug zip output.
+		if i == 1 && strings.Contains(out,
+			"[cluster] requesting nodes: last request failed") {
+			break
 		}
+	}
 
-		out, err := c.RunWithCapture(debugZipCommand)
-		require.NoError(t, err)
+	containsAssert(t, out, expectedOut)
 
-		// Assert debug zip output for cluster, node 1, node 2, node 3.
-		assert.NotEmpty(t, out)
-		clusterOut := []string{
-			"[cluster] requesting nodes... received response...",
-			"[cluster] requesting liveness... received response...",
-		}
-		expectedOut := clusterOut
-		for i := 1; i < tc.NumServers()+1; i++ {
-			nodeOut := baseZipOutput(i)
+	// Run debug zip against node 2.
+	c = TestCLI{
+		t:        t,
+		Server:   tc.Server(1),
+		Insecure: true,
+	}
 
-			expectedOut = append(expectedOut, nodeOut...)
+	out, err = c.RunWithCapture(debugZipCommand)
+	if err != nil {
+		t.Fatal(err)
+	}
 
-			// If the request to nodes failed, we can't expect the remaining
-			// nodes to be present in the debug zip output.
-			if i == 1 && strings.Contains(out,
-				"[cluster] requesting nodes: last request failed") {
-				break
-			}
-		}
+	// Assert debug zip output for cluster, node 2.
+	assert.NotEmpty(t, out)
+	assert.NotContains(t, out, "[node 1]")
+	assert.NotContains(t, out, "[node 3]")
 
-		containsAssert(t, out, expectedOut)
-	})
+	nodeOut := baseZipOutput(2)
+	expectedOut = append(clusterOut, nodeOut...)
 
-	t.Run("server 2", func(t *testing.T) {
-		// Run debug zip against node 2.
-		c := TestCLI{
-			Server:   tc.Server(1),
-			Insecure: true,
-		}
-
-		out, err := c.RunWithCapture(debugZipCommand)
-		require.NoError(t, err)
-
-		// Assert debug zip output for cluster, node 2.
-		assert.NotEmpty(t, out)
-		assert.NotContains(t, out, "[node 1]")
-		assert.NotContains(t, out, "[node 3]")
-
-		clusterOut := []string{
-			"[cluster] requesting nodes... received response...",
-			"[cluster] requesting liveness... received response...",
-		}
-		nodeOut := baseZipOutput(2)
-		expectedOut := append(clusterOut, nodeOut...)
-
-		containsAssert(t, out, expectedOut)
-	})
+	containsAssert(t, out, expectedOut)
 }
 
 func containsAssert(t *testing.T, actual string, expected []string) {
@@ -511,15 +550,12 @@ func baseZipOutput(nodeId int) []string {
 		fmt.Sprintf("[node %d] using SQL connection URL", nodeId),
 		fmt.Sprintf("[node %d] retrieving SQL data", nodeId),
 		fmt.Sprintf("[node %d] requesting stacks... received response...", nodeId),
-		fmt.Sprintf("[node %d] requesting stacks with labels... received response...",
-			nodeId),
-		fmt.Sprintf("[node %d] requesting heap file list... received response...", nodeId),
-		fmt.Sprintf("[node %d] requesting goroutine dump list... received response...",
-			nodeId),
-		fmt.Sprintf("[node %d] requesting log files list... received response...",
-			nodeId),
-		fmt.Sprintf("[node %d] requesting ranges... received response...",
-			nodeId),
+		fmt.Sprintf("[node %d] requesting stacks with labels... received response...", nodeId),
+		fmt.Sprintf("[node %d] requesting heap profile list... received response...", nodeId),
+		fmt.Sprintf("[node %d] requesting goroutine dump list... received response...", nodeId),
+		fmt.Sprintf("[node %d] requesting cpu profile list... received response...", nodeId),
+		fmt.Sprintf("[node %d] requesting log files list... received response...", nodeId),
+		fmt.Sprintf("[node %d] requesting ranges... received response...", nodeId),
 	}
 	return output
 }
@@ -547,6 +583,8 @@ func eraseNonDeterministicZipOutput(out string) string {
 	out = re.ReplaceAllString(out, `[node ?] ? heap profiles found`)
 	re = regexp.MustCompile(`(?m)^\[node \d+\] \d+ goroutine dumps found$`)
 	out = re.ReplaceAllString(out, `[node ?] ? goroutine dumps found`)
+	re = regexp.MustCompile(`(?m)^\[node \d+\] \d+ cpu profiles found$`)
+	out = re.ReplaceAllString(out, `[node ?] ? cpu profiles found`)
 	re = regexp.MustCompile(`(?m)^\[node \d+\] \d+ log files found$`)
 	out = re.ReplaceAllString(out, `[node ?] ? log files found`)
 	re = regexp.MustCompile(`(?m)^\[node \d+\] retrieving (memprof|memstats|memmonitoring).*$` + "\n")
@@ -568,6 +606,7 @@ func eraseNonDeterministicZipOutput(out string) string {
 // need the SSL certs dir to run a CLI test securely.
 func TestPartialZip(t *testing.T) {
 	defer leaktest.AfterTest(t)()
+	defer log.Scope(t).Close(t)
 
 	// We want a low timeout so that the test doesn't take forever;
 	// however low timeouts make race runs flaky with false positives.
@@ -789,7 +828,7 @@ func TestToHex(t *testing.T) {
 	// hex fields are always in the end of the row and they don't contain spaces.
 	hexFiles := map[string][]hexField{
 		"debug/system.descriptor.txt": {
-			{idx: 1, msg: &descpb.Descriptor{}},
+			{idx: 2, msg: &descpb.Descriptor{}},
 		},
 	}
 
@@ -824,8 +863,7 @@ func TestToHex(t *testing.T) {
 			if i < 0 {
 				i = len(fields) + i
 			}
-			// [2:] to skip \x
-			bts, err := enc_hex.DecodeString(fields[i][2:])
+			bts, err := enc_hex.DecodeString(fields[i])
 			if err != nil {
 				t.Fatal(err)
 			}

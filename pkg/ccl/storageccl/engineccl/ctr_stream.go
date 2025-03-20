@@ -1,10 +1,7 @@
 // Copyright 2019 The Cockroach Authors.
 //
-// Licensed as a CockroachDB Enterprise file under the Cockroach Community
-// License (the "License"); you may not use this file except in compliance with
-// the License. You may obtain a copy of the License at
-//
-//     https://github.com/cockroachdb/cockroach/blob/master/licenses/CCL.txt
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package engineccl
 
@@ -13,7 +10,6 @@ import (
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/rand"
-	"crypto/subtle"
 	"encoding/binary"
 	"fmt"
 
@@ -193,5 +189,7 @@ func (s *cTRBlockCipherStream) transform(blockIndex uint64, data []byte, scratch
 	binary.BigEndian.PutUint32(iv[len(iv):len(iv)+4], blockCounter)
 	iv = iv[0 : len(iv)+4]
 	s.cBlock.Encrypt(iv, iv)
-	subtle.XORBytes(data, data, iv)
+	for i := 0; i < ctrBlockSize; i++ {
+		data[i] = data[i] ^ iv[i]
+	}
 }

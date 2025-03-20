@@ -66,7 +66,6 @@ crdb_internal  kv_node_liveness                        table  node  NULL  NULL
 crdb_internal  kv_node_status                          table  node  NULL  NULL
 crdb_internal  kv_protected_ts_records                 table  node  NULL  NULL
 crdb_internal  kv_repairable_catalog_corruptions       view   node  NULL  NULL
-crdb_internal  kv_session_based_leases                 table  node  NULL  NULL
 crdb_internal  kv_store_status                         table  node  NULL  NULL
 crdb_internal  kv_system_privileges                    view   node  NULL  NULL
 crdb_internal  leases                                  table  node  NULL  NULL
@@ -447,15 +446,15 @@ user root
 statement ok
 REVOKE SYSTEM VIEWACTIVITYREDACTED FROM testuser
 
-query ITTTTTTTTTTTTTTTI colnames
+query ITTTTTTTTTTTTTT colnames
 SELECT * FROM crdb_internal.node_sessions WHERE node_id < 0
 ----
-node_id  session_id  user_name  client_address  application_name  active_queries  last_active_query  num_txns_executed  session_start  active_query_start  kv_txn  alloc_bytes  max_alloc_bytes  status  session_end  pg_backend_pid  trace_id
+node_id  session_id  user_name  client_address  application_name  active_queries  last_active_query  num_txns_executed  session_start  active_query_start  kv_txn  alloc_bytes  max_alloc_bytes  status  session_end
 
-query ITTTTTTTTTTTTTTTI colnames
+query ITTTTTTTTTTTTTT colnames
 SELECT * FROM crdb_internal.cluster_sessions WHERE node_id < 0
 ----
-node_id  session_id  user_name  client_address  application_name  active_queries  last_active_query  num_txns_executed  session_start  active_query_start  kv_txn  alloc_bytes  max_alloc_bytes  status  session_end  pg_backend_pid  trace_id
+node_id  session_id  user_name  client_address  application_name  active_queries  last_active_query  num_txns_executed  session_start  active_query_start  kv_txn  alloc_bytes  max_alloc_bytes  status  session_end
 
 query IIITTTI colnames
 SELECT * FROM crdb_internal.node_contention_events WHERE table_id < 0
@@ -639,15 +638,9 @@ select crdb_internal.get_vmodule()
 ·
 
 query T
-SELECT crdb_internal.release_series(crdb_internal.node_executable_version())
+select regexp_replace(crdb_internal.node_executable_version()::string, '(-\d+)?$', '');
 ----
-24.1
-
-query error version '1.0' not supported
-SELECT crdb_internal.release_series('1.0')
-
-query error version '2000000.0' not supported
-SELECT crdb_internal.release_series('2000000.0')
+23.2
 
 query ITTT colnames,rowsort
 select node_id, component, field, regexp_replace(regexp_replace(value, '^\d+$', '<port>'), e':\\d+', ':<port>') as value from crdb_internal.node_runtime_info
@@ -667,7 +660,7 @@ node_id  component  field   value
 1        UI         URI     /
 
 query ITTTTT colnames
-SELECT node_id, network, regexp_replace(address, '\d+$', '<port>') as address, attrs, locality, regexp_replace(server_version, '^\d+\.\d+(-upgrading-to-\d+\.\d+-step-\d+)?$', '<server_version>') as server_version FROM crdb_internal.gossip_nodes WHERE node_id = 1
+SELECT node_id, network, regexp_replace(address, '\d+$', '<port>') as address, attrs, locality, regexp_replace(server_version, '^\d+\.\d+(-\d+)?$', '<server_version>') as server_version FROM crdb_internal.gossip_nodes WHERE node_id = 1
 ----
 node_id  network  address           attrs  locality            server_version
 1        tcp      127.0.0.1:<port>  []     region=test,dc=dc1  <server_version>
@@ -679,7 +672,7 @@ node_id  epoch        expiration    draining  decommissioning     membership
 1        <epoch>      <timestamp>   false     false               active
 
 query ITTTTTT colnames
-SELECT node_id, network, regexp_replace(address, '\d+$', '<port>') as address, attrs, locality, regexp_replace(server_version, '^\d+\.\d+(-upgrading-to-\d+\.\d+-step-\d+)?$', '<server_version>') as server_version, regexp_replace(go_version, '^go.+$', '<go_version>') as go_version
+SELECT node_id, network, regexp_replace(address, '\d+$', '<port>') as address, attrs, locality, regexp_replace(server_version, '^\d+\.\d+(-\d+)?$', '<server_version>') as server_version, regexp_replace(go_version, '^go.+$', '<go_version>') as go_version
 FROM crdb_internal.kv_node_status WHERE node_id = 1
 ----
 node_id  network  address           attrs  locality            server_version    go_version
@@ -799,9 +792,9 @@ SELECT * FROM crdb_internal.check_consistency(true, b'\x02', b'\x04')
 
 # Anyone can see the executable version.
 query T
-SELECT crdb_internal.release_series(crdb_internal.node_executable_version())
+select regexp_replace(crdb_internal.node_executable_version()::string, '(-\d+)?$', '');
 ----
-24.1
+23.2
 
 user root
 
@@ -1009,6 +1002,22 @@ SELECT crdb_internal.compact_engine_span(1, 1, decode('c0898a', 'hex'), decode('
 user testuser
 query error crdb_internal.compact_engine_span\(\): insufficient privilege
 SELECT crdb_internal.compact_engine_span(1, 1, decode('c08989', 'hex'), decode('c0898a', 'hex'))
+
+subtest builtin_is_admin
+
+user root
+
+query B
+SELECT crdb_internal.is_admin()
+----
+true
+
+user testuser
+
+query B
+SELECT crdb_internal.is_admin()
+----
+false
 
 user root
 
@@ -1218,6 +1227,30 @@ SELECT is_temporary FROM crdb_internal.create_statements WHERE descriptor_name =
 ----
 true
 
+statement ok
+CREATE TABLE defaultdb.public.in_other_db (x INT PRIMARY KEY);
+CREATE TABLE public.in_this_db (x INT PRIMARY KEY);
+
+# Verify that we can inspect all databases by using "" as the database name.
+query TTT colnames
+SELECT database_name, schema_name, descriptor_name
+FROM "".crdb_internal.create_statements
+WHERE descriptor_name IN ('in_other_db', 'in_this_db')
+ORDER BY 1,2,3
+----
+database_name  schema_name  descriptor_name
+defaultdb      public       in_other_db
+test           public       in_this_db
+
+# Also verify that using the virtul index on descriptor_id works.
+query TTT colnames
+SELECT database_name, schema_name, descriptor_name
+FROM "".crdb_internal.create_statements
+WHERE descriptor_id = 'defaultdb.public.in_other_db'::regclass::int
+----
+database_name  schema_name  descriptor_name
+defaultdb      public       in_other_db
+
 query TT
 SELECT * FROM crdb_internal.regions ORDER BY 1
 ----
@@ -1312,15 +1345,15 @@ NULL 100 KiB
 
 # Sanity checks of the crdb_internal.node_memory_monitors table.
 
-query BBB
-SELECT used > 0, reserved_used > 0, used < reserved_used FROM crdb_internal.node_memory_monitors WHERE name = 'root'
+query BBBB
+SELECT used > 0, reserved_used > 0, used < reserved_used, stopped FROM crdb_internal.node_memory_monitors WHERE name = 'root'
 ----
-true true true
+true true true false
 
-query B
-SELECT used > 0 FROM crdb_internal.node_memory_monitors WHERE name = 'sql'
+query BB
+SELECT used > 0, stopped FROM crdb_internal.node_memory_monitors WHERE name = 'sql'
 ----
-true
+true false
 
 # Run a query on one connection and observe it from another.
 user testuser
@@ -1581,17 +1614,17 @@ FROM crdb_internal.create_procedure_statements
 WHERE procedure_name IN ('p', 'p2')
 ORDER BY procedure_id;
 ----
-104  test  105  public  137  p   CREATE PROCEDURE public.p(IN INT8)
+104  test  105  public  139  p   CREATE PROCEDURE public.p(IN INT8)
                                    LANGUAGE SQL
                                    AS $$
                                    SELECT 1;
                                  $$
-104  test  105  public  138  p   CREATE PROCEDURE public.p(IN STRING, IN b INT8)
+104  test  105  public  140  p   CREATE PROCEDURE public.p(IN STRING, IN b INT8)
                                    LANGUAGE SQL
                                    AS $$
                                    SELECT 'hello';
                                  $$
-104  test  140  sc      141  p2  CREATE PROCEDURE sc.p2(IN STRING)
+104  test  142  sc      143  p2  CREATE PROCEDURE sc.p2(IN STRING)
                                    LANGUAGE SQL
                                    AS $$
                                    SELECT 'hello';
@@ -1611,22 +1644,22 @@ FROM "".crdb_internal.create_procedure_statements
 WHERE procedure_name IN ('p', 'p2', 'p_cross_db')
 ORDER BY procedure_id;
 ----
-104  test           105  public  137  p           CREATE PROCEDURE public.p(IN INT8)
+104  test           105  public  139  p           CREATE PROCEDURE public.p(IN INT8)
                                                     LANGUAGE SQL
                                                     AS $$
                                                     SELECT 1;
                                                   $$
-104  test           105  public  138  p           CREATE PROCEDURE public.p(IN STRING, IN b INT8)
+104  test           105  public  140  p           CREATE PROCEDURE public.p(IN STRING, IN b INT8)
                                                     LANGUAGE SQL
                                                     AS $$
                                                     SELECT 'hello';
                                                   $$
-104  test           140  sc      141  p2          CREATE PROCEDURE sc.p2(IN STRING)
+104  test           142  sc      143  p2          CREATE PROCEDURE sc.p2(IN STRING)
                                                     LANGUAGE SQL
                                                     AS $$
                                                     SELECT 'hello';
                                                   $$
-142  test_cross_db  143  public  144  p_cross_db  CREATE PROCEDURE public.p_cross_db()
+144  test_cross_db  145  public  146  p_cross_db  CREATE PROCEDURE public.p_cross_db()
                                                     LANGUAGE SQL
                                                     AS $$
                                                     SELECT 1;
@@ -1643,5 +1676,21 @@ USE test_cross_db;
 DROP PROCEDURE p_cross_db;
 USE test;
 DROP DATABASE test_cross_db;
+
+subtest end
+
+
+# In #119253 we observed a deadlock when visiting leases inside crdb_internal.lease
+# between the lease manager and the authorization check for each descriptor. This
+# test validates that this is no longer the case.
+subtest allow_role_memberships_to_change_during_transaction
+
+user testuser
+
+statement ok
+set allow_role_memberships_to_change_during_transaction=true
+
+statement ok
+SELECT  * FROM crdb_internal.leases;
 
 subtest end

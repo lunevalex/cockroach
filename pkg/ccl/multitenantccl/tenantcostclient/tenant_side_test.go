@@ -1,10 +1,7 @@
 // Copyright 2021 The Cockroach Authors.
 //
-// Licensed as a CockroachDB Enterprise file under the Cockroach Community
-// License (the "License"); you may not use this file except in compliance with
-// the License. You may obtain a copy of the License at
-//
-//     https://github.com/cockroachdb/cockroach/blob/master/licenses/CCL.txt
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package tenantcostclient_test
 
@@ -1123,6 +1120,9 @@ func TestScheduledJobsConsumption(t *testing.T) {
 					RetryMaxDelay:     &zeroDuration,
 				},
 			},
+			TableStatsKnobs: &stats.TableStatsTestingKnobs{
+				DisableInitialTableCollection: true,
+			},
 		},
 	})
 
@@ -1142,10 +1142,9 @@ func TestScheduledJobsConsumption(t *testing.T) {
 	after.Sub(&before)
 	require.Zero(t, after.WriteBatches)
 	require.Zero(t, after.WriteBytes)
-	// Expect up to 3 batches for initial auto-stats query, schema catalog fill,
-	// and anything else that happens once during server startup but might not be
-	// done by this point.
-	require.LessOrEqual(t, after.ReadBatches, uint64(3))
+	// Expect up to 2 batches for schema catalog fill and anything else that
+	// happens once during server startup but might not be done by this point.
+	require.LessOrEqual(t, after.ReadBatches, uint64(2))
 
 	// Make sure that at least 100 writes (deletes) are reported. The TTL job
 	// should not be exempt from cost control.

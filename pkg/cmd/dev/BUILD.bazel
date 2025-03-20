@@ -45,17 +45,13 @@ go_binary(
 
 go_test(
     name = "dev_test",
-    size = "small",
     srcs = [
         "datadriven_test.go",
         "recorderdriven_test.go",
     ],
+    args = ["-test.timeout=295s"],
     data = glob(["testdata/**"]),
     embed = [":dev_lib"],
-    exec_properties = select({
-        "//build/toolchains:is_heavy": {"Pool": "heavy"},
-        "//conditions:default": {"Pool": "default"},
-    }),
     deps = [
         "//pkg/build/bazel",
         "//pkg/cmd/dev/io/exec",

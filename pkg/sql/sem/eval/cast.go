@@ -1,12 +1,7 @@
 // Copyright 2020 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package eval
 
@@ -495,7 +490,8 @@ func performCastWithoutPrecisionTruncation(
 				false, /* skipHexPrefix */
 			)
 		case *tree.DOid:
-			s = t.String()
+			// The "unknown" oid has special handling.
+			s = tree.AsStringWithFlags(t, tree.FmtPgwireText)
 		case *tree.DJSON:
 			s = t.JSON.String()
 		case *tree.DTSQuery:
@@ -595,7 +591,7 @@ func performCastWithoutPrecisionTruncation(
 		if !evalCtx.Settings.Version.IsActive(ctx, clusterversion.V23_2) {
 			return nil, pgerror.Newf(pgcode.FeatureNotSupported,
 				"version %v must be finalized to use pg_lsn",
-				clusterversion.V23_2.Version())
+				clusterversion.ByKey(clusterversion.V23_2))
 		}
 		switch d := d.(type) {
 		case *tree.DString:
@@ -610,7 +606,7 @@ func performCastWithoutPrecisionTruncation(
 		if !evalCtx.Settings.Version.IsActive(ctx, clusterversion.V23_2) {
 			return nil, pgerror.Newf(pgcode.FeatureNotSupported,
 				"version %v must be finalized to use refcursor",
-				clusterversion.V23_2.Version())
+				clusterversion.ByKey(clusterversion.V23_2))
 		}
 		switch d := d.(type) {
 		case *tree.DString:
@@ -880,13 +876,13 @@ func performCastWithoutPrecisionTruncation(
 		case *tree.DJSON:
 			return v, nil
 		case *tree.DGeography:
-			j, err := geo.SpatialObjectToGeoJSON(v.Geography.SpatialObject(), -1, geo.SpatialObjectToGeoJSONFlagZero)
+			j, err := geo.SpatialObjectToGeoJSON(v.Geography.SpatialObject(), geo.FullPrecisionGeoJSON, geo.SpatialObjectToGeoJSONFlagZero)
 			if err != nil {
 				return nil, err
 			}
 			return tree.ParseDJSON(string(j))
 		case *tree.DGeometry:
-			j, err := geo.SpatialObjectToGeoJSON(v.Geometry.SpatialObject(), -1, geo.SpatialObjectToGeoJSONFlagZero)
+			j, err := geo.SpatialObjectToGeoJSON(v.Geometry.SpatialObject(), geo.FullPrecisionGeoJSON, geo.SpatialObjectToGeoJSONFlagZero)
 			if err != nil {
 				return nil, err
 			}
@@ -896,7 +892,7 @@ func performCastWithoutPrecisionTruncation(
 		if !evalCtx.Settings.Version.IsActive(ctx, clusterversion.V23_1) {
 			return nil, pgerror.Newf(pgcode.FeatureNotSupported,
 				"version %v must be finalized to use TSVector",
-				clusterversion.V23_1.Version())
+				clusterversion.ByKey(clusterversion.V23_1))
 		}
 		switch v := d.(type) {
 		case *tree.DString:
@@ -910,7 +906,7 @@ func performCastWithoutPrecisionTruncation(
 		if !evalCtx.Settings.Version.IsActive(ctx, clusterversion.V23_1) {
 			return nil, pgerror.Newf(pgcode.FeatureNotSupported,
 				"version %v must be finalized to use TSVector",
-				clusterversion.V23_1.Version())
+				clusterversion.ByKey(clusterversion.V23_1))
 		}
 		switch v := d.(type) {
 		case *tree.DString:
@@ -953,9 +949,6 @@ func performCastWithoutPrecisionTruncation(
 		case *tree.DInt:
 			return performIntToOidCast(ctx, evalCtx.Planner, t, *v)
 		case *tree.DString:
-			if t.Oid() != oid.T_oid && string(*v) == tree.ZeroOidValue {
-				return tree.WrapAsZeroOid(t), nil
-			}
 			return ParseDOid(ctx, evalCtx, string(*v), t)
 		}
 	case types.TupleFamily:
@@ -1001,6 +994,10 @@ func performCastWithoutPrecisionTruncation(
 func performIntToOidCast(
 	ctx context.Context, res Planner, t *types.T, v tree.DInt,
 ) (tree.Datum, error) {
+	if v == 0 {
+		// This is the "unknown" oid.
+		return tree.NewDOidWithType(tree.UnknownOidValue, t), nil
+	}
 	// OIDs are always unsigned 32-bit integers. Some languages, like Java,
 	// store OIDs as signed 32-bit integers, so we implement the cast
 	// by converting to a uint32 first. This matches Postgres behavior.
@@ -1023,15 +1020,10 @@ func performIntToOidCast(
 				return nil, err
 			}
 			name = typ.PGName()
-		} else if v == 0 {
-			return tree.WrapAsZeroOid(t), nil
 		}
 		return tree.NewDOidWithTypeAndName(o, t, name), nil
 
 	case oid.T_regproc, oid.T_regprocedure:
-		if v == 0 {
-			return tree.WrapAsZeroOid(t), nil
-		}
 		name, _, err := res.ResolveFunctionByOID(ctx, oid.Oid(v))
 		if err != nil {
 			if errors.Is(err, tree.ErrRoutineUndefined) {
@@ -1042,10 +1034,6 @@ func performIntToOidCast(
 		return tree.NewDOidWithTypeAndName(o, t, name.Object()), nil
 
 	default:
-		if v == 0 {
-			return tree.WrapAsZeroOid(t), nil
-		}
-
 		dOid, errSafeToIgnore, err := res.ResolveOIDFromOID(ctx, t, tree.NewDOid(o))
 		if err != nil {
 			if !errSafeToIgnore {

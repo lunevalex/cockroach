@@ -1,12 +1,7 @@
 // Copyright 2018 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package tests
 
@@ -53,7 +48,7 @@ func registerCancel(r registry.Registry) {
 
 			t.Status("restoring TPCH dataset for Scale Factor 1")
 			if err := loadTPCHDataset(
-				ctx, t, c, conn, 1 /* sf */, c.NewMonitor(ctx), c.All(), false /* disableMergeQueue */, false, /* secure */
+				ctx, t, c, conn, 1 /* sf */, c.NewMonitor(ctx), c.All(), false, /* disableMergeQueue */
 			); err != nil {
 				t.Fatal(err)
 			}
@@ -105,11 +100,11 @@ func registerCancel(r registry.Registry) {
 					timeoutCh := time.After(10 * time.Second)
 					pollingStartTime := timeutil.Now()
 					for {
-						// Sleep for some random duration up to 1000ms. This
+						// Sleep for some random duration up to 500ms. This
 						// allows us to sometimes find the query when it's in
 						// the planning stage while in most cases it's in the
 						// execution stage already.
-						toSleep := time.Duration(rng.Intn(1001)) * time.Millisecond
+						toSleep := time.Duration(rng.Intn(501)) * time.Millisecond
 						t.Status(fmt.Sprintf("sleeping for %s", toSleep))
 						time.Sleep(toSleep)
 						rows, err := conn.Query(`SELECT query_id, query FROM [SHOW CLUSTER QUERIES] WHERE query NOT LIKE '%SHOW CLUSTER QUERIES%'`)

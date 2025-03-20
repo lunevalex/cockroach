@@ -1,17 +1,13 @@
 // Copyright 2020 The Cockroach Authors.
 //
-// Licensed as a CockroachDB Enterprise file under the Cockroach Community
-// License (the "License"); you may not use this file except in compliance with
-// the License. You may obtain a copy of the License at
-//
-//     https://github.com/cockroachdb/cockroach/blob/master/licenses/CCL.txt
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package backupccl
 
 import (
 	"context"
 	"fmt"
-	"strconv"
 	"testing"
 	"time"
 
@@ -45,9 +41,7 @@ type alterSchedulesTestHelper struct {
 
 // newAlterSchedulesTestHelper creates and initializes appropriate state for a test,
 // returning alterSchedulesTestHelper as well as a cleanup function.
-func newAlterSchedulesTestHelper(
-	t *testing.T, beforeExec func(),
-) (*alterSchedulesTestHelper, func()) {
+func newAlterSchedulesTestHelper(t *testing.T) (*alterSchedulesTestHelper, func()) {
 	dir, dirCleanupFn := testutils.TempDir(t)
 
 	th := &alterSchedulesTestHelper{
@@ -61,9 +55,6 @@ func newAlterSchedulesTestHelper(
 		TakeOverJobsScheduling: func(fn execAlterSchedulesFn) {
 			th.executeSchedules = func() error {
 				defer th.server.JobRegistry().(*jobs.Registry).TestingNudgeAdoptionQueue()
-				if beforeExec != nil {
-					beforeExec()
-				}
 				return fn(context.Background(), allSchedules)
 			}
 		},
@@ -97,14 +88,7 @@ func TestAlterBackupScheduleEmitsSummary(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
 
-	// block execution while we mess with the schedule.
-	ch := make(chan struct{})
-	beforeExec := func() {
-		<-ch
-	}
-	defer close(ch)
-
-	th, cleanup := newAlterSchedulesTestHelper(t, beforeExec)
+	th, cleanup := newAlterSchedulesTestHelper(t)
 	defer cleanup()
 
 	th.sqlDB.Exec(t, `
@@ -115,48 +99,41 @@ CREATE TABLE t1(a int);
 INSERT INTO t1 values (1), (10), (100);
 `)
 
-	rows := th.sqlDB.QueryStr(t,
+	rows := th.sqlDB.Query(t,
 		`CREATE SCHEDULE FOR BACKUP t1 INTO 'nodelocal://1/backup/alter-schedule' RECURRING '@daily';`)
-	require.Len(t, rows, 2)
-	scheduleID, err := strconv.Atoi(rows[0][0])
-	require.NoError(t, err)
+	require.NoError(t, rows.Err())
 
-	rows = th.sqlDB.QueryStr(t,
+	var scheduleID int64
+	var unusedStr string
+	var unusedTS *time.Time
+	rowCount := 0
+	for rows.Next() {
+		// We just need to retrieve one of the schedule IDs, don't care whether
+		// it's the incremental or full.
+		require.NoError(t, rows.Scan(&scheduleID, &unusedStr, &unusedStr, &unusedTS, &unusedStr, &unusedStr))
+		rowCount++
+	}
+	require.Equal(t, 2, rowCount)
+
+	var status, schedule, backupStmt string
+	var statuses, schedules, backupStmts []string
+	rows = th.sqlDB.Query(t,
 		fmt.Sprintf(`ALTER BACKUP SCHEDULE %d SET FULL BACKUP '@weekly';`, scheduleID))
-
-	// Incremental should be emitted first.
-	require.Equal(t, []string{
-		"PAUSED: Waiting for initial backup to complete",
-		"@daily",
-		"BACKUP TABLE mydb.public.t1 INTO LATEST IN 'nodelocal://1/backup/alter-schedule' WITH OPTIONS (detached)",
-	}, []string{rows[0][2], rows[0][4], rows[0][5]})
-	require.Equal(t, []string{
-		"ACTIVE",
-		"@weekly",
-		"BACKUP TABLE mydb.public.t1 INTO 'nodelocal://1/backup/alter-schedule' WITH OPTIONS (detached)",
-	}, []string{rows[1][2], rows[1][4], rows[1][5]})
-
-	trim := func(s string) string {
-		l := len(`2005-06-07 08:09:10`)
-		if len(s) > l {
-			return s[:l]
-		}
-		return s
+	require.NoError(t, rows.Err())
+	for rows.Next() {
+		require.NoError(t, rows.Scan(&scheduleID, &unusedStr, &status, &unusedTS, &schedule, &backupStmt))
+		statuses = append(statuses, status)
+		schedules = append(schedules, schedule)
+		backupStmts = append(backupStmts, backupStmt)
 	}
 
-	th.env.AdvanceTime(time.Second)
-
-	rows = th.sqlDB.QueryStr(t, fmt.Sprintf(`ALTER BACKUP SCHEDULE %d EXECUTE FULL IMMEDIATELY;`, scheduleID))
-	require.Equal(t, trim(th.env.Now().String()), trim(rows[1][3]))
-
-	// The paused inc schedule -- paused while it waits for the full -- can't be
-	// triggered while it is paused.
-	th.sqlDB.ExpectErr(t, "cannot execute a paused schedule",
-		fmt.Sprintf(`ALTER BACKUP SCHEDULE %d EXECUTE IMMEDIATELY;`, scheduleID))
-
-	th.sqlDB.Exec(t, `RESUME SCHEDULE $1`, scheduleID)
-
-	rows = th.sqlDB.QueryStr(t, fmt.Sprintf(`ALTER BACKUP SCHEDULE %d EXECUTE IMMEDIATELY;`, scheduleID))
-	require.Equal(t, trim(th.env.Now().String()), trim(rows[0][3]))
+	// Incremental should be emitted first.
+	require.Equal(t, []string{"PAUSED: Waiting for initial backup to complete", "ACTIVE"}, statuses)
+	require.Equal(t, []string{"@daily", "@weekly"}, schedules)
+	require.Equal(t, []string{
+		"BACKUP TABLE mydb.public.t1 INTO LATEST IN 'nodelocal://1/backup/alter-schedule' WITH OPTIONS (detached)",
+		"BACKUP TABLE mydb.public.t1 INTO 'nodelocal://1/backup/alter-schedule' WITH OPTIONS (detached)",
+	},
+		backupStmts)
 
 }

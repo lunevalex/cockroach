@@ -1,12 +1,7 @@
 // Copyright 2020 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package democluster
 
@@ -43,7 +38,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/catalogkeys"
 	"github.com/cockroachdb/cockroach/pkg/sql/isql"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/catconstants"
-	"github.com/cockroachdb/cockroach/pkg/sql/sqlclustersettings"
 	"github.com/cockroachdb/cockroach/pkg/testutils/serverutils"
 	"github.com/cockroachdb/cockroach/pkg/testutils/serverutils/regionlatency"
 	"github.com/cockroachdb/cockroach/pkg/util/envutil"
@@ -463,7 +457,7 @@ func (c *transientCluster) Start(ctx context.Context) (err error) {
 			}
 
 			for _, s := range []string{
-				string(sqlclustersettings.RestrictAccessToSystemInterface.Name()),
+				string(sql.RestrictAccessToSystemInterface.Name()),
 				string(sql.TipUserAboutSystemInterface.Name()),
 			} {
 				if _, err := ie.Exec(ctx, "restrict-system-interface", nil, fmt.Sprintf(`SET CLUSTER SETTING %s = true`, s)); err != nil {
@@ -825,7 +819,7 @@ func (c *transientCluster) waitForSQLReadiness(
 		case <-ctx.Done():
 			return errors.CombineErrors(errors.Newf("context cancellation while waiting for server %d to become ready", idx), ctx.Err())
 		case <-c.servers[idx].Stopper().ShouldQuiesce():
-			return errors.Newf("server %d shut down prematurely", idx)
+			return errors.Newf("server %s shut down prematurely", idx)
 		case <-c.stopper.ShouldQuiesce():
 			return errors.Newf("demo cluster shut down prematurely while waiting for server %d to become ready", idx)
 		default:
@@ -2036,17 +2030,6 @@ func (c *transientCluster) ListDemoNodes(w, ew io.Writer, justOne, verbose bool)
 	if justOne && numNodesLive > 1 {
 		fmt.Fprintln(w, `To display connection parameters for other nodes, use \demo ls.`)
 	}
-}
-
-func (c *transientCluster) ExpandShortDemoURLs(s string) string {
-	if !strings.Contains(s, "demo://") {
-		return s
-	}
-	u, err := c.getNetworkURLForServer(context.Background(), 0, false, forSystemTenant)
-	if err != nil {
-		return s
-	}
-	return regexp.MustCompile(`demo://([[:alnum:]]+)`).ReplaceAllString(s, strings.ReplaceAll(u.String(), "-ccluster%3Dsystem", "-ccluster%3D$1"))
 }
 
 func (c *transientCluster) printURLs(

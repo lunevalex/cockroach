@@ -1,12 +1,7 @@
 // Copyright 2022 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package loqrecovery
 
@@ -56,7 +51,7 @@ func TestApplyVerifiesVersion(t *testing.T) {
 	}
 
 	t.Run("apply plan version is higher than cluster", func(t *testing.T) {
-		aboveCurrent := clusterversion.Latest.Version()
+		aboveCurrent := clusterversion.ByKey(clusterversion.BinaryVersionKey)
 		aboveCurrent.Major += 1
 		plan := loqrecoverypb.ReplicaUpdatePlan{
 			PlanID:    uuid.MakeV4(),
@@ -67,7 +62,7 @@ func TestApplyVerifiesVersion(t *testing.T) {
 	})
 
 	t.Run("apply plan version lower than current", func(t *testing.T) {
-		belowMin := clusterversion.MinSupported.Version()
+		belowMin := clusterversion.ByKey(clusterversion.BinaryMinSupportedVersionKey)
 		belowMin.Minor -= 1
 		plan := loqrecoverypb.ReplicaUpdatePlan{
 			PlanID:    uuid.MakeV4(),

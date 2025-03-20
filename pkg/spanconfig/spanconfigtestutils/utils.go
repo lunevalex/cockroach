@@ -1,12 +1,7 @@
 // Copyright 2021 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package spanconfigtestutils
 
@@ -144,11 +139,6 @@ func ParseZoneConfig(t testing.TB, s string) zonepb.ZoneConfig {
 			part = strings.TrimPrefix(part, "voter_constraints=")
 			require.NoError(t, yaml.UnmarshalStrict([]byte(part), &cl))
 			config.VoterConstraints = cl.Constraints
-		case strings.HasPrefix(part, "lease_preferences="):
-			cl := []zonepb.LeasePreference{}
-			part = strings.TrimPrefix(part, "lease_preferences=")
-			require.NoError(t, yaml.UnmarshalStrict([]byte(part), &cl))
-			config.LeasePreferences = cl
 		default:
 			t.Fatalf("unrecognized suffix for %s, expected 'num_replicas=', 'num_voters=', 'constraints=', or 'voter_constraints='", part)
 		}
@@ -650,7 +640,7 @@ func PrintSpanConfigDiffedAgainstDefaults(conf roachpb.SpanConfig) string {
 		diffs = append(diffs, fmt.Sprintf("voter_constraints=%v", conf.VoterConstraints))
 	}
 	if !reflect.DeepEqual(conf.LeasePreferences, defaultConf.LeasePreferences) {
-		diffs = append(diffs, fmt.Sprintf("lease_preferences=%v", conf.LeasePreferences))
+		diffs = append(diffs, fmt.Sprintf("lease_preferences=%v", conf.VoterConstraints))
 	}
 	if !reflect.DeepEqual(conf.GCPolicy.ProtectionPolicies, defaultConf.GCPolicy.ProtectionPolicies) {
 		sort.Slice(conf.GCPolicy.ProtectionPolicies, func(i, j int) bool {

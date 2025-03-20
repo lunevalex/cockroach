@@ -1,10 +1,7 @@
 // Copyright 2020 The Cockroach Authors.
 //
-// Licensed as a CockroachDB Enterprise file under the Cockroach Community
-// License (the "License"); you may not use this file except in compliance with
-// the License. You may obtain a copy of the License at
-//
-//     https://github.com/cockroachdb/cockroach/blob/master/licenses/CCL.txt
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package streamingest
 
@@ -229,7 +226,7 @@ type streamIngestionProcessor struct {
 
 	// frontier keeps track of the progress for the spans tracked by this processor
 	// and is used forward resolved spans
-	frontier span.Frontier
+	frontier *span.Frontier
 	// lastFlushTime keeps track of the last time that we flushed due to a
 	// checkpoint timestamp event.
 	lastFlushTime time.Time
@@ -393,7 +390,7 @@ func (sip *streamIngestionProcessor) Start(ctx context.Context) {
 		ctx, db.KV(), rc, evalCtx.Settings, sip.flowCtx.Cfg.BackupMonitor.MakeConcurrentBoundAccount(),
 		sip.flowCtx.Cfg.BulkSenderLimiter, sip.onFlushUpdateMetricUpdate)
 	if err != nil {
-		sip.MoveToDraining(errors.Wrap(err, "creating stream sst batcher"))
+		sip.MoveToDrainingAndLogError(errors.Wrap(err, "creating stream sst batcher"))
 		return
 	}
 
@@ -413,6 +410,10 @@ func (sip *streamIngestionProcessor) Start(ctx context.Context) {
 		id := partitionSpec.PartitionID
 		token := streamclient.SubscriptionToken(partitionSpec.SubscriptionToken)
 		addr := partitionSpec.Address
+		redactedAddr, redactedErr := streamclient.RedactSourceURI(addr)
+		if redactedErr != nil {
+			log.Warning(sip.Ctx(), "could not redact stream address")
+		}
 		var streamClient streamclient.Client
 		if sip.forceClientForTests != nil {
 			streamClient = sip.forceClientForTests
@@ -421,7 +422,8 @@ func (sip *streamIngestionProcessor) Start(ctx context.Context) {
 			streamClient, err = streamclient.NewStreamClient(ctx, streamingccl.StreamAddress(addr), db,
 				streamclient.WithStreamID(streampb.StreamID(sip.spec.StreamID)))
 			if err != nil {
-				sip.MoveToDraining(errors.Wrapf(err, "creating client for partition spec %q from %q", token, addr))
+
+				sip.MoveToDrainingAndLogError(errors.Wrapf(err, "creating client for partition spec %q from %q", token, redactedAddr))
 				return
 			}
 			sip.streamPartitionClients = append(sip.streamPartitionClients, streamClient)
@@ -439,37 +441,42 @@ func (sip *streamIngestionProcessor) Start(ctx context.Context) {
 			sip.spec.InitialScanTimestamp, previousReplicatedTimestamp)
 
 		if err != nil {
-			sip.MoveToDraining(errors.Wrapf(err, "consuming partition %v", addr))
+			sip.MoveToDrainingAndLogError(errors.Wrapf(err, "consuming partition %v", redactedAddr))
 			return
 		}
 		subscriptions[id] = sub
-		sip.subscriptionGroup.GoCtx(sub.Subscribe)
+		sip.subscriptionGroup.GoCtx(func(ctx context.Context) error {
+			if err := sub.Subscribe(ctx); err != nil {
+				sip.sendError(errors.Wrap(err, "subscription"))
+			}
+			return nil
+		})
 	}
 
 	sip.mergedSubscription = mergeSubscriptions(sip.Ctx(), subscriptions)
 	sip.workerGroup.GoCtx(func(ctx context.Context) error {
 		if err := sip.mergedSubscription.Run(); err != nil {
-			sip.sendError(err)
+			sip.sendError(errors.Wrap(err, "merge subscription"))
 		}
 		return nil
 	})
 	sip.workerGroup.GoCtx(func(ctx context.Context) error {
 		if err := sip.checkForCutoverSignal(ctx); err != nil {
-			sip.sendError(err)
+			sip.sendError(errors.Wrap(err, "cutover signal check"))
 		}
 		return nil
 	})
 	sip.workerGroup.GoCtx(func(ctx context.Context) error {
 		defer close(sip.flushCh)
 		if err := sip.consumeEvents(ctx); err != nil {
-			sip.sendError(err)
+			sip.sendError(errors.Wrap(err, "consume events"))
 		}
 		return nil
 	})
 	sip.workerGroup.GoCtx(func(ctx context.Context) error {
 		defer close(sip.checkpointCh)
 		if err := sip.flushLoop(ctx); err != nil {
-			sip.sendError(err)
+			sip.sendError(errors.Wrap(err, "flush loop"))
 		}
 		return nil
 	})
@@ -486,7 +493,7 @@ func (sip *streamIngestionProcessor) Next() (rowenc.EncDatumRow, *execinfrapb.Pr
 		if ok {
 			progressBytes, err := protoutil.Marshal(progressUpdate)
 			if err != nil {
-				sip.MoveToDraining(err)
+				sip.MoveToDrainingAndLogError(err)
 				return nil, sip.DrainHelper()
 			}
 			row := rowenc.EncDatumRow{
@@ -500,17 +507,24 @@ func (sip *streamIngestionProcessor) Next() (rowenc.EncDatumRow, *execinfrapb.Pr
 		return nil, bulkutil.ConstructTracingAggregatorProducerMeta(sip.Ctx(),
 			sip.flowCtx.NodeID.SQLInstanceID(), sip.flowCtx.ID, sip.agg)
 	case err := <-sip.errCh:
-		sip.MoveToDraining(err)
+		sip.MoveToDrainingAndLogError(err)
 		return nil, sip.DrainHelper()
 	}
 	select {
 	case err := <-sip.errCh:
-		sip.MoveToDraining(err)
+		sip.MoveToDrainingAndLogError(err)
 		return nil, sip.DrainHelper()
 	default:
-		sip.MoveToDraining(nil /* error */)
+		sip.MoveToDrainingAndLogError(nil /* error */)
 		return nil, sip.DrainHelper()
 	}
+}
+
+func (sip *streamIngestionProcessor) MoveToDrainingAndLogError(err error) {
+	if err != nil {
+		log.Infof(sip.Ctx(), "gracefully draining with error %s", err)
+	}
+	sip.MoveToDraining(err)
 }
 
 // MustBeStreaming implements the Processor interface.
@@ -527,8 +541,6 @@ func (sip *streamIngestionProcessor) close() {
 	if sip.Closed {
 		return
 	}
-
-	defer sip.frontier.Release()
 
 	// Stop the partition client, mergedSubscription, and
 	// cutoverPoller. All other goroutines should exit based on
@@ -1278,7 +1290,7 @@ func (c *cutoverFromJobProgress) cutoverReached(ctx context.Context) (bool, erro
 // frontierForSpan returns the lowest timestamp in the frontier within
 // the given subspans. If the subspans are entirely outside the
 // Frontier's tracked span an empty timestamp is returned.
-func frontierForSpans(f span.Frontier, spans ...roachpb.Span) hlc.Timestamp {
+func frontierForSpans(f *span.Frontier, spans ...roachpb.Span) hlc.Timestamp {
 	var (
 		minTimestamp hlc.Timestamp
 		sawEmptyTS   bool

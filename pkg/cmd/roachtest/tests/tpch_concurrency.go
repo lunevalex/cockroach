@@ -1,12 +1,7 @@
 // Copyright 2021 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package tests
 
@@ -34,7 +29,7 @@ func registerTPCHConcurrency(r registry.Registry) {
 		disableStreamer bool,
 	) {
 		c.Put(ctx, t.DeprecatedWorkload(), "./workload", c.Node(numNodes))
-		c.Start(ctx, t.L(), option.DefaultStartOptsNoBackups(), install.MakeClusterSettings(), c.Range(1, numNodes-1))
+		c.Start(ctx, t.L(), option.NewStartOpts(option.NoBackupSchedule), install.MakeClusterSettings(), c.Range(1, numNodes-1))
 
 		conn := c.Conn(ctx, t.L(), 1)
 		if disableStreamer {
@@ -45,7 +40,7 @@ func registerTPCHConcurrency(r registry.Registry) {
 
 		if err := loadTPCHDataset(
 			ctx, t, c, conn, 1 /* sf */, c.NewMonitor(ctx, c.Range(1, numNodes-1)),
-			c.Range(1, numNodes-1), true /* disableMergeQueue */, false, /* secure */
+			c.Range(1, numNodes-1), true, /* disableMergeQueue */
 		); err != nil {
 			t.Fatal(err)
 		}
@@ -53,7 +48,7 @@ func registerTPCHConcurrency(r registry.Registry) {
 
 	restartCluster := func(ctx context.Context, c cluster.Cluster, t test.Test) {
 		c.Stop(ctx, t.L(), option.DefaultStopOpts(), c.Range(1, numNodes-1))
-		c.Start(ctx, t.L(), option.DefaultStartOptsNoBackups(), install.MakeClusterSettings(), c.Range(1, numNodes-1))
+		c.Start(ctx, t.L(), maybeUseMemoryBudget(t, 35), install.MakeClusterSettings(), c.Range(1, numNodes-1))
 	}
 
 	// checkConcurrency returns an error if at least one node of the cluster
@@ -62,7 +57,7 @@ func registerTPCHConcurrency(r registry.Registry) {
 	checkConcurrency := func(ctx context.Context, t test.Test, c cluster.Cluster, concurrency int) error {
 		// Make sure to kill any workloads running from the previous
 		// iteration.
-		_ = c.RunE(ctx, option.WithNodes(c.Node(numNodes)), "killall workload")
+		_ = c.RunE(ctx, c.Node(numNodes), "killall workload")
 
 		restartCluster(ctx, c, t)
 
@@ -144,7 +139,7 @@ func registerTPCHConcurrency(r registry.Registry) {
 						"--count-errors --queries=%d --concurrency=%d --max-ops=%d",
 					numNodes-1, queryNum, concurrency, maxOps,
 				)
-				if err := c.RunE(ctx, option.WithNodes(c.Node(numNodes)), cmd); err != nil {
+				if err := c.RunE(ctx, c.Node(numNodes), cmd); err != nil {
 					return err
 				}
 			}

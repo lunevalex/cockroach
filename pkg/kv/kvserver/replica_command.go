@@ -1,12 +1,7 @@
 // Copyright 2014 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package kvserver
 
@@ -48,7 +43,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/uuid"
 	"github.com/cockroachdb/errors"
 	"github.com/cockroachdb/logtags"
-	"github.com/cockroachdb/redact"
 	"go.etcd.io/raft/v3"
 	"go.etcd.io/raft/v3/raftpb"
 	"go.etcd.io/raft/v3/tracker"
@@ -69,9 +63,9 @@ const mergeApplicationTimeout = 5 * time.Second
 var sendSnapshotTimeout = envutil.EnvOrDefaultDuration(
 	"COCKROACH_RAFT_SEND_SNAPSHOT_TIMEOUT", 1*time.Hour)
 
-// AdminSplit divides the range into two ranges using args.SplitKey.
+// AdminSplit divides the range into into two ranges using args.SplitKey.
 func (r *Replica) AdminSplit(
-	ctx context.Context, args kvpb.AdminSplitRequest, reason redact.RedactableString,
+	ctx context.Context, args kvpb.AdminSplitRequest, reason string,
 ) (reply kvpb.AdminSplitResponse, _ *kvpb.Error) {
 	if len(args.SplitKey) == 0 {
 		return kvpb.AdminSplitResponse{}, kvpb.NewErrorf("cannot split range with no key provided")
@@ -101,8 +95,8 @@ func maybeDescriptorChangedError(
 	return false, nil
 }
 
-func splitSnapshotWarningStr(rangeID roachpb.RangeID, status *raft.Status) redact.RedactableString {
-	var s redact.RedactableString
+func splitSnapshotWarningStr(rangeID roachpb.RangeID, status *raft.Status) string {
+	var s string
 	if status != nil && status.RaftState == raft.StateLeader {
 		for replicaID, pr := range status.Progress {
 			if replicaID == status.Lead {
@@ -114,7 +108,7 @@ func splitSnapshotWarningStr(rangeID roachpb.RangeID, status *raft.Status) redac
 				// This follower is in good working order.
 				continue
 			}
-			s += redact.Sprintf("; r%d/%d is ", rangeID, replicaID)
+			s += fmt.Sprintf("; r%d/%d is ", rangeID, replicaID)
 			switch pr.State {
 			case tracker.StateSnapshot:
 				// If the Raft snapshot queue is backed up, replicas can spend
@@ -128,7 +122,7 @@ func splitSnapshotWarningStr(rangeID roachpb.RangeID, status *raft.Status) redac
 				s += "being probed (may or may not need a Raft snapshot)"
 			default:
 				// Future proofing.
-				s += redact.Sprintf("in unknown state %s", redact.Safe(pr.State))
+				s += "in unknown state " + pr.State.String()
 			}
 		}
 	}
@@ -173,7 +167,7 @@ func splitTxnAttempt(
 	splitKey roachpb.RKey,
 	expiration hlc.Timestamp,
 	oldDesc *roachpb.RangeDescriptor,
-	reason redact.RedactableString,
+	reason string,
 ) error {
 	txn.SetDebugName(splitTxnName)
 
@@ -211,7 +205,7 @@ func splitTxnAttempt(
 	}
 
 	// Log the split into the range event log.
-	if err := store.logSplit(ctx, txn, *leftDesc, *rightDesc, reason.StripMarkers(), true /* logAsync */); err != nil {
+	if err := store.logSplit(ctx, txn, *leftDesc, *rightDesc, reason, true /* logAsync */); err != nil {
 		return err
 	}
 
@@ -299,7 +293,7 @@ func (r *Replica) adminSplitWithDescriptor(
 	args kvpb.AdminSplitRequest,
 	desc *roachpb.RangeDescriptor,
 	delayable bool,
-	reason redact.RedactableString,
+	reason string,
 	findFirstSafeKey bool,
 ) (kvpb.AdminSplitResponse, error) {
 	var err error
@@ -431,7 +425,7 @@ func (r *Replica) adminSplitWithDescriptor(
 		return reply, errors.Wrap(err, "unable to allocate range id for right hand side")
 	}
 
-	var extra redact.RedactableString
+	var extra string
 	if delayable {
 		extra += maybeDelaySplitToAvoidSnapshot(ctx, (*splitDelayHelper)(r))
 	}
@@ -595,7 +589,7 @@ func (r *Replica) executeAdminCommandWithDescriptor(
 // The supplied RangeDescriptor is used as a form of optimistic lock. See the
 // comment of "AdminSplit" for more information on this pattern.
 func (r *Replica) AdminMerge(
-	ctx context.Context, args kvpb.AdminMergeRequest, reason redact.RedactableString,
+	ctx context.Context, args kvpb.AdminMergeRequest, reason string,
 ) (kvpb.AdminMergeResponse, *kvpb.Error) {
 	var reply kvpb.AdminMergeResponse
 
@@ -3191,6 +3185,7 @@ func (r *Replica) followerSendSnapshot(
 		DeprecatedStrategy:  kvserverpb.SnapshotRequest_KV_BATCH,
 		DeprecatedType:      req.DeprecatedType,
 		SharedReplicate:     sharedReplicate,
+		RangeKeysInOrder:    true,
 	}
 	newBatchFn := func() storage.WriteBatch {
 		return r.store.TODOEngine().NewWriteBatch()
@@ -3588,9 +3583,9 @@ type RelocateOneOptions interface {
 	Allocator() allocatorimpl.Allocator
 	// StorePool returns the store's configured store pool.
 	StorePool() storepool.AllocatorStorePool
-	// LoadSpanConfig loads the span configuration for the range with start key.
-	LoadSpanConfig(ctx context.Context, startKey roachpb.RKey) (*roachpb.SpanConfig, error)
-	// Leaseholder returns the descriptor of the replica which holds the lease
+	// SpanConfig returns the span configuration for the range with start key.
+	SpanConfig(ctx context.Context, startKey roachpb.RKey) (*roachpb.SpanConfig, error)
+	// LeaseHolder returns the descriptor of the replica which holds the lease
 	// on the range with start key.
 	Leaseholder(ctx context.Context, startKey roachpb.RKey) (roachpb.ReplicaDescriptor, error)
 }
@@ -3609,8 +3604,8 @@ func (roo *replicaRelocateOneOptions) StorePool() storepool.AllocatorStorePool {
 	return roo.store.cfg.StorePool
 }
 
-// LoadSpanConfig loads the span configuration for the range with start key.
-func (roo *replicaRelocateOneOptions) LoadSpanConfig(
+// SpanConfig returns the span configuration for the range with start key.
+func (roo *replicaRelocateOneOptions) SpanConfig(
 	ctx context.Context, startKey roachpb.RKey,
 ) (*roachpb.SpanConfig, error) {
 	confReader, err := roo.store.GetConfReader(ctx)
@@ -3661,7 +3656,7 @@ func RelocateOne(
 	allocator := options.Allocator()
 	storePool := options.StorePool()
 
-	conf, err := options.LoadSpanConfig(ctx, desc.StartKey)
+	conf, err := options.SpanConfig(ctx, desc.StartKey)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -4022,6 +4017,7 @@ func (r *Replica) adminScatter(
 	// Note that we disable lease transfers until the final step as transferring
 	// the lease prevents any further action on this node.
 	var allowLeaseTransfer bool
+	var err error
 	requeue := true
 	canTransferLease := func(ctx context.Context, repl plan.LeaseCheckReplica, conf *roachpb.SpanConfig) bool {
 		return allowLeaseTransfer
@@ -4034,11 +4030,6 @@ func (r *Replica) adminScatter(
 			allowLeaseTransfer = true
 		}
 		desc, conf := r.DescAndSpanConfig()
-		_, err := rq.replicaCanBeProcessed(ctx, r, false /* acquireLeaseIfNeeded */)
-		if err != nil {
-			// The replica can not be processed, so skip it.
-			break
-		}
 		requeue, err = rq.processOneChange(
 			ctx, r, desc, conf, canTransferLease, true /* scatter */, false, /* dryRun */
 		)

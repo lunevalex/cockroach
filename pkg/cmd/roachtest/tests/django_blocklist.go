@@ -1,12 +1,7 @@
 // Copyright 2019 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package tests
 
@@ -162,13 +157,8 @@ var enabledDjangoTests = []string{
 }
 
 // Maintain that this list is alphabetized.
-var djangoBlocklist = blocklist{
-	`schema.tests.SchemaTests.test_alter_text_field_to_date_field`:     "alter type requires USING",
-	`schema.tests.SchemaTests.test_alter_text_field_to_datetime_field`: "alter type requires USING",
-	`schema.tests.SchemaTests.test_alter_text_field_to_time_field`:     "alter type requires USING",
-}
+var djangoBlocklist = blocklist{}
 
 var djangoIgnoreList = blocklist{
-	"schema.tests.SchemaTests.test_add_auto_field":   "unneeded once django-cockroachdb 4.1.1 is released",
-	"schema.tests.SchemaTests.test_autofield_to_o2o": "unneeded once django-cockroachdb 4.1.1 is released",
+	`select_for_update.tests.SelectForUpdateTests.test_nowait_raises_error_on_block`: "flaky; see #120196",
 }

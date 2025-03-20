@@ -1184,9 +1184,12 @@ upper_bound  range_rows  distinct_range_rows  equal_rows
 2            0           0                    1
 3            0           0                    1
 
-# Test that stats are not collected for virtual columns.
+# Test that stats are not collected for virtual columns if disabled.
 statement ok
 SET CLUSTER SETTING sql.stats.multi_column_collection.enabled = true
+
+statement ok
+SET CLUSTER SETTING sql.stats.virtual_computed_columns.enabled = false
 
 statement ok
 CREATE TABLE virt (
@@ -1259,6 +1262,9 @@ s                {a}           3          0           true
 s                {b}           3          0           true
 s                {j}           3          0           true
 s                {rowid}       3          0           true
+
+statement ok
+RESET CLUSTER SETTING sql.stats.virtual_computed_columns.enabled
 
 # Test that non-index columns have histograms collected for them, with
 # up to 2 buckets.
@@ -1495,7 +1501,7 @@ FROM [SHOW STATISTICS USING JSON FOR TABLE all_null]
             }
         ],
         "histo_col_type": "INT8",
-        "histo_version": 3,
+        "histo_version": 2,
         "name": "s",
         "null_count": 0,
         "row_count": 1
@@ -1507,7 +1513,7 @@ FROM [SHOW STATISTICS USING JSON FOR TABLE all_null]
         ],
         "distinct_count": 1,
         "histo_col_type": "INT8",
-        "histo_version": 3,
+        "histo_version": 2,
         "name": "s",
         "null_count": 1,
         "row_count": 1
@@ -1553,7 +1559,7 @@ FROM [SHOW STATISTICS USING JSON FOR TABLE greeting_stats]
             }
         ],
         "histo_col_type": "test.public.greeting",
-        "histo_version": 3,
+        "histo_version": 2,
         "name": "s",
         "null_count": 0,
         "row_count": 1
@@ -1600,6 +1606,9 @@ CREATE STATISTICS s FROM t63387;
 # Regression test for #71080. Stats collection should succeed on tables with NOT
 # NULL virtual columns.
 statement ok
+SET CLUSTER SETTING sql.stats.virtual_computed_columns.enabled = false
+
+statement ok
 SET CLUSTER SETTING sql.stats.multi_column_collection.enabled = true
 
 statement ok
@@ -1608,19 +1617,19 @@ CREATE TABLE t71080 (
   a INT,
   b INT NOT NULL AS (a + 10) VIRTUAL,
   INDEX (a, b)
-);
+)
 
 statement ok
-INSERT INTO t71080 VALUES (1, 2);
+INSERT INTO t71080 VALUES (1, 2)
 
 statement ok
-CREATE STATISTICS s FROM t71080;
+CREATE STATISTICS s FROM t71080
 
 statement error cannot create statistics on virtual column \"b\"
-CREATE STATISTICS s ON b FROM t71080;
+CREATE STATISTICS s ON b FROM t71080
 
 statement error cannot create statistics on virtual column \"b\"
-CREATE STATISTICS s ON a, b FROM t71080;
+CREATE STATISTICS s ON a, b FROM t71080
 
 # Regression test for #76867. Do not attempt to collect empty multi-column stats
 # when there are indexes on columns that are all virtual.
@@ -1634,6 +1643,9 @@ CREATE TABLE t76867 (
 
 statement ok
 ANALYZE t76867
+
+statement ok
+RESET CLUSTER SETTING sql.stats.virtual_computed_columns.enabled
 
 # Regression tests for #80123. Collecting stats on system tables is allowed.
 statement ok
@@ -1707,7 +1719,7 @@ SELECT jsonb_pretty(COALESCE(json_agg(stat), '[]'))
         ],
         "distinct_count": 0,
         "histo_col_type": "INT8",
-        "histo_version": 3,
+        "histo_version": 2,
         "name": "aristotle",
         "null_count": 0,
         "row_count": 0
@@ -1719,7 +1731,7 @@ SELECT jsonb_pretty(COALESCE(json_agg(stat), '[]'))
         ],
         "distinct_count": 0,
         "histo_col_type": "INT8",
-        "histo_version": 3,
+        "histo_version": 2,
         "name": "aristotle",
         "null_count": 0,
         "row_count": 0
@@ -1743,7 +1755,7 @@ SELECT jsonb_pretty(COALESCE(json_agg(stat), '[]'))
         ],
         "distinct_count": 0,
         "histo_col_type": "INT8",
-        "histo_version": 3,
+        "histo_version": 2,
         "name": "aristotle",
         "null_count": 0,
         "row_count": 0
@@ -1810,7 +1822,7 @@ SELECT jsonb_pretty(COALESCE(json_agg(stat), '[]'))
             }
         ],
         "histo_col_type": "INT8",
-        "histo_version": 3,
+        "histo_version": 2,
         "name": "locke",
         "null_count": 0,
         "row_count": 1
@@ -1829,7 +1841,7 @@ SELECT jsonb_pretty(COALESCE(json_agg(stat), '[]'))
             }
         ],
         "histo_col_type": "INT8",
-        "histo_version": 3,
+        "histo_version": 2,
         "name": "locke",
         "null_count": 0,
         "row_count": 1
@@ -1851,7 +1863,7 @@ SELECT jsonb_pretty(COALESCE(json_agg(stat), '[]'))
         ],
         "distinct_count": 1,
         "histo_col_type": "INT8",
-        "histo_version": 3,
+        "histo_version": 2,
         "name": "locke",
         "null_count": 1,
         "row_count": 1
@@ -1913,7 +1925,7 @@ FROM [SHOW STATISTICS USING JSON FOR TABLE t1]
         ],
         "distinct_count": 0,
         "histo_col_type": "INT8",
-        "histo_version": 3,
+        "histo_version": 2,
         "null_count": 0,
         "row_count": 0
     },
@@ -1924,7 +1936,7 @@ FROM [SHOW STATISTICS USING JSON FOR TABLE t1]
         ],
         "distinct_count": 0,
         "histo_col_type": "INT8",
-        "histo_version": 3,
+        "histo_version": 2,
         "null_count": 0,
         "row_count": 0
     },
@@ -1935,7 +1947,7 @@ FROM [SHOW STATISTICS USING JSON FOR TABLE t1]
         ],
         "distinct_count": 0,
         "histo_col_type": "INT8",
-        "histo_version": 3,
+        "histo_version": 2,
         "null_count": 0,
         "row_count": 0
     },
@@ -2404,6 +2416,9 @@ CREATE INDEX ON xy (y) WHERE y > 5;
 statement error pq: table xy does not contain a non-partial forward index with y as a prefix column
 CREATE STATISTICS xy_partial_idx ON y FROM xy USING EXTREMES;
 
+statement ok
+RESET enable_create_stats_using_extremes
+
 # Regression test for #100909. Ensure enum is hydrated in SHOW HISTOGRAM.
 statement ok
 CREATE TYPE enum1 as ENUM ('hello', 'hi');
@@ -2491,3 +2506,503 @@ SELECT statistics_name FROM [SHOW STATISTICS FOR TABLE tab_test_privileges]
 tab_test_privileges_stat
 
 user root
+
+# Test stats collection on virtual computed columns.
+
+statement ok
+CREATE TABLE t68254 (
+  a INT PRIMARY KEY,
+  b STRING,
+  c JSONB,
+  d STRING AS (b || repeat('a', a)) VIRTUAL,
+  e STRING AS ((c->'foo')->>'bar') VIRTUAL,
+  INDEX (d),
+  INDEX (e),
+  INDEX (b, e)
+)
+
+statement ok
+INSERT INTO t68254 (a, b, c)
+SELECT i, i::STRING, json_build_object('foo', json_build_object('bar', json_build_object('baz', i)))
+FROM generate_series(0, 3) s(i)
+
+statement ok
+INSERT INTO t68254 (a, b, c) VALUES (4, NULL, NULL)
+
+statement ok
+SET CLUSTER SETTING sql.stats.virtual_computed_columns.enabled = true
+
+statement ok
+CREATE STATISTICS j1 FROM t68254
+
+query TTIIIB colnames
+SELECT
+  statistics_name,
+  column_names,
+  row_count,
+  distinct_count,
+  null_count,
+  histogram_id IS NOT NULL AS has_histogram
+FROM
+  [SHOW STATISTICS FOR TABLE t68254]
+ORDER BY statistics_name, column_names::STRING
+----
+statistics_name  column_names  row_count  distinct_count  null_count  has_histogram
+j1               {a}           5          5               0           true
+j1               {b,e}         5          5               1           false
+j1               {b}           5          5               1           true
+j1               {c}           5          5               1           true
+j1               {d}           5          5               1           true
+j1               {e}           5          5               1           true
+
+statement ok
+CREATE STATISTICS j2 ON d FROM t68254
+
+statement ok
+CREATE STATISTICS j3 ON e FROM t68254
+
+let $hist_d
+SELECT histogram_id FROM [SHOW STATISTICS FOR TABLE t68254] WHERE statistics_name = 'j2'
+
+let $hist_e
+SELECT histogram_id FROM [SHOW STATISTICS FOR TABLE t68254] WHERE statistics_name = 'j3'
+
+query TIRI colnames,nosort
+SHOW HISTOGRAM $hist_d
+----
+upper_bound  range_rows  distinct_range_rows  equal_rows
+'0'          0           0                    1
+'1a'         0           0                    1
+'2aa'        0           0                    1
+'3aaa'       0           0                    1
+
+query TIRI colnames,nosort
+SHOW HISTOGRAM $hist_e
+----
+upper_bound   range_rows  distinct_range_rows  equal_rows
+'{"baz": 0}'  0           0                    1
+'{"baz": 1}'  0           0                    1
+'{"baz": 2}'  0           0                    1
+'{"baz": 3}'  0           0                    1
+
+# Check that we also collect stats on the hidden expression index virt column.
+statement ok
+CREATE INDEX ON t68254 ((c->'foo'))
+
+statement ok
+CREATE STATISTICS j4 FROM t68254
+
+query TTIIIB colnames
+SELECT
+  statistics_name,
+  column_names,
+  row_count,
+  distinct_count,
+  null_count,
+  histogram_id IS NOT NULL AS has_histogram
+FROM
+  [SHOW STATISTICS FOR TABLE t68254]
+ORDER BY statistics_name, column_names::STRING
+----
+statistics_name  column_names              row_count  distinct_count  null_count  has_histogram
+j4               {a}                       5          5               0           true
+j4               {b,e}                     5          5               1           false
+j4               {b}                       5          5               1           true
+j4               {crdb_internal_idx_expr}  5          5               1           true
+j4               {c}                       5          5               1           true
+j4               {d}                       5          5               1           true
+j4               {e}                       5          5               1           true
+
+statement ok
+CREATE STATISTICS j5 ON crdb_internal_idx_expr FROM t68254
+
+let $hist_crdb_internal_idx_expr
+SELECT histogram_id FROM [SHOW STATISTICS FOR TABLE t68254] WHERE statistics_name = 'j5'
+
+query TIRI colnames,nosort
+SHOW HISTOGRAM $hist_crdb_internal_idx_expr
+----
+upper_bound            range_rows  distinct_range_rows  equal_rows
+'{"bar": {"baz": 0}}'  0           0                    1
+'{"bar": {"baz": 1}}'  0           0                    1
+'{"bar": {"baz": 2}}'  0           0                    1
+'{"bar": {"baz": 3}}'  0           0                    1
+
+# Test partial stats using extremes on indexed virtual computed columns.
+statement ok
+SET enable_create_stats_using_extremes = on
+
+statement ok
+INSERT INTO t68254 (a, b, c) VALUES (5, '5', '{"foo": {"bar": {"baz": 5}}}')
+
+statement ok
+CREATE STATISTICS j6 ON d FROM t68254 USING EXTREMES
+
+statement ok
+CREATE STATISTICS j7 ON e FROM t68254 USING EXTREMES
+
+statement ok
+CREATE STATISTICS j8 ON crdb_internal_idx_expr FROM t68254 USING EXTREMES
+
+let $hist_d
+SELECT histogram_id FROM [SHOW STATISTICS FOR TABLE t68254] WHERE statistics_name = 'j6'
+
+let $hist_e
+SELECT histogram_id FROM [SHOW STATISTICS FOR TABLE t68254] WHERE statistics_name = 'j7'
+
+let $hist_crdb_internal_idx_expr
+SELECT histogram_id FROM [SHOW STATISTICS FOR TABLE t68254] WHERE statistics_name = 'j8'
+
+query TIRI colnames,nosort
+SHOW HISTOGRAM $hist_d
+----
+upper_bound  range_rows  distinct_range_rows  equal_rows
+'5aaaaa'     0           0                    1
+
+query TIRI colnames,nosort
+SHOW HISTOGRAM $hist_e
+----
+upper_bound   range_rows  distinct_range_rows  equal_rows
+'{"baz": 5}'  0           0                    1
+
+query TIRI colnames,nosort
+SHOW HISTOGRAM $hist_crdb_internal_idx_expr
+----
+upper_bound            range_rows  distinct_range_rows  equal_rows
+'{"bar": {"baz": 5}}'  0           0                    1
+
+statement ok
+RESET enable_create_stats_using_extremes
+
+# Regression test for #118537. Do not create stats on non-public mutation
+# columns.
+statement ok
+CREATE TABLE t118537 (
+  a INT,
+  PRIMARY KEY (a) USING HASH WITH (bucket_count = 3)
+)
+
+statement ok
+INSERT INTO t118537 SELECT generate_series(0, 9)
+
+statement ok
+SET CLUSTER SETTING jobs.debug.pausepoints = 'newschemachanger.before.exec'
+
+skipif config local-legacy-schema-changer
+statement error job \d+ was paused before it completed with reason: pause point "newschemachanger.before.exec" hit
+ALTER TABLE t118537 ALTER PRIMARY KEY USING COLUMNS (a) USING HASH
+
+statement ok
+CREATE STATISTICS mutation FROM t118537
+
+query TTIB colnames
+SELECT statistics_name, column_names, row_count, histogram_id IS NOT NULL AS has_histogram
+FROM [SHOW STATISTICS FOR TABLE t118537]
+ORDER BY statistics_name, column_names::STRING
+----
+statistics_name  column_names  row_count  has_histogram
+mutation         {a}           10         true
+
+statement ok
+SET CLUSTER SETTING jobs.debug.pausepoints = ''
+
+let $job
+SELECT job_id FROM crdb_internal.jobs WHERE description LIKE 'ALTER TABLE %t118537 ALTER PRIMARY KEY USING COLUMNS (a) USING HASH' AND status LIKE 'pause%' FETCH FIRST 1 ROWS ONLY
+
+statement ok
+RESUME JOB $job
+
+statement ok
+SHOW JOB WHEN COMPLETE $job
+
+statement ok
+SET CLUSTER SETTING sql.stats.virtual_computed_columns.enabled = on
+
+statement ok
+CREATE TABLE mno (
+  m int NOT NULL,
+  n int,
+  o int AS (sqrt(m::float)::int) VIRTUAL,
+  PRIMARY KEY (m),
+  INDEX (n),
+  INDEX (o) STORING (n)
+)
+
+statement ok
+INSERT INTO mno (m, n) SELECT i, i % 50 FROM generate_series(0, 999) s(i)
+
+statement ok
+ANALYZE mno
+
+query TTIIB
+SELECT statistics_name, column_names, row_count, distinct_count, histogram_id IS NOT NULL AS has_histogram
+FROM [SHOW STATISTICS FOR TABLE mno]
+ORDER BY statistics_name, column_names::STRING
+----
+NULL  {m}  1000  1000  true
+NULL  {n}  1000  50    true
+NULL  {o}  1000  32    true
+
+statement ok
+SET optimizer_use_virtual_computed_column_stats = true
+
+query T retry
+EXPLAIN SELECT * FROM mno WHERE n = 1 AND o = 9
+----
+distribution: full
+vectorized: true
+·
+• render
+│
+└── • filter
+    │ estimated row count: 1
+    │ filter: n = 1
+    │
+    └── • scan
+          estimated row count: 19 (1.9% of the table; stats collected <hidden> ago)
+          table: mno@mno_o_idx
+          spans: [/9 - /9]
+
+query T
+EXPLAIN SELECT * FROM mno WHERE n = 1 AND o = 11
+----
+distribution: full
+vectorized: true
+·
+• render
+│
+└── • filter
+    │ estimated row count: 1
+    │ filter: sqrt(m::FLOAT8)::INT8 = 11
+    │
+    └── • scan
+          estimated row count: 20 (2.0% of the table; stats collected <hidden> ago)
+          table: mno@mno_n_idx
+          spans: [/1 - /1]
+
+statement ok
+SET optimizer_use_virtual_computed_column_stats = false
+
+query T
+EXPLAIN SELECT * FROM mno WHERE n = 1 AND o = 9
+----
+distribution: full
+vectorized: true
+·
+• render
+│
+└── • filter
+    │ estimated row count: 7
+    │ filter: n = 1
+    │
+    └── • scan
+          estimated row count: 10 (1.0% of the table; stats collected <hidden> ago)
+          table: mno@mno_o_idx
+          spans: [/9 - /9]
+
+query T
+EXPLAIN SELECT * FROM mno WHERE n = 1 AND o = 11
+----
+distribution: full
+vectorized: true
+·
+• render
+│
+└── • filter
+    │ estimated row count: 7
+    │ filter: n = 1
+    │
+    └── • scan
+          estimated row count: 10 (1.0% of the table; stats collected <hidden> ago)
+          table: mno@mno_o_idx
+          spans: [/11 - /11]
+
+# Regression for not setting the TypeResolver on the SemaContext when dealing
+# with stats on virtual computed columns (#122312).
+statement ok
+CREATE TABLE t122312 (s STRING, g greeting AS (s::greeting) VIRTUAL)
+
+statement ok
+ANALYZE t122312
+
+# Regression for not setting the txn of the schemaResolver when type checking
+# stats on virtual computed columns.
+statement ok
+CREATE TYPE order_status AS ENUM ('pending', 'paid', 'dispatched', 'delivered')
+
+statement ok
+CREATE TABLE orders (
+  "id" UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  "customer_id" UUID NOT NULL,
+  "total" DECIMAL NOT NULL,
+  "balance" DECIMAL NOT NULL,
+  "order_ts" TIMESTAMPTZ(0) NOT NULL DEFAULT now(),
+  "dispatch_ts" TIMESTAMPTZ(0),
+  "delivery_ts" TIMESTAMPTZ(0),
+  "status" order_status AS (
+    CASE
+      WHEN "delivery_ts" IS NOT NULL THEN 'delivered'
+      WHEN "dispatch_ts" IS NOT NULL THEN 'dispatched'
+      WHEN "balance" = 0 THEN 'paid'
+      ELSE 'pending'
+    END) VIRTUAL,
+  INDEX ("status")
+)
+
+statement ok
+INSERT INTO orders ("customer_id", "total", "balance", "dispatch_ts", "delivery_ts") VALUES
+  ('bdeb232e-12e9-4a33-9dd5-7bb9b694291a', 100, 100, NULL, NULL),
+  ('0dc59725-d20b-4370-a05d-11db025a0064', 200, 0, NULL, NULL),
+  ('d53d4021-9390-4b3a-9e5a-4bf1ff3e5a4c', 300, 0, now(), NULL),
+  ('d53d4021-9390-4b3a-9e5a-4bf1ff3e5a4c', 400, 0, now(), now())
+
+statement ok
+ANALYZE orders
+
+query TIIIIB colnames
+SELECT column_names, row_count, null_count, distinct_count, avg_size, histogram_id IS NOT NULL AS has_histogram
+FROM [SHOW STATISTICS FOR TABLE orders]
+ORDER BY column_names::STRING
+----
+column_names   row_count  null_count  distinct_count  avg_size  has_histogram
+{balance}      4          0           2               32        true
+{customer_id}  4          0           3               16        true
+{delivery_ts}  4          3           2               6         true
+{dispatch_ts}  4          2           2               12        true
+{id}           4          0           4               16        true
+{order_ts}     4          0           1               24        true
+{status}       4          0           4               48        true
+{total}        4          0           4               32        true
+
+let $hist_status
+SELECT histogram_id FROM [SHOW STATISTICS FOR TABLE orders] WHERE column_names = ARRAY['status']
+
+query TIRI colnames,nosort
+SHOW HISTOGRAM $hist_status
+----
+upper_bound   range_rows  distinct_range_rows  equal_rows
+'pending'     0           0                    1
+'paid'        0           0                    1
+'dispatched'  0           0                    1
+'delivered'   0           0                    1
+
+statement ok
+RESET CLUSTER SETTING sql.stats.virtual_computed_columns.enabled
+
+# Regression test for #138809: check that we can still use stats on virtual
+# computed columns after dropping the column.
+
+statement ok
+SET CLUSTER SETTING sql.stats.virtual_computed_columns.enabled = on
+
+statement ok
+CREATE TABLE t138809 (
+  a INT PRIMARY KEY,
+  b INT AS (a + 1) VIRTUAL,
+  c INT AS (a + 2) VIRTUAL
+)
+
+statement ok
+INSERT INTO t138809 (a) VALUES (1), (2)
+
+statement ok
+ANALYZE t138809
+
+query TIIIIB colnames
+SELECT column_names, row_count, null_count, distinct_count, avg_size, histogram_id IS NOT NULL AS has_histogram
+FROM [SHOW STATISTICS FOR TABLE t138809]
+ORDER BY column_names::STRING
+----
+column_names  row_count  null_count  distinct_count  avg_size  has_histogram
+{a}           2          0           2               8         true
+{b}           2          0           2               8         true
+{c}           2          0           2               8         true
+
+query T retry
+EXPLAIN SELECT count(*) FROM t138809 WHERE b > 1
+----
+distribution: full
+vectorized: true
+·
+• group (scalar)
+│ estimated row count: 1
+│
+└── • scan
+      estimated row count: 2 (100% of the table; stats collected <hidden> ago)
+      table: t138809@t138809_pkey
+      spans: [/1 - ]
+
+statement ok
+SET CLUSTER SETTING jobs.debug.pausepoints = 'schemachanger.root..1'
+
+statement error job \d+ was paused before it completed with reason: pause point "schemachanger\.root\.\.1" hit
+ALTER TABLE t138809 DROP COLUMN c
+
+query T
+EXPLAIN SELECT count(*) FROM t138809 WHERE b > 1
+----
+distribution: full
+vectorized: true
+·
+• group (scalar)
+│ estimated row count: 1
+│
+└── • scan
+      estimated row count: 2 (100% of the table; stats collected <hidden> ago)
+      table: t138809@t138809_pkey
+      spans: [/1 - ]
+
+statement ok
+SET CLUSTER SETTING jobs.debug.pausepoints = DEFAULT
+
+let $job
+SELECT job_id FROM crdb_internal.jobs WHERE description LIKE 'ALTER TABLE %t138809 DROP COLUMN c' AND status LIKE 'pause%' FETCH FIRST 1 ROWS ONLY
+
+statement ok
+RESUME JOB $job
+
+statement ok
+SHOW JOB WHEN COMPLETE $job
+
+statement ok
+RESET CLUSTER SETTING sql.stats.virtual_computed_columns.enabled
+
+# Regression test for #67050: make sure we skip over enum values that have been
+# dropped when decoding histograms.
+
+statement ok
+CREATE TYPE e67050 AS ENUM ('a', 'b', 'c')
+
+statement ok
+CREATE TABLE t67050 (x e67050 PRIMARY KEY)
+
+statement ok
+INSERT INTO t67050 VALUES ('a'), ('b'), ('c')
+
+statement ok
+ANALYZE t67050
+
+statement ok
+DELETE FROM t67050 WHERE x = 'a'
+
+statement ok
+ALTER TYPE e67050 DROP VALUE 'a'
+
+query T
+SELECT jsonb_pretty(statistics->0->'histo_buckets') FROM
+[SHOW STATISTICS USING JSON FOR TABLE t67050]
+----
+[
+    {
+        "distinct_range": 0,
+        "num_eq": 1,
+        "num_range": 0,
+        "upper_bound": "b"
+    },
+    {
+        "distinct_range": 0,
+        "num_eq": 1,
+        "num_range": 0,
+        "upper_bound": "c"
+    }
+]

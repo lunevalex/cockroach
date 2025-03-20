@@ -1,12 +1,7 @@
 // Copyright 2018 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package rangefeed
 
@@ -106,24 +101,15 @@ type SeparatedIntentScanner struct {
 
 // NewSeparatedIntentScanner returns an IntentScanner appropriate for
 // use when the separated intents migration has completed.
-func NewSeparatedIntentScanner(
-	ctx context.Context, reader storage.Reader, span roachpb.RSpan,
-) (IntentScanner, error) {
+func NewSeparatedIntentScanner(reader storage.Reader, span roachpb.RSpan) (IntentScanner, error) {
 	lowerBound, _ := keys.LockTableSingleKey(span.Key.AsRawKey(), nil)
 	upperBound, _ := keys.LockTableSingleKey(span.EndKey.AsRawKey(), nil)
-	iter, err := storage.NewLockTableIterator(
-		// Do not use ctx, since it is not the ctx passed in when ConsumeIntents
-		// is called. See https://github.com/cockroachdb/cockroach/issues/116440.
-		//
-		// NB: the storage iterator does not respect context cancellation, and
-		// only uses it for tracing.
-		context.Background(), reader, storage.LockTableIteratorOptions{
-			LowerBound: lowerBound,
-			UpperBound: upperBound,
-			// Ignore Shared and Exclusive locks. We only care about intents.
-			MatchMinStr:  lock.Intent,
-			ReadCategory: storage.RangefeedReadCategory,
-		})
+	iter, err := storage.NewLockTableIterator(reader, storage.LockTableIteratorOptions{
+		LowerBound: lowerBound,
+		UpperBound: upperBound,
+		// Ignore Shared and Exclusive locks. We only care about intents.
+		MatchMinStr: lock.Intent,
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -136,8 +122,6 @@ func (s *SeparatedIntentScanner) ConsumeIntents(
 ) error {
 	ltStart, _ := keys.LockTableSingleKey(startKey, nil)
 	var meta enginepb.MVCCMetadata
-	// TODO(sumeer): ctx is not used for iteration. Fix by adding a method to
-	// EngineIterator to replace the context.
 	for valid, err := s.iter.SeekEngineKeyGE(storage.EngineKey{Key: ltStart}); ; valid, err = s.iter.NextEngineKey() {
 		if err != nil {
 			return err

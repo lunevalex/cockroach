@@ -1,12 +1,7 @@
 // Copyright 2022 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package scmutationexec
 
@@ -52,9 +47,6 @@ func (i *immediateVisitor) AddSchemaParent(ctx context.Context, op scop.AddSchem
 
 	if sc.Name == "" {
 		return errors.AssertionFailedf("schema name is empty")
-	}
-	if db.Schemas == nil {
-		db.Schemas = make(map[string]descpb.DatabaseDescriptor_SchemaInfo)
 	}
 	if _, ok := db.Schemas[sc.Name]; ok {
 		return errors.AssertionFailedf("schema %v already exists in database %v", sc.Name, db.Name)

@@ -1,12 +1,7 @@
 // Copyright 2019 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package httputil
 
@@ -32,6 +27,7 @@ func NewClientWithTimeout(timeout time.Duration) *Client {
 
 // NewClientWithTimeouts defines a http.Client with the given dialer and client timeouts.
 func NewClientWithTimeouts(dialerTimeout, clientTimeout time.Duration) *Client {
+	t := http.DefaultTransport.(*http.Transport)
 	return &Client{&http.Client{
 		Timeout: clientTimeout,
 		Transport: &http.Transport{
@@ -39,6 +35,12 @@ func NewClientWithTimeouts(dialerTimeout, clientTimeout time.Duration) *Client {
 			// much higher than on linux).
 			DialContext:       (&net.Dialer{Timeout: dialerTimeout}).DialContext,
 			DisableKeepAlives: true,
+
+			Proxy:                 t.Proxy,
+			MaxIdleConns:          t.MaxIdleConns,
+			IdleConnTimeout:       t.IdleConnTimeout,
+			TLSHandshakeTimeout:   t.TLSHandshakeTimeout,
+			ExpectContinueTimeout: t.ExpectContinueTimeout,
 		},
 	}}
 }

@@ -1,12 +1,7 @@
 // Copyright 2022 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package upgrades
 
@@ -111,7 +106,7 @@ func populateVersionSetting(
 	if v == (roachpb.Version{}) {
 		// The cluster was bootstrapped at v1.0 (or even earlier), so just use
 		// the TestingBinaryMinSupportedVersion of the binary.
-		v = clusterversion.MinSupported.Version()
+		v = clusterversion.TestingBinaryMinSupportedVersion
 	}
 
 	b, err := protoutil.Marshal(&clusterversion.ClusterVersion{Version: v})

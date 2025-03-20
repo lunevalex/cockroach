@@ -1,12 +1,7 @@
 // Copyright 2023 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package parser
 
@@ -471,10 +466,6 @@ func (l *lexer) Unimplemented(feature string) {
 		Err:         l.lastError,
 		FeatureName: feature,
 	}
-}
-
-func (l *lexer) GetTypeFromValidSQLSyntax(sqlStr string) (tree.ResolvableTypeReference, error) {
-	return parser.GetTypeFromValidSQLSyntax(sqlStr)
 }
 
 func (l *lexer) ParseExpr(sqlStr string) (plpgsqltree.Expr, error) {

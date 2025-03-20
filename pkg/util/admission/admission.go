@@ -1,12 +1,7 @@
 // Copyright 2021 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 // The admission package contains abstractions for admission control for
 // CockroachDB nodes, both for single-tenant and multi-tenant (aka serverless)
@@ -526,12 +521,8 @@ const (
 	numWorkKinds
 )
 
-// SafeValue implements the redact.SafeValue interface.
-func (WorkKind) SafeValue() {}
-
-// String implements the fmt.Stringer interface.
-func (wk WorkKind) String() string {
-	switch wk {
+func workKindString(workKind WorkKind) string {
+	switch workKind {
 	case KVWork:
 		return "kv"
 	case SQLKVResponseWork:

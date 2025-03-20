@@ -1,12 +1,7 @@
 // Copyright 2017 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package settings
 
@@ -93,24 +88,6 @@ func (e *EnumSetting) GetAvailableValuesAsHint() string {
 		vals = append(vals, fmt.Sprintf("%d: %s", enumIdx, e.enumValues[int64(enumIdx)]))
 	}
 	return "Available values: " + strings.Join(vals, ", ")
-}
-
-// GetAvailableValues returns the possible enum settings as a string
-// slice.
-func (e *EnumSetting) GetAvailableValues() []string {
-	// First stabilize output by sorting by key.
-	valIdxs := make([]int, 0, len(e.enumValues))
-	for i := range e.enumValues {
-		valIdxs = append(valIdxs, int(i))
-	}
-	sort.Ints(valIdxs)
-
-	// Now use those indices
-	vals := make([]string, 0, len(e.enumValues))
-	for _, enumIdx := range valIdxs {
-		vals = append(vals, e.enumValues[int64(enumIdx)])
-	}
-	return vals
 }
 
 func (e *EnumSetting) set(ctx context.Context, sv *Values, k int64) error {

@@ -1,17 +1,11 @@
 // Copyright 2021 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package scbuild
 
 import (
-	"context"
 	"sort"
 
 	"github.com/cockroachdb/cockroach/pkg/keys"
@@ -42,7 +36,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/plpgsqltree/utils"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
 	"github.com/cockroachdb/cockroach/pkg/sql/sqlerrors"
-	"github.com/cockroachdb/cockroach/pkg/sql/syntheticprivilege"
 	"github.com/cockroachdb/cockroach/pkg/sql/types"
 	"github.com/cockroachdb/cockroach/pkg/util/errorutil/unimplemented"
 	"github.com/cockroachdb/errors"
@@ -293,21 +286,20 @@ func (b *builderState) mustOwn(id catid.DescID) {
 	b.ensureDescriptor(id)
 	if c := b.descCache[id]; !c.hasOwnership {
 		panic(pgerror.Newf(pgcode.InsufficientPrivilege,
-			"must be owner of %s %s", c.desc.DescriptorType(), c.desc.GetName()))
+			"must be owner of %s %s", c.desc.DescriptorType(), tree.Name(c.desc.GetName())))
 	}
 }
 
 // CheckPrivilege implements the scbuildstmt.PrivilegeChecker interface.
-func (b *builderState) CheckPrivilege(e scpb.Element, privilege privilege.Kind) error {
-	return b.checkPrivilege(screl.GetDescID(e), privilege)
+func (b *builderState) CheckPrivilege(e scpb.Element, privilege privilege.Kind) {
+	b.checkPrivilege(screl.GetDescID(e), privilege)
 }
 
-// checkPrivilege checks if current user has privilege `priv` on descriptor with `id`.
-func (b *builderState) checkPrivilege(id catid.DescID, priv privilege.Kind) error {
+func (b *builderState) checkPrivilege(id catid.DescID, priv privilege.Kind) {
 	b.ensureDescriptor(id)
 	c := b.descCache[id]
 	if c.hasOwnership {
-		return nil
+		return
 	}
 	err, found := c.privileges[priv]
 	if !found {
@@ -318,7 +310,7 @@ func (b *builderState) checkPrivilege(id catid.DescID, priv privilege.Kind) erro
 				b.QueryByID(id),
 				func(current scpb.Status, _ scpb.TargetStatus, e *scpb.SchemaParent) {
 					if current == scpb.Status_PUBLIC {
-						b.requirePrivilege(e.SchemaID, privilege.USAGE)
+						b.checkPrivilege(e.SchemaID, privilege.USAGE)
 					}
 				},
 			)
@@ -326,34 +318,14 @@ func (b *builderState) checkPrivilege(id catid.DescID, priv privilege.Kind) erro
 		err = b.auth.CheckPrivilege(b.ctx, c.desc, priv)
 		c.privileges[priv] = err
 	}
-	return err
-}
-
-// requirePrivilege is a must version of checkPrivilege where it panics if non-nil error.
-func (b *builderState) requirePrivilege(id catid.DescID, priv privilege.Kind) {
-	if err := b.checkPrivilege(id, priv); err != nil {
+	if err != nil {
 		panic(err)
 	}
-}
-
-// CheckGlobalPrivilege implements the scbuildstmt.PrivilegeChecker interface.
-func (b *builderState) CheckGlobalPrivilege(privilege privilege.Kind) error {
-	return b.auth.CheckPrivilege(b.ctx, syntheticprivilege.GlobalPrivilegeObject, privilege)
-}
-
-// HasGlobalPrivilegeOrRoleOption implements the scbuildstmt.PrivilegeChecker interface.
-func (b *builderState) HasGlobalPrivilegeOrRoleOption(
-	ctx context.Context, privilege privilege.Kind,
-) (bool, error) {
-	return b.auth.HasGlobalPrivilegeOrRoleOption(ctx, privilege)
 }
 
 // CurrentUserHasAdminOrIsMemberOf implements the scbuildstmt.PrivilegeChecker interface.
 func (b *builderState) CurrentUserHasAdminOrIsMemberOf(role username.SQLUsername) bool {
 	if b.hasAdmin {
-		return true
-	}
-	if b.evalCtx.SessionData().User() == role {
 		return true
 	}
 	memberships, err := b.auth.MemberOfWithAdminOption(b.ctx, role)
@@ -366,11 +338,6 @@ func (b *builderState) CurrentUserHasAdminOrIsMemberOf(role username.SQLUsername
 
 func (b *builderState) CurrentUser() username.SQLUsername {
 	return b.evalCtx.SessionData().User()
-}
-
-// CheckRoleExists implements the scbuild.AuthorizationAccessor interface.
-func (b *builderState) CheckRoleExists(ctx context.Context, role username.SQLUsername) error {
-	return b.auth.CheckRoleExists(ctx, role)
 }
 
 var _ scbuildstmt.TableHelpers = (*builderState)(nil)
@@ -881,7 +848,7 @@ func (b *builderState) ResolveDatabase(
 		panic(sqlerrors.NewUndefinedDatabaseError(name.String()))
 	}
 	b.ensureDescriptor(db.GetID())
-	b.requirePrivilege(db.GetID(), p.RequiredPrivilege)
+	b.checkPrivilege(db.GetID(), p.RequiredPrivilege)
 	return b.QueryByID(db.GetID())
 }
 
@@ -940,15 +907,28 @@ func (b *builderState) checkOwnershipOrPrivilegesOnSchemaDesc(
 	name tree.ObjectNamePrefix, sc catalog.SchemaDescriptor, p scbuildstmt.ResolveParams,
 ) {
 	switch sc.SchemaKind() {
-	case catalog.SchemaPublic, catalog.SchemaVirtual, catalog.SchemaTemporary:
+	case catalog.SchemaTemporary:
 		panic(pgerror.Newf(pgcode.InsufficientPrivilege,
 			"%s permission denied for schema %q", p.RequiredPrivilege.DisplayName(), name))
+	case catalog.SchemaPublic, catalog.SchemaVirtual:
+		if p.RequireOwnership {
+			if ok, err := b.auth.HasOwnership(b.ctx, sc); err != nil {
+				panic(err)
+			} else if !ok {
+				panic(pgerror.Newf(pgcode.InsufficientPrivilege,
+					"must be owner of schema %s", tree.Name(name.Schema())))
+			}
+		} else {
+			if err := b.auth.CheckPrivilege(b.ctx, sc, p.RequiredPrivilege); err != nil {
+				panic(err)
+			}
+		}
 	case catalog.SchemaUserDefined:
 		b.ensureDescriptor(sc.GetID())
 		if p.RequireOwnership {
 			b.mustOwn(sc.GetID())
 		} else {
-			b.requirePrivilege(sc.GetID(), p.RequiredPrivilege)
+			b.checkPrivilege(sc.GetID(), p.RequiredPrivilege)
 		}
 	default:
 		panic(errors.AssertionFailedf("unknown schema kind %d", sc.SchemaKind()))
@@ -1025,9 +1005,7 @@ func (b *builderState) resolveRelation(
 	if rel.IsTemporary() {
 		panic(scerrors.NotImplementedErrorf(nil /* n */, "dropping a temporary table"))
 	}
-
-	// If we own the schema then we can manipulate the underlying relation,
-	// regardless what privilege is required on relation.
+	// If we own the schema then we can manipulate the underlying relation.
 	b.ensureDescriptor(rel.GetID())
 	c := b.descCache[rel.GetID()]
 	b.ensureDescriptor(rel.GetParentSchemaID())
@@ -1035,11 +1013,10 @@ func (b *builderState) resolveRelation(
 		c.hasOwnership = true
 		return c
 	}
-
 	err, found := c.privileges[p.RequiredPrivilege]
 	if !found {
 		// Validate if this descriptor can be resolved under the current schema.
-		b.requirePrivilege(rel.GetParentSchemaID(), privilege.USAGE)
+		b.checkPrivilege(rel.GetParentSchemaID(), privilege.USAGE)
 		err = b.auth.CheckPrivilege(b.ctx, rel, p.RequiredPrivilege)
 		c.privileges[p.RequiredPrivilege] = err
 	}
@@ -1116,7 +1093,7 @@ func (b *builderState) ResolveIndex(
 		panic(pgerror.Newf(pgcode.WrongObjectType,
 			"%q is not an indexable table or a materialized view", rel.GetName()))
 	}
-	b.requirePrivilege(rel.GetID(), p.RequiredPrivilege)
+	b.checkPrivilege(rel.GetID(), p.RequiredPrivilege)
 	elts := b.QueryByID(rel.GetID())
 	var indexID catid.IndexID
 	scpb.ForEachIndexName(elts, func(_ scpb.Status, _ scpb.TargetStatus, e *scpb.IndexName) {
@@ -1178,7 +1155,7 @@ func (b *builderState) ResolveColumn(
 	b.ensureDescriptor(relationID)
 	rel := b.descCache[relationID].desc.(catalog.TableDescriptor)
 	elts := b.QueryByID(rel.GetID())
-	b.requirePrivilege(rel.GetID(), p.RequiredPrivilege)
+	b.checkPrivilege(rel.GetID(), p.RequiredPrivilege)
 	var columnID catid.ColumnID
 	scpb.ForEachColumnName(elts, func(status scpb.Status, _ scpb.TargetStatus, e *scpb.ColumnName) {
 		if tree.Name(e.Name) == columnName {
@@ -1739,6 +1716,7 @@ func (b *builderState) serializeUserDefinedTypes(
 		v2 := utils.TypeRefVisitor{Fn: replaceTypeFunc}
 		newStmt = plpgsqltree.Walk(&v2, newStmt)
 		fmtCtx.FormatNode(newStmt)
+		fmtCtx.WriteString(";")
 	default:
 		panic(errors.AssertionFailedf("unexpected function language: %s", lang))
 	}
@@ -1747,8 +1725,7 @@ func (b *builderState) serializeUserDefinedTypes(
 
 func (b *builderState) ResolveDatabasePrefix(schemaPrefix *tree.ObjectNamePrefix) {
 	if schemaPrefix.SchemaName == "" || !schemaPrefix.ExplicitSchema {
-		panic(errors.AssertionFailedf("schema name empty when resolving database prefix for a " +
-			"schema name"))
+		panic(pgerror.Newf(pgcode.Syntax, "empty schema name"))
 	}
 	if schemaPrefix.CatalogName == "" {
 		schemaPrefix.CatalogName = tree.Name(b.cr.CurrentDatabase())

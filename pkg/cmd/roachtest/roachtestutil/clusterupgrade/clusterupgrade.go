@@ -1,12 +1,7 @@
 // Copyright 2022 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package clusterupgrade
 
@@ -29,6 +24,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/roachprod/install"
 	"github.com/cockroachdb/cockroach/pkg/roachprod/logger"
 	"github.com/cockroachdb/cockroach/pkg/roachprod/vm"
+	"github.com/cockroachdb/cockroach/pkg/testutils/release"
 	"github.com/cockroachdb/cockroach/pkg/util/retry"
 	"github.com/cockroachdb/cockroach/pkg/util/version"
 	"github.com/cockroachdb/errors"
@@ -38,6 +34,12 @@ var (
 	TestBuildVersion *version.Version
 
 	currentBranch = os.Getenv("TC_BUILD_BRANCH")
+
+	// CurrentVersionString is how we represent the binary or cluster
+	// versions associated with the current binary (the one being
+	// tested). Note that, in TeamCity, we use the branch name to make
+	// it even clearer.
+	CurrentVersionString = "<current>"
 )
 
 // Version is a thin wrapper around the `version.Version` struct that
@@ -57,7 +59,7 @@ func (v *Version) String() string {
 			return currentBranch
 		}
 
-		return "<current>"
+		return CurrentVersionString
 	}
 
 	return v.Version.String()
@@ -66,13 +68,24 @@ func (v *Version) String() string {
 // IsCurrent returns whether this version corresponds to the current
 // version being tested.
 func (v *Version) IsCurrent() bool {
-	return v.Version.Compare(&CurrentVersion().Version) == 0
+	return v.Equal(CurrentVersion())
+}
+
+// Equal compares the two versions, returning whether they represent
+// the same version.
+func (v *Version) Equal(other *Version) bool {
+	return v.Version.Compare(&other.Version) == 0
 }
 
 // AtLeast is a thin wrapper around `(*version.Version).AtLeast`,
 // allowing two `Version` objects to be compared directly.
 func (v *Version) AtLeast(other *Version) bool {
 	return v.Version.AtLeast(&other.Version)
+}
+
+// Series returns the release series this version is a part of.
+func (v *Version) Series() string {
+	return release.VersionSeries(&v.Version)
 }
 
 // CurrentVersion returns the version associated with the current
@@ -88,6 +101,13 @@ func CurrentVersion() *Version {
 // MustParseVersion parses the version string given (with or without
 // leading 'v') and returns the corresponding `Version` object.
 func MustParseVersion(v string) *Version {
+	// The current version is rendered differently (see String()
+	// implementation). If the user passed that string representation,
+	// return the current version object.
+	if currentVersion := CurrentVersion(); v == currentVersion.String() {
+		return currentVersion
+	}
+
 	versionStr := v
 	if !strings.HasPrefix(v, "v") {
 		versionStr = "v" + v
@@ -100,10 +120,10 @@ func MustParseVersion(v string) *Version {
 // associated with the given database connection.
 // NB: version means major.minor[-internal]; the patch level isn't
 // returned. For example, a binary of version 19.2.4 will return 19.2.
-func BinaryVersion(db *gosql.DB) (roachpb.Version, error) {
+func BinaryVersion(ctx context.Context, db *gosql.DB) (roachpb.Version, error) {
 	zero := roachpb.Version{}
 	var sv string
-	if err := db.QueryRow(`SELECT crdb_internal.node_executable_version();`).Scan(&sv); err != nil {
+	if err := db.QueryRowContext(ctx, `SELECT crdb_internal.node_executable_version();`).Scan(&sv); err != nil {
 		return zero, err
 	}
 
@@ -215,12 +235,12 @@ func uploadBinaryVersion(
 	} else {
 		dir := filepath.Dir(dstBinary)
 		// Avoid staging the binary if it already exists.
-		if err := c.RunE(ctx, option.WithNodes(nodes), "test -e", dstBinary); err == nil {
+		if err := c.RunE(ctx, nodes, "test -e", dstBinary); err == nil {
 			return dstBinary, nil
 		}
 
 		// Ensure binary directory exists.
-		if err := c.RunE(ctx, option.WithNodes(nodes), "mkdir -p", dir); err != nil {
+		if err := c.RunE(ctx, nodes, "mkdir -p", dir); err != nil {
 			return "", err
 		}
 
@@ -253,7 +273,7 @@ func uploadBinaryVersion(
 func InstallFixtures(
 	ctx context.Context, l *logger.Logger, c cluster.Cluster, nodes option.NodeListOption, v *Version,
 ) error {
-	if err := c.RunE(ctx, option.WithNodes(nodes), "mkdir -p {store-dir}"); err != nil {
+	if err := c.RunE(ctx, nodes, "mkdir -p {store-dir}"); err != nil {
 		return fmt.Errorf("creating store-dir: %w", err)
 	}
 
@@ -262,16 +282,16 @@ func InstallFixtures(
 	name := CheckpointName(
 		roachpb.Version{Major: int32(v.Major()), Minor: int32(v.Minor())}.String(),
 	)
-	for _, n := range nodes {
+	for n := 1; n <= len(nodes); n++ {
 		if err := c.PutE(ctx, l,
 			"pkg/cmd/roachtest/fixtures/"+strconv.Itoa(n)+"/"+name+".tgz",
-			"{store-dir}/fixture.tgz", c.Node(n),
+			"{store-dir}/fixture.tgz", c.Node(nodes[n-1]),
 		); err != nil {
 			return err
 		}
 	}
 	// Extract fixture. Fail if there's already an LSM in the store dir.
-	if err := c.RunE(ctx, option.WithNodes(nodes), "ls {store-dir}/marker.* 1> /dev/null 2>&1 && exit 1 || (cd {store-dir} && tar -xf fixture.tgz)"); err != nil {
+	if err := c.RunE(ctx, nodes, "ls {store-dir}/marker.* 1> /dev/null 2>&1 && exit 1 || (cd {store-dir} && tar -xf fixture.tgz)"); err != nil {
 		return fmt.Errorf("extracting fixtures: %w", err)
 	}
 
@@ -331,6 +351,8 @@ func RestartNodesWithNewBinary(
 	newVersion *Version,
 	settings ...install.ClusterSettingOption,
 ) error {
+	const gracePeriod = 300 // 5 minutes
+
 	// NB: We could technically stage the binary on all nodes before
 	// restarting each one, but on Unix it's invalid to write to an
 	// executable file while it is currently running. So we do the
@@ -351,7 +373,9 @@ func RestartNodesWithNewBinary(
 		// this upgraded node for DistSQL plans (see #87154 for more details).
 		// TODO(yuzefovich): ideally, we would also check that the drain was
 		// successful since if it wasn't, then we might see flakes too.
-		if err := c.StopCockroachGracefullyOnNode(ctx, l, node); err != nil {
+		if err := c.StopE(
+			ctx, l, option.NewStopOpts(option.Graceful(gracePeriod)), c.Node(node),
+		); err != nil {
 			return err
 		}
 
@@ -403,7 +427,7 @@ func WaitForClusterUpgrade(
 	timeout time.Duration,
 ) error {
 	firstNode := nodes[0]
-	newVersion, err := BinaryVersion(dbFunc(firstNode))
+	newVersion, err := BinaryVersion(ctx, dbFunc(firstNode))
 	if err != nil {
 		return err
 	}

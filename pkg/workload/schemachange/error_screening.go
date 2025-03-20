@@ -1,12 +1,7 @@
 // Copyright 2020 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package schemachange
 
@@ -16,6 +11,7 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/cockroachdb/cockroach/pkg/sql/lexbase"
 	"github.com/cockroachdb/cockroach/pkg/sql/parser"
 	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/pgcode"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
@@ -98,16 +94,6 @@ func (og *operationGenerator) schemaExists(
 	)`, schemaName)
 }
 
-func (og *operationGenerator) fnExists(
-	ctx context.Context, tx pgx.Tx, fnName string, argTypes string,
-) (bool, error) {
-	return og.scanBool(ctx, tx, `SELECT EXISTS (
-	SELECT proname
-		FROM pg_proc 
-   WHERE proname = $1 AND pg_get_function_identity_arguments(oid) ILIKE $2
-	)`, fnName, argTypes)
-}
-
 func (og *operationGenerator) tableHasDependencies(
 	ctx context.Context, tx pgx.Tx, tableName *tree.TableName,
 ) (bool, error) {
@@ -169,6 +155,63 @@ func (og *operationGenerator) columnIsDependedOn(
 			             FROM pg_catalog.pg_constraint
 			            WHERE confrelid = $1::REGCLASS
 			          )
+			 ) AS cons
+			 INNER JOIN (
+			   SELECT ordinal_position AS column_id
+			     FROM information_schema.columns
+			    WHERE table_schema = $2
+			      AND table_name = $3
+			      AND column_name = $4
+			  ) AS source ON source.column_id = cons.column_id
+)`, tableName.String(), tableName.Schema(), tableName.Object(), columnName)
+}
+
+// colIsRefByComputed determines if a column is referenced by a computed column.
+func (og *operationGenerator) colIsRefByComputed(
+	ctx context.Context, tx pgx.Tx, tableName *tree.TableName, columnName string,
+) (bool, error) {
+	return og.scanBool(ctx, tx, `SELECT EXISTS(
+    SELECT
+       attrelid::REGCLASS AS table_name,
+       attname AS column_name,
+       pg_get_expr(adbin, adrelid) AS computed_formula
+    FROM
+       pg_attribute
+    JOIN
+       pg_attrdef ON attrelid = adrelid AND attnum = adnum
+    WHERE
+       atthasdef
+       AND attrelid = $1::REGCLASS
+       AND pg_get_expr(adbin, adrelid) ILIKE '%%' || $2 || '%%'
+)`, tableName.String(), columnName)
+}
+
+func (og *operationGenerator) columnIsDependedOnByView(
+	ctx context.Context, tx pgx.Tx, tableName *tree.TableName, columnName string,
+) (bool, error) {
+	return og.scanBool(ctx, tx, `SELECT EXISTS(
+		SELECT source.column_id
+			FROM (
+			   SELECT DISTINCT column_id
+			     FROM (
+			           SELECT unnest(
+			                   string_to_array(
+			                    rtrim(
+			                     ltrim(
+			                      fd.dependedonby_details,
+			                      'Columns: ['
+			                     ),
+			                     ']'
+			                    ),
+			                    ' '
+			                   )::INT8[]
+			                  ) AS column_id
+			             FROM crdb_internal.forward_dependencies
+			                   AS fd
+			            WHERE fd.descriptor_id
+			                  = $1::REGCLASS
+                    AND fd.dependedonby_type != 'sequence'
+			            )
 			 ) AS cons
 			 INNER JOIN (
 			   SELECT ordinal_position AS column_id
@@ -432,7 +475,7 @@ GROUP BY name;
 				// No choice but to rollback, expression is malformed.
 				rollbackErr := evalTxn.Rollback(ctx)
 				if rollbackErr != nil {
-					return false, err
+					return false, errors.CombineErrors(err, rollbackErr)
 				}
 				var pgErr *pgconn.PgError
 				if !errors.As(err, &pgErr) {
@@ -459,23 +502,28 @@ GROUP BY name;
 					continue
 				}
 			}
-			// Skip if any null values exist in the expression
-			if hasNullValues {
-				continue
-			}
-			exists, err := og.scanBool(ctx, evalTxn, query.String())
-			if err != nil {
-				skipConstraint, err := handleEvalTxnError(err)
+			// If it has null values, we are going to skip later on,
+			// so skip this operation.
+			var exists bool
+			if !hasNullValues {
+				exists, err = og.scanBool(ctx, evalTxn, query.String())
 				if err != nil {
-					return false, generatedCodes, err
-				}
-				if skipConstraint {
-					continue
+					skipConstraint, err := handleEvalTxnError(err)
+					if err != nil {
+						return false, generatedCodes, err
+					}
+					if skipConstraint {
+						continue
+					}
 				}
 			}
 			err = evalTxn.Commit(ctx)
 			if err != nil {
 				return false, nil, err
+			}
+			// Proceed to the next constraint if it has NULL values.
+			if hasNullValues {
+				continue
 			}
 			if exists {
 				return true, nil, nil
@@ -526,7 +574,7 @@ WHERE
 		return err
 	}
 
-	allowed, err := og.scanBool(
+	isIndexDropping, err := og.scanBool(
 		ctx,
 		tx,
 		`
@@ -543,7 +591,7 @@ SELECT count(*) > 0
 	if err != nil {
 		return err
 	}
-	if !allowed {
+	if isIndexDropping {
 		return ErrSchemaChangesDisallowedDueToPkSwap
 	}
 	return nil
@@ -654,8 +702,8 @@ func (og *operationGenerator) validateGeneratedExpressionsForInsert(
 		if err != nil {
 			var pgErr *pgconn.PgError
 			if !errors.As(err, &pgErr) {
-				_ = evalTx.Rollback(ctx)
-				return err
+				rbkErr := evalTx.Rollback(ctx)
+				return errors.CombineErrors(err, rbkErr)
 			}
 			if !isValidGenerationError(pgErr.Code) {
 				return err
@@ -673,8 +721,8 @@ func (og *operationGenerator) validateGeneratedExpressionsForInsert(
 			if _, err := og.scanBool(ctx, evalTx, queryEvalOrderCheck.String()); err != nil {
 				var pgErr *pgconn.PgError
 				if !errors.As(err, &pgErr) {
-					_ = evalTx.Rollback(ctx)
-					return err
+					rbkErr := evalTx.Rollback(ctx)
+					return errors.CombineErrors(err, rbkErr)
 				}
 				// Note: Invalid errors are allowed, since this is a heuristic. We replaced
 				// random NULL values with zero.
@@ -960,7 +1008,7 @@ func (og *operationGenerator) columnContainsNull(
 		SELECT %s
 		  FROM %s
 	   WHERE %s IS NULL
-	)`, columnName, tableName.String(), columnName))
+	)`, lexbase.EscapeSQLIdent(columnName), tableName.String(), lexbase.EscapeSQLIdent(columnName)))
 }
 
 func (og *operationGenerator) constraintIsPrimary(
@@ -1057,9 +1105,13 @@ SELECT COALESCE(
 func (og *operationGenerator) constraintExists(
 	ctx context.Context, tx pgx.Tx, constraintName string,
 ) (bool, error) {
-	return og.scanBool(ctx, tx, `SELECT EXISTS(
-		SELECT * FROM pg_catalog.pg_constraint WHERE conname = $1
-	 )`, constraintName)
+	return og.scanBool(ctx, tx, fmt.Sprintf(`
+	SELECT EXISTS(
+	        SELECT *
+	          FROM pg_catalog.pg_constraint
+	           WHERE conname = '%s'
+	       );
+	`, constraintName))
 }
 
 func (og *operationGenerator) rowsSatisfyFkConstraint(
@@ -1357,29 +1409,66 @@ SELECT EXISTS(
 func (og *operationGenerator) schemaContainsTypesWithCrossSchemaReferences(
 	ctx context.Context, tx pgx.Tx, schemaName string,
 ) (bool, error) {
-	ctes := []CTE{
-		{"descriptors", descJSONQuery},
-		{"functions", functionDescsQuery},
-		{"types", enumDescsQuery},
-		{"referenced_descriptor_ids", `
-				SELECT json_array_elements(descriptor->'referencingDescriptorIds')::INT8 AS id FROM types WHERE schema_id = $1::REGNAMESPACE::INT8
-			UNION ALL
-				SELECT (ref->'id')::INT8 AS id FROM (SELECT json_array_elements(descriptor->'dependedOnBy') AS ref from functions WHERE schema_id = $1::REGNAMESPACE::INT8)
-		`},
-	}
-
-	_, err := Collect(ctx, og, tx, pgx.RowToMap, With(ctes, `SELECT * FROM types WHERE schema_id = $1::REGNAMESPACE::INT8`), schemaName)
-	if err != nil {
-		return false, err
-	}
-
-	result, err := Collect(ctx, og, tx, pgx.RowToMap, With(ctes, `
-		SELECT $1::REGNAMESPACE::INT8 AS this_schema_id, * FROM descriptors d
-		WHERE schema_id != $1::REGNAMESPACE::INT8
-		AND EXISTS(SELECT * FROM referenced_descriptor_ids WHERE id = d.id)
-		AND (NOT descriptor ? 'table')
-	`), schemaName)
-	return len(result) > 0, err
+	return og.scanBool(ctx, tx, `
+  WITH database_id AS (
+                    SELECT id
+                      FROM system.namespace
+                     WHERE "parentID" = 0
+                       AND "parentSchemaID" = 0
+                       AND name = current_database()
+                   ),
+       schema_id AS (
+                    SELECT nsp.id
+                      FROM system.namespace AS nsp
+                      JOIN database_id ON "parentID" = database_id.id
+                                      AND "parentSchemaID" = 0
+                                      AND name = $1
+                 ),
+       descriptor_ids AS (
+                        SELECT nsp.id
+                          FROM system.namespace AS nsp,
+                               schema_id,
+                               database_id
+                         WHERE nsp."parentID" = database_id.id
+                           AND nsp."parentSchemaID" = schema_id.id
+                      ),
+       descriptors AS (
+                    SELECT crdb_internal.pb_to_json(
+                            'cockroach.sql.sqlbase.Descriptor',
+                            descriptor
+                           ) AS descriptor
+                      FROM system.descriptor AS descriptors
+                      JOIN descriptor_ids ON descriptors.id
+                                             = descriptor_ids.id
+                   ),
+       types AS (
+                SELECT descriptor
+                  FROM descriptors
+                 WHERE (descriptor->'type') IS NOT NULL
+             ),
+       table_references AS (
+                            SELECT json_array_elements(
+                                    descriptor->'table'->'dependedOnBy'
+                                   ) AS ref
+                              FROM descriptors
+                             WHERE (descriptor->'table') IS NOT NULL
+                        ),
+       dependent AS (
+                    SELECT (ref->>'id')::INT8 AS id FROM table_references
+                 ),
+       referenced_descriptors AS (
+                                SELECT json_array_elements_text(
+                                        descriptor->'type'->'referencingDescriptorIds'
+                                       )::INT8 AS id
+                                  FROM types
+                              )
+SELECT EXISTS(
+        SELECT *
+          FROM system.namespace
+         WHERE id IN (SELECT id FROM referenced_descriptors)
+           AND "parentSchemaID" NOT IN (SELECT id FROM schema_id)
+           AND id NOT IN (SELECT id FROM dependent)
+       );`, schemaName)
 }
 
 // enumMemberPresent determines whether val is a member of the enum.

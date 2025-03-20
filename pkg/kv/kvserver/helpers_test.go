@@ -1,12 +1,7 @@
 // Copyright 2016 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 // This file includes test-only helper methods added to types in
 // package storage. These methods are only linked in to tests in this
@@ -27,10 +22,12 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/allocator/storepool"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/batcheval"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/batcheval/result"
+	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/intentresolver"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/kvserverpb"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/liveness"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/liveness/livenesspb"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/logstore"
+	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/rangefeed"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/rditer"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/split"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
@@ -88,7 +85,7 @@ func (s *Store) ComputeMVCCStats(reader storage.Reader) (enginepb.MVCCStats, err
 	now := s.Clock().PhysicalNow()
 	newStoreReplicaVisitor(s).Visit(func(r *Replica) bool {
 		var stats enginepb.MVCCStats
-		stats, err = rditer.ComputeStatsForRange(context.Background(), r.Desc(), reader, now)
+		stats, err = rditer.ComputeStatsForRange(r.Desc(), reader, now)
 		if err != nil {
 			return false
 		}
@@ -400,7 +397,7 @@ func (r *Replica) QuotaReleaseQueueLen() int {
 	return len(r.mu.quotaReleaseQueue)
 }
 
-func (r *Replica) NumPendingProposals() int {
+func (r *Replica) NumPendingProposals() int64 {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	return r.numPendingProposalsRLocked()
@@ -419,7 +416,7 @@ func (r *Replica) IsFollowerActiveSince(
 func (r *Replica) GetTSCacheHighWater() hlc.Timestamp {
 	start := roachpb.Key(r.Desc().StartKey)
 	end := roachpb.Key(r.Desc().EndKey)
-	t, _ := r.store.tsCache.GetMax(context.Background(), start, end)
+	t, _ := r.store.tsCache.GetMax(start, end)
 	return t
 }
 
@@ -545,8 +542,7 @@ func (r *Replica) GetQueueLastProcessed(ctx context.Context, queue string) (hlc.
 }
 
 func (r *Replica) MaybeUnquiesce() bool {
-	ctx := context.Background()
-	return r.maybeUnquiesce(ctx, true /* wakeLeader */, true /* mayCampaign */)
+	return r.maybeUnquiesce(true /* wakeLeader */, true /* mayCampaign */)
 }
 
 // MaybeUnquiesceAndPropose will unquiesce the range and submit a noop proposal.
@@ -662,4 +658,14 @@ func getMapsDiff(beforeMap map[string]int64, afterMap map[string]int64) map[stri
 		}
 	}
 	return diffMap
+}
+
+func NewRangefeedTxnPusher(
+	ir *intentresolver.IntentResolver, r *Replica, span roachpb.RSpan,
+) rangefeed.TxnPusher {
+	return &rangefeedTxnPusher{
+		ir:   ir,
+		r:    r,
+		span: span,
+	}
 }

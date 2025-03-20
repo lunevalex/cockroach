@@ -1,12 +1,7 @@
 // Copyright 2020 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package concurrency_test
 
@@ -101,7 +96,7 @@ func TestConcurrencyManagerBasic(t *testing.T) {
 	datadriven.Walk(t, datapathutils.TestDataPath(t, "concurrency_manager"), func(t *testing.T, path string) {
 		c := newCluster()
 		if strings.HasSuffix(path, "_v23_1") {
-			v := clusterversion.V23_1.Version()
+			v := clusterversion.ByKey(clusterversion.V23_1)
 			st := clustersettings.MakeTestingClusterSettingsWithVersions(v, v, true)
 			c = newClusterWithSettings(st)
 		}
@@ -194,33 +189,25 @@ func TestConcurrencyManagerBasic(t *testing.T) {
 				if d.HasArg("max-lock-wait-queue-length") {
 					d.ScanArgs(t, "max-lock-wait-queue-length", &maxLockWaitQueueLength)
 				}
-				ba := &kvpb.BatchRequest{}
+
 				pp := scanPoisonPolicy(t, d)
 
 				// Each kvpb.Request is provided on an indented line.
 				reqs, reqUnions := scanRequests(t, d, c)
-				ba.Txn = txn
-				ba.Timestamp = ts
-				ba.UserPriority = priority
-				ba.ReadConsistency = readConsistency
-				ba.WaitPolicy = waitPolicy
-				ba.LockTimeout = lockTimeout
-				ba.Requests = reqUnions
 				latchSpans, lockSpans := c.collectSpans(t, txn, ts, waitPolicy, reqs)
 
 				c.requestsByName[reqName] = concurrency.Request{
-					Txn:                    ba.Txn,
-					Timestamp:              ba.Timestamp,
-					NonTxnPriority:         ba.UserPriority,
-					ReadConsistency:        ba.ReadConsistency,
-					WaitPolicy:             ba.WaitPolicy,
-					LockTimeout:            ba.LockTimeout,
-					Requests:               ba.Requests,
+					Txn:                    txn,
+					Timestamp:              ts,
+					NonTxnPriority:         priority,
+					ReadConsistency:        readConsistency,
+					WaitPolicy:             waitPolicy,
+					LockTimeout:            lockTimeout,
 					MaxLockWaitQueueLength: maxLockWaitQueueLength,
+					Requests:               reqUnions,
 					LatchSpans:             latchSpans,
 					LockSpans:              lockSpans,
 					PoisonPolicy:           pp,
-					BaFmt:                  ba,
 				}
 				return ""
 
@@ -391,7 +378,7 @@ func TestConcurrencyManagerBasic(t *testing.T) {
 				d.ScanArgs(t, "key", &key)
 				// TODO(nvanbenschoten): replace with scanLockStrength.
 				strength := concurrency.ScanLockStrength(t, d)
-				ok, txn, err := g.IsKeyLockedByConflictingTxn(context.Background(), roachpb.Key(key), strength)
+				ok, txn, err := g.IsKeyLockedByConflictingTxn(roachpb.Key(key), strength)
 				if err != nil {
 					return err.Error()
 				}

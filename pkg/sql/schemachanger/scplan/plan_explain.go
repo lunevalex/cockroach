@@ -1,12 +1,7 @@
 // Copyright 2022 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package scplan
 
@@ -129,6 +124,7 @@ func (p Plan) explain(style treeprinter.Style) (string, error) {
 func (p Plan) explainTargets(s scstage.Stage, sn treeprinter.Node, style treeprinter.Style) error {
 	var targetTypeMap util.FastIntMap
 	depEdgeByElement := make(map[scpb.Element][]*scgraph.DepEdge)
+	noOpByElement := make(map[scpb.Element][]*scgraph.OpEdge)
 	var beforeMaxLen, afterMaxLen int
 	// Collect non-empty target status groupings for this stage.
 	for j, before := range s.Before {
@@ -165,6 +161,9 @@ func (p Plan) explainTargets(s scstage.Stage, sn treeprinter.Node, style treepri
 					return errors.Errorf("could not find op edge from %s in graph", screl.NodeString(n))
 				}
 				n = oe.To()
+				if p.Graph.IsNoOp(oe) {
+					noOpByElement[t.Element()] = append(noOpByElement[t.Element()], oe)
+				}
 				if err := p.Graph.ForEachDepEdgeTo(n, func(de *scgraph.DepEdge) error {
 					depEdgeByElement[t.Element()] = append(depEdgeByElement[t.Element()], de)
 					return nil
@@ -221,6 +220,18 @@ func (p Plan) explainTargets(s scstage.Stage, sn treeprinter.Node, style treepri
 					de.Kind(), de.From().CurrentStatus, sbf)))
 				for _, r := range de.Rules() {
 					rn.AddLine(accountFor(fmt.Sprintf("rule: %q", r.Name)))
+				}
+			}
+			noOpEdges := noOpByElement[t.Element()]
+			for _, oe := range noOpEdges {
+				noOpRules := p.Graph.NoOpRules(oe)
+				if len(noOpRules) == 0 {
+					continue
+				}
+				nn := en.Child(accountFor(fmt.Sprintf("skip %s → %s operations",
+					oe.From().CurrentStatus, oe.To().CurrentStatus)))
+				for _, rule := range noOpRules {
+					nn.AddLine(accountFor(fmt.Sprintf("rule: %q", rule)))
 				}
 			}
 			if err := p.Params.MemAcc.Grow(p.Params.Ctx, int64(estimatedMemAlloc)); err != nil {

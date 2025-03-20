@@ -1,12 +1,7 @@
 // Copyright 2016 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package kvserver_test
 
@@ -356,22 +351,31 @@ func TestStoreMetrics(t *testing.T) {
 		// filters except when explicitly opted into.
 
 		m := s.Metrics()
-		testcases := []struct {
+
+		for _, tc := range []struct {
 			gauge *metric.Gauge
 			min   int64
 		}{
-			{m.RdbBlockCacheHits, 10},
-			{m.RdbBlockCacheMisses, 0},
 			{m.RdbBlockCacheUsage, 0},
-			{m.RdbBloomFilterPrefixChecked, 0},
-			{m.RdbBloomFilterPrefixUseful, 0},
 			{m.RdbMemtableTotalSize, 5000},
-			{m.RdbCompactions, 0},
 			{m.RdbTableReadersMemEstimate, 50},
-		}
-		for _, tc := range testcases {
+		} {
 			if a := tc.gauge.Value(); a < tc.min {
 				t.Errorf("gauge %s = %d < min %d", tc.gauge.GetName(), a, tc.min)
+			}
+		}
+		for _, tc := range []struct {
+			counter *metric.Counter
+			min     int64
+		}{
+			{m.RdbBlockCacheHits, 10},
+			{m.RdbBlockCacheMisses, 0},
+			{m.RdbBloomFilterPrefixChecked, 0},
+			{m.RdbBloomFilterPrefixUseful, 0},
+			{m.RdbCompactions, 0},
+		} {
+			if a := tc.counter.Count(); a < tc.min {
+				t.Errorf("counter %s = %d < min %d", tc.counter.GetName(), a, tc.min)
 			}
 		}
 	}

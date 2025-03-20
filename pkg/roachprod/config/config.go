@@ -1,24 +1,24 @@
 // Copyright 2018 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package config
 
 import (
 	"context"
+	"io/fs"
 	"os"
 	"os/user"
+	"path"
 	"regexp"
+	"slices"
 
 	"github.com/cockroachdb/cockroach/pkg/roachprod/logger"
 	"github.com/cockroachdb/cockroach/pkg/util/envutil"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
+	"github.com/cockroachdb/errors"
+	"github.com/cockroachdb/errors/oserror"
 )
 
 var (
@@ -40,6 +40,10 @@ var (
 	MaxConcurrency = 32
 	// CockroachDevLicense is used by both roachprod and tools that import it.
 	CockroachDevLicense = envutil.EnvOrDefaultString("COCKROACH_DEV_LICENSE", "")
+
+	// SSHDirectory is the path to search for SSH keys needed to set up
+	// set up new roachprod clusters.
+	SSHDirectory = os.ExpandEnv("${HOME}/.ssh")
 )
 
 func init() {
@@ -124,3 +128,55 @@ func IsLocalClusterName(clusterName string) bool {
 }
 
 var localClusterRegex = regexp.MustCompile(`^local(|-[a-zA-Z0-9\-]+)$`)
+
+// See https://github.com/openssh/openssh-portable/blob/86bdd385/ssh_config.5#L1123-L1130
+var defaultPubKeyNames = []string{
+	"id_rsa",
+	"id_ecdsa",
+	"id_ecdsa_sk",
+	"id_ed25519",
+	"id_ed25519_sk",
+	"id_dsa",
+}
+
+// SSHPublicKeyPath returns the path to the default public key expected by
+// roachprod.
+func SSHPublicKeyPath() (string, error) {
+	dirEnts, err := os.ReadDir(SSHDirectory)
+	if err != nil {
+		return "", errors.Wrap(err, "failed to read SSH directory")
+	}
+
+	for _, name := range defaultPubKeyNames {
+		idx := slices.IndexFunc(dirEnts, func(entry fs.DirEntry) bool {
+			return name == entry.Name()
+		})
+		if idx == -1 {
+			continue
+		}
+		pubKeyPath := path.Join(SSHDirectory, name+".pub")
+		if _, err := os.Stat(pubKeyPath); err == nil {
+			return pubKeyPath, nil
+		}
+	}
+
+	return "", errors.Newf("no default public key found in %s", SSHDirectory)
+}
+
+// SSHPublicKey returns the contents of the default public key
+// expected by roachprod.
+func SSHPublicKey() (string, error) {
+	sshPublicKeyPath, err := SSHPublicKeyPath()
+	if err != nil {
+		return "", err
+	}
+	sshKey, err := os.ReadFile(sshPublicKeyPath)
+	if err != nil {
+		if oserror.IsNotExist(err) {
+			return "", errors.Wrapf(err, "please run ssh-keygen externally to create a public key file")
+		}
+		return "", errors.Wrap(err, "failed to read public SSH key")
+	}
+
+	return string(sshKey), nil
+}

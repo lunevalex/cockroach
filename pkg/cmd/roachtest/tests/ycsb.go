@@ -1,12 +1,7 @@
 // Copyright 2018 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package tests
 
@@ -68,7 +63,7 @@ func registerYCSB(r registry.Registry) {
 		}
 
 		c.Put(ctx, t.DeprecatedWorkload(), "./workload", c.Node(nodes+1))
-		c.Start(ctx, t.L(), option.DefaultStartOptsNoBackups(), settings, c.Range(1, nodes))
+		c.Start(ctx, t.L(), option.NewStartOpts(option.NoBackupSchedule), settings, c.Range(1, nodes))
 
 		db := c.Conn(ctx, t.L(), 1)
 		err := enableIsolationLevels(ctx, t, db)
@@ -94,7 +89,7 @@ func registerYCSB(r registry.Registry) {
 					" --splits=%d --histograms="+t.PerfArtifactsDir()+"/stats.json"+args+
 					" {pgurl:1-%d}",
 				wl, conc, nodes, nodes)
-			c.Run(ctx, option.WithNodes(c.Node(nodes+1)), cmd)
+			c.Run(ctx, c.Node(nodes+1), cmd)
 			return nil
 		})
 		m.Wait()

@@ -1,12 +1,7 @@
 // Copyright 2019 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package randgen
 
@@ -216,6 +211,12 @@ func statisticsMutator(
 				return
 			}
 			colType := tree.MustBeStaticallyKnownType(col.Type)
+			if colType.Family() == types.CollatedStringFamily {
+				// Collated strings are not roundtrippable during
+				// encoding/decoding, so we cannot always make a valid
+				// histogram.
+				return
+			}
 			h := randHistogram(rng, colType)
 			stat := colStats[col.Name]
 			if err := stat.SetHistogram(&h); err != nil {
@@ -292,7 +293,6 @@ func randHistogram(rng *rand.Rand, colType *types.T) stats.HistogramData {
 	}
 	h := stats.HistogramData{
 		ColumnType: histogramColType,
-		Version:    stats.HistVersion,
 	}
 
 	// Generate random values for histogram bucket upper bounds.
@@ -303,7 +303,7 @@ func randHistogram(rng *rand.Rand, colType *types.T) stats.HistogramData {
 			encs := encodeInvertedIndexHistogramUpperBounds(colType, upper)
 			encodedUpperBounds = append(encodedUpperBounds, encs...)
 		} else {
-			enc, err := stats.EncodeUpperBound(stats.HistVersion, upper)
+			enc, err := stats.EncodeUpperBound(upper)
 			if err != nil {
 				panic(err)
 			}
@@ -372,9 +372,9 @@ func encodeInvertedIndexHistogramUpperBounds(colType *types.T, val tree.Datum) (
 
 	var da tree.DatumAlloc
 	for i := range keys {
-		// Each upper-bound datum much be a byte-encoded datum so that it can be
+		// Each key much be a byte-encoded datum so that it can be
 		// decoded in JSONStatistic.SetHistogram.
-		enc, err := stats.EncodeUpperBound(stats.HistVersion, da.NewDBytes(tree.DBytes(keys[i])))
+		enc, err := stats.EncodeUpperBound(da.NewDBytes(tree.DBytes(keys[i])))
 		if err != nil {
 			panic(err)
 		}

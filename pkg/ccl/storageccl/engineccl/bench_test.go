@@ -1,10 +1,7 @@
 // Copyright 2017 The Cockroach Authors.
 //
-// Licensed as a CockroachDB Enterprise file under the Cockroach Community
-// License (the "License"); you may not use this file except in compliance with
-// the License. You may obtain a copy of the License at
-//
-//     https://github.com/cockroachdb/cockroach/blob/master/licenses/CCL.txt
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package engineccl
 
@@ -52,7 +49,7 @@ func loadTestData(
 ) storage.Engine {
 	ctx := context.Background()
 
-	verStr := fmt.Sprintf("v%s", clusterversion.Latest.String())
+	verStr := fmt.Sprintf("v%s", clusterversion.TestingBinaryVersion.String())
 	name := fmt.Sprintf("%s_v%s_%d_%d_%d_%d", dirPrefix, verStr, numKeys, numBatches, batchTimeSpan, valueBytes)
 	dir := testfixtures.ReuseOrGenerate(tb, name, func(dir string) {
 		eng, err := storage.Open(
@@ -181,12 +178,12 @@ func BenchmarkTimeBoundIterate(b *testing.B) {
 		b.Run(fmt.Sprintf("LoadFactor=%.2f", loadFactor), func(b *testing.B) {
 			b.Run("NormalIterator", func(b *testing.B) {
 				runIterate(b, loadFactor, func(e storage.Engine, _, _ hlc.Timestamp) (storage.MVCCIterator, error) {
-					return e.NewMVCCIterator(context.Background(), storage.MVCCKeyAndIntentsIterKind, storage.IterOptions{UpperBound: roachpb.KeyMax})
+					return e.NewMVCCIterator(storage.MVCCKeyAndIntentsIterKind, storage.IterOptions{UpperBound: roachpb.KeyMax})
 				})
 			})
 			b.Run("TimeBoundIterator", func(b *testing.B) {
 				runIterate(b, loadFactor, func(e storage.Engine, startTime, endTime hlc.Timestamp) (storage.MVCCIterator, error) {
-					return e.NewMVCCIterator(context.Background(), storage.MVCCKeyIterKind, storage.IterOptions{
+					return e.NewMVCCIterator(storage.MVCCKeyIterKind, storage.IterOptions{
 						MinTimestamp: startTime,
 						MaxTimestamp: endTime,
 						UpperBound:   roachpb.KeyMax,

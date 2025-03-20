@@ -1,12 +1,7 @@
 // Copyright 2020 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 syntax = "proto3";
 package cockroach.kv.kvnemesis;
@@ -133,21 +128,6 @@ message ChangeZoneOperation {
   Result result = 2 [(gogoproto.nullable) = false];
 }
 
-message SavepointCreateOperation {
-  int32 id = 1 [(gogoproto.customname) = "ID"];
-  Result result = 2 [(gogoproto.nullable) = false];
-}
-
-message SavepointReleaseOperation {
-  int32 id = 1 [(gogoproto.customname) = "ID"];
-  Result result = 2 [(gogoproto.nullable) = false];
-}
-
-message SavepointRollbackOperation {
-  int32 id = 1 [(gogoproto.customname) = "ID"];
-  Result result = 2 [(gogoproto.nullable) = false];
-}
-
 message Operation {
   option (gogoproto.goproto_stringer) = false;
   option (gogoproto.onlyone) = true;
@@ -172,9 +152,6 @@ message Operation {
   TransferLeaseOperation transfer_lease = 16;
   ChangeZoneOperation change_zone = 17;
   AddSSTableOperation add_sstable = 18 [(gogoproto.customname) = "AddSSTable"];
-  SavepointCreateOperation savepoint_create = 19;
-  SavepointReleaseOperation savepoint_release = 20;
-  SavepointRollbackOperation savepoint_rollback = 21;
   BarrierOperation barrier = 22;
 }
 

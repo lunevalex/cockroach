@@ -1,12 +1,7 @@
 // Copyright 2020 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package rangefeed
 
@@ -28,6 +23,7 @@ type Option interface {
 type config struct {
 	scanConfig
 	retryOptions       retry.Options
+	useMuxRangefeed    bool
 	onInitialScanDone  OnInitialScanDone
 	withInitialScan    bool
 	onInitialScanError OnInitialScanError
@@ -224,6 +220,7 @@ func WithOnFrontierAdvance(f OnFrontierAdvance) Option {
 
 func initConfig(c *config, options []Option) {
 	*c = config{} // the default config is its zero value
+	c.useMuxRangefeed = useMuxRangeFeed
 	for _, o := range options {
 		o.set(c)
 	}
@@ -301,5 +298,11 @@ func WithPProfLabel(key, value string) Option {
 func WithSystemTablePriority() Option {
 	return optionFunc(func(c *config) {
 		c.overSystemTable = true
+	})
+}
+
+func WithMuxRangefeed(enabled bool) Option {
+	return optionFunc(func(c *config) {
+		c.useMuxRangefeed = enabled
 	})
 }

@@ -65,11 +65,8 @@ go_test(
         "server_test.go",
         "timeseries_test.go",
     ],
+    args = ["-test.timeout=295s"],
     embed = [":ts"],
-    exec_properties = select({
-        "//build/toolchains:is_heavy": {"Pool": "heavy"},
-        "//conditions:default": {"Pool": "default"},
-    }),
     deps = [
         "//pkg/base",
         "//pkg/keys",

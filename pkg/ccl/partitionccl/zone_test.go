@@ -1,10 +1,7 @@
 // Copyright 2017 The Cockroach Authors.
 //
-// Licensed as a CockroachDB Enterprise file under the Cockroach Community
-// License (the "License"); you may not use this file except in compliance with
-// the License. You may obtain a copy of the License at
-//
-//     https://github.com/cockroachdb/cockroach/blob/master/licenses/CCL.txt
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package partitionccl
 
@@ -43,6 +40,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/cockroach/pkg/util/randutil"
 	"github.com/cockroachdb/cockroach/pkg/util/timeutil"
+	"github.com/cockroachdb/cockroach/pkg/util/uuid"
 	"github.com/cockroachdb/errors"
 	"github.com/cockroachdb/redact"
 	"github.com/stretchr/testify/require"
@@ -1067,9 +1065,10 @@ func TestGenerateSubzoneSpans(t *testing.T) {
 			if err != nil {
 				t.Fatalf("%+v", err)
 			}
+			clusterID := uuid.MakeV4()
 			hasNewSubzones := false
 			spans, err := sql.GenerateSubzoneSpans(
-				cluster.NoSettings, keys.SystemSQLCodec, parse.tableDesc, parse.subzones, hasNewSubzones)
+				cluster.NoSettings, clusterID, keys.SystemSQLCodec, parse.tableDesc, parse.subzones, hasNewSubzones)
 			if err != nil {
 				t.Fatalf("generating subzone spans: %+v", err)
 			}

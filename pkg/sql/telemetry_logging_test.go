@@ -1,12 +1,7 @@
 // Copyright 2021 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package sql
 
@@ -24,7 +19,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/base"
 	"github.com/cockroachdb/cockroach/pkg/sql/appstatspb"
 	"github.com/cockroachdb/cockroach/pkg/sql/execstats"
-	"github.com/cockroachdb/cockroach/pkg/sql/sqlstats"
+	"github.com/cockroachdb/cockroach/pkg/sql/sqlstats/sslocal"
 	"github.com/cockroachdb/cockroach/pkg/testutils/serverutils"
 	"github.com/cockroachdb/cockroach/pkg/testutils/sqlutils"
 	"github.com/cockroachdb/cockroach/pkg/util/leaktest"
@@ -117,7 +112,7 @@ func TestTelemetryLogging(t *testing.T) {
 		queryLevelStats         execstats.QueryLevelStats
 		enableTracing           bool
 		enableInjectTxErrors    bool
-		expectedStatsCollector  sqlstats.StatsCollector
+		expectedStatsCollector  *sslocal.StatsCollector
 	}{
 		{
 			// Test case with statement that is not of type DML.
@@ -538,7 +533,7 @@ func TestTelemetryLogging(t *testing.T) {
 
 					stmtFingerprintID := appstatspb.ConstructStatementFingerprintID(tc.queryNoConstants, tc.expectedErr != "", true, databaseName)
 
-					require.Equal(t, uint64(stmtFingerprintID), sampledQueryFromLog.StatementFingerprintID)
+					require.Equal(t, stmtFingerprintID.String(), sampledQueryFromLog.StatementFingerprintID)
 
 					maxFullScanRowsRe := regexp.MustCompile("\"MaxFullScanRowsEstimate\":[0-9]*")
 					foundFullScan := maxFullScanRowsRe.MatchString(e.Message)

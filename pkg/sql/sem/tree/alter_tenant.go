@@ -1,12 +1,7 @@
 // Copyright 2022 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package tree
 
@@ -18,15 +13,10 @@ type ReplicationCutoverTime struct {
 
 // AlterTenantReplication represents an ALTER VIRTUAL CLUSTER REPLICATION statement.
 type AlterTenantReplication struct {
-	TenantSpec                  *TenantSpec
-	Command                     JobCommand
-	Cutover                     *ReplicationCutoverTime
-	ReplicationSourceTenantName *TenantSpec
-	// ReplicationSourceAddress is the address of the source cluster that we are
-	// replicating data from.
-	ReplicationSourceAddress Expr
-
-	Options TenantReplicationOptions
+	TenantSpec *TenantSpec
+	Command    JobCommand
+	Cutover    *ReplicationCutoverTime
+	Options    TenantReplicationOptions
 }
 
 var _ Statement = &AlterTenantReplication{}
@@ -43,23 +33,6 @@ func (n *AlterTenantReplication) Format(ctx *FmtCtx) {
 		} else {
 			ctx.WriteString("SYSTEM TIME ")
 			ctx.FormatNode(n.Cutover.Timestamp)
-		}
-	} else if n.ReplicationSourceTenantName != nil {
-		ctx.WriteString("START REPLICATION OF ")
-		ctx.FormatNode(n.ReplicationSourceTenantName)
-		ctx.WriteString(" ON ")
-		_, canOmitParentheses := n.ReplicationSourceAddress.(alreadyDelimitedAsSyntacticDExpr)
-		if !canOmitParentheses {
-			ctx.WriteByte('(')
-		}
-		ctx.FormatNode(n.ReplicationSourceAddress)
-		if !canOmitParentheses {
-			ctx.WriteByte(')')
-		}
-
-		if !n.Options.IsDefault() {
-			ctx.WriteString(" WITH ")
-			ctx.FormatNode(&n.Options)
 		}
 	} else if !n.Options.IsDefault() {
 		ctx.WriteString("SET REPLICATION ")
@@ -243,20 +216,4 @@ func (n *AlterTenantService) Format(ctx *FmtCtx) {
 	case TenantStopService:
 		ctx.WriteString(" STOP SERVICE")
 	}
-}
-
-// AlterTenantReset represents an ALTER VIRTUAL CLUSTER RESET statement.
-type AlterTenantReset struct {
-	TenantSpec *TenantSpec
-	Timestamp  Expr
-}
-
-var _ Statement = &AlterTenantReset{}
-
-// Format implements the NodeFormatter interface.
-func (n *AlterTenantReset) Format(ctx *FmtCtx) {
-	ctx.WriteString("ALTER VIRTUAL CLUSTER ")
-	ctx.FormatNode(n.TenantSpec)
-	ctx.WriteString(" RESET DATA TO SYSTEM TIME ")
-	ctx.FormatNode(n.Timestamp)
 }

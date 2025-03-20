@@ -1,12 +1,7 @@
 // Copyright 2018 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package local
 
@@ -123,16 +118,6 @@ type Provider struct {
 	clusters cloud.Clusters
 	storage  VMStorage
 	vm.DNSProvider
-}
-
-func (p *Provider) SupportsSpotVMs() bool {
-	return false
-}
-
-func (p *Provider) GetPreemptedSpotVMs(
-	l *logger.Logger, vms vm.List, since time.Time,
-) ([]vm.PreemptedVM, error) {
-	return nil, nil
 }
 
 func (p *Provider) CreateVolumeSnapshot(

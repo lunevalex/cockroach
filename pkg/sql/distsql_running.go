@@ -1,12 +1,7 @@
 // Copyright 2016 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package sql
 
@@ -740,15 +735,14 @@ func (dsp *DistSQLPlanner) Run(
 			// during the flow setup, we need to populate leafInputState below,
 			// so we tell the localState that there is concurrency.
 
-			// At the moment, we disable the usage of the Streamer API for local
-			// plans when non-default key locking modes are requested on some of
-			// the processors. This is the case since the lock spans propagation
-			// doesn't happen for the leaf txns which can result in excessive
-			// contention for future reads (since the acquired locks are not
-			// cleaned up properly when the txn commits).
-			// TODO(yuzefovich): fix the propagation of the lock spans with the
-			// leaf txns and remove this check. See #94290.
-			containsNonDefaultLocking := planCtx.planner != nil && planCtx.planner.curPlan.flags.IsSet(planFlagContainsNonDefaultLocking)
+			// At the moment, we disable the usage of the Streamer API for local plans
+			// when locking is used by any of the processors. This is the case since
+			// the lock spans propagation doesn't happen for the leaf txns which can
+			// result in excessive contention for future reads (since the acquired
+			// locks are not cleaned up properly when the txn commits).
+			// TODO(yuzefovich): fix the propagation of the lock spans with the leaf
+			// txns and remove this check. See #94290.
+			containsLocking := planCtx.planner != nil && planCtx.planner.curPlan.flags.IsSet(planFlagContainsLocking)
 
 			// We also currently disable the usage of the Streamer API whenever
 			// we have a wrapped planNode. This is done to prevent scenarios
@@ -769,7 +763,21 @@ func (dsp *DistSQLPlanner) Run(
 				}
 				return false
 			}()
-			if !containsNonDefaultLocking && !mustUseRootTxn {
+			// We disable the usage of the Streamer API whenever usage of
+			// DistSQL was prohibited with an error. The thinking behind it is
+			// that we might have a plan where some expression (e.g. a cast to
+			// an Oid type) uses the planner's txn (which is the RootTxn), so
+			// it'd be illegal to use LeafTxns for a part of such plan.
+			// TODO(yuzefovich): this check is both excessive and insufficient.
+			// For example:
+			// - it disables the usage of the Streamer when a subquery has an
+			// Oid type, but that would have no impact on usage of the Streamer
+			// in the main query;
+			// - it might allow the usage of the Streamer even when the internal
+			// executor is used by a part of the plan, and the IE would use the
+			// RootTxn. Arguably, this would be a bug in not prohibiting the
+			// DistSQL altogether.
+			if !containsLocking && !mustUseRootTxn && planCtx.distSQLProhibitedErr == nil {
 				if evalCtx.SessionData().StreamerEnabled {
 					for _, proc := range plan.Processors {
 						if jr := proc.Spec.Core.JoinReader; jr != nil {
@@ -901,10 +909,6 @@ func (dsp *DistSQLPlanner) Run(
 			"unexpected concurrency for a flow that was forced to be planned locally"))
 		return
 	}
-	if buildutil.CrdbTestBuild && txn != nil && localState.MustUseLeafTxn() && flow.GetFlowCtx().Txn.Type() != kv.LeafTxn {
-		recv.SetError(errors.AssertionFailedf("unexpected root txn used when leaf txn expected"))
-		return
-	}
 
 	noWait := planCtx.getPortalPauseInfo() != nil
 	flow.Run(ctx, noWait)
@@ -994,10 +998,6 @@ type DistSQLReceiver struct {
 	// collected in order to estimate RU consumption for a tenant that is running
 	// a query with EXPLAIN ANALYZE.
 	isTenantExplainAnalyze bool
-
-	// If set, client time will be measured (result will be stored in
-	// stats.clientTime).
-	measureClientTime bool
 
 	egressCounter TenantNetworkEgressCounter
 
@@ -1337,13 +1337,6 @@ func (r *DistSQLReceiver) checkConcurrentError() {
 	if r.skipConcurrentErrorCheck || r.status != execinfra.NeedMoreRows {
 		// If the status already is not NeedMoreRows, then it doesn't matter if
 		// there was a concurrent error set.
-		if buildutil.CrdbTestBuild {
-			// SwitchToAnotherPortal is only reachable with local execution when
-			// skipConcurrentErrorCheck should be set to true.
-			if !r.skipConcurrentErrorCheck && r.status == execinfra.SwitchToAnotherPortal {
-				r.SetError(errors.AssertionFailedf("DistSQLReceiver's status is SwitchToAnotherPortal when skipConcurrentErrorCheck is false"))
-			}
-		}
 		return
 	}
 	select {
@@ -1512,11 +1505,6 @@ func (r *DistSQLReceiver) Push(
 		}
 	}
 	r.tracing.TraceExecRowsResult(r.ctx, r.row)
-	if r.measureClientTime {
-		defer func(start time.Time) {
-			r.stats.clientTime += timeutil.Since(start)
-		}(timeutil.Now())
-	}
 	if commErr := r.resultWriter.AddRow(r.ctx, r.row); commErr != nil {
 		r.handleCommErr(commErr)
 	}
@@ -1573,11 +1561,6 @@ func (r *DistSQLReceiver) PushBatch(
 		panic("unsupported exists mode for PushBatch")
 	}
 	r.tracing.TraceExecBatchResult(r.ctx, batch)
-	if r.measureClientTime {
-		defer func(start time.Time) {
-			r.stats.clientTime += timeutil.Since(start)
-		}(timeutil.Now())
-	}
 	if commErr := r.batchWriter.AddBatch(r.ctx, batch); commErr != nil {
 		r.handleCommErr(commErr)
 	}
@@ -1779,15 +1762,16 @@ func (dsp *DistSQLPlanner) planAndRunSubquery(
 	skipDistSQLDiagramGeneration bool,
 	mustUseLeafTxn bool,
 ) error {
-	distributeSubquery := getPlanDistribution(
+	subqueryDistribution, distSQLProhibitedErr := getPlanDistribution(
 		ctx, planner.Descriptors().HasUncommittedTypes(),
 		planner.SessionData().DistSQLMode, subqueryPlan.plan,
-	).WillDistribute()
+	)
 	distribute := DistributionType(DistributionTypeNone)
-	if distributeSubquery {
+	if subqueryDistribution.WillDistribute() {
 		distribute = DistributionTypeAlways
 	}
 	subqueryPlanCtx := dsp.NewPlanningCtx(ctx, evalCtx, planner, planner.txn, distribute)
+	subqueryPlanCtx.distSQLProhibitedErr = distSQLProhibitedErr
 	subqueryPlanCtx.stmtType = tree.Rows
 	subqueryPlanCtx.skipDistSQLDiagramGeneration = skipDistSQLDiagramGeneration
 	subqueryPlanCtx.subOrPostQuery = true
@@ -2072,6 +2056,8 @@ func (dsp *DistSQLPlanner) PlanAndRunCascadesAndChecks(
 		return getDefaultSaveFlowsFunc(ctx, planner, planComponentTypePostquery)
 	}
 
+	checksContainLocking := planner.curPlan.flags.IsSet(planFlagCheckContainsLocking)
+
 	// We treat plan.cascades as a queue.
 	for i := 0; i < len(plan.cascades); i++ {
 		// The original bufferNode is stored in c.Buffer; we can refer to it
@@ -2138,6 +2124,9 @@ func (dsp *DistSQLPlanner) PlanAndRunCascadesAndChecks(
 		// Collect any new checks.
 		if len(cp.checkPlans) > 0 {
 			plan.checkPlans = append(plan.checkPlans, cp.checkPlans...)
+			if cp.flags.IsSet(planFlagCheckContainsLocking) {
+				checksContainLocking = true
+			}
 		}
 
 		// In cyclical reference situations, the number of cascading operations can
@@ -2183,8 +2172,7 @@ func (dsp *DistSQLPlanner) PlanAndRunCascadesAndChecks(
 	// multiple checks to run, none of the checks have non-default locking, and
 	// we're likely to have quota to do so.
 	runParallelChecks := parallelizeChecks.Get(&dsp.st.SV) &&
-		len(plan.checkPlans) > 1 &&
-		!planner.curPlan.flags.IsSet(planFlagCheckContainsNonDefaultLocking) &&
+		len(plan.checkPlans) > 1 && !checksContainLocking &&
 		dsp.parallelChecksSem.ApproximateQuota() > 0
 	if runParallelChecks {
 		// At the moment, we rely on not using the newer DistSQL spec factory to
@@ -2271,15 +2259,16 @@ func (dsp *DistSQLPlanner) planAndRunPostquery(
 	associateNodeWithComponents func(exec.Node, execComponents),
 	addTopLevelQueryStats func(stats *topLevelQueryStats),
 ) error {
-	distributePostquery := getPlanDistribution(
+	postqueryDistribution, distSQLProhibitedErr := getPlanDistribution(
 		ctx, planner.Descriptors().HasUncommittedTypes(),
 		planner.SessionData().DistSQLMode, postqueryPlan,
-	).WillDistribute()
+	)
 	distribute := DistributionType(DistributionTypeNone)
-	if distributePostquery {
+	if postqueryDistribution.WillDistribute() {
 		distribute = DistributionTypeAlways
 	}
 	postqueryPlanCtx := dsp.NewPlanningCtx(ctx, evalCtx, planner, planner.txn, distribute)
+	postqueryPlanCtx.distSQLProhibitedErr = distSQLProhibitedErr
 	postqueryPlanCtx.stmtType = tree.Rows
 	// Postqueries are only executed on the main query path where we skip the
 	// diagram generation.

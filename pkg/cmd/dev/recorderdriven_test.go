@@ -1,12 +1,7 @@
 // Copyright 2022 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package main
 
@@ -58,6 +53,16 @@ import (
 // workflows that don't make use of external state to execute actions (like
 // reading the set of targets from a file for e.g., or hoisting files from a
 // sandbox by searching through the file system directly).
+//
+// TODO(irfansharif): When --rewrite-ing, because these tests shell out to the
+// actual host system, it makes it difficult to run under bazel/dev (currently
+// disallowed). Probably these tests should be ripped out entirely. Dev's
+// currently in the business of doing a lot of interactive I/O with the host
+// system, instead of pushing it all down into bazel rules. The recorder tests
+// are the few remaining examples of this. As we push more things down into
+// bazel rules, we should re-evaluate whether this harness provides much value.
+// Probably dev commands that require writing a TestRecorderDriven test is worth
+// re-writing.
 func TestRecorderDriven(t *testing.T) {
 	rewriting := false
 	if f := flag.Lookup("rewrite"); f != nil && f.Value.String() == "true" {

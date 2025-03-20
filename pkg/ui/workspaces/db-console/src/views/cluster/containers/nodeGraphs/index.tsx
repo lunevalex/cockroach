@@ -1,12 +1,7 @@
 // Copyright 2018 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 import _ from "lodash";
 import React from "react";
@@ -48,6 +43,7 @@ import {
   nodeIDsSelector,
   nodeIDsStringifiedSelector,
   selectStoreIDsByNodeID,
+  nodeDisplayNameByIDSelectorWithoutAddress,
 } from "src/redux/nodes";
 import Alerts from "src/views/shared/containers/alerts";
 import { MetricsDataProvider } from "src/views/shared/containers/metricDataProvider";
@@ -92,7 +88,11 @@ import {
 } from "src/redux/clusterSettings";
 import { getDataFromServer } from "src/util/dataFromServer";
 import { getCookieValue } from "src/redux/cookies";
-import { isSystemTenant, tenantDropdownOptions } from "src/redux/tenants";
+import {
+  containsApplicationTenants,
+  isSystemTenant,
+  tenantDropdownOptions,
+} from "src/redux/tenants";
 
 interface GraphDashboard {
   label: string;
@@ -410,16 +410,22 @@ export class NodeGraphs extends React.Component<
         <Helmet title={"Metrics"} />
         <h3 className="base-heading">Metrics</h3>
         <PageConfig>
-          {isSystemTenant(currentTenant) && tenantOptions.length > 1 && (
-            <PageConfigItem>
-              <Dropdown
-                title="Virtual Cluster"
-                options={tenantOptions}
-                selected={selectedTenant}
-                onChange={selection => this.setClusterPath("tenant", selection)}
-              />
-            </PageConfigItem>
-          )}
+          {/* By default, `tenantOptions` will have a length of 2 for
+          "All" and "system" tenant. We should omit showing the
+          dropdown in those cases */}
+          {isSystemTenant(currentTenant) &&
+            containsApplicationTenants(tenantOptions) && (
+              <PageConfigItem>
+                <Dropdown
+                  title="Virtual Cluster"
+                  options={tenantOptions}
+                  selected={selectedTenant}
+                  onChange={selection =>
+                    this.setClusterPath("tenant", selection)
+                  }
+                />
+              </PageConfigItem>
+            )}
           <PageConfigItem>
             <Dropdown
               title="Graph"
@@ -514,7 +520,7 @@ export class NodeGraphs extends React.Component<
  */
 const nodeDropdownOptionsSelector = createSelector(
   nodeIDsSelector,
-  nodeDisplayNameByIDSelector,
+  state => nodeDisplayNameByIDSelector(state),
   livenessStatusByNodeIDSelector,
   (nodeIds, nodeDisplayNameByID, livenessStatusByNodeID): DropdownOption[] => {
     const base = [{ value: "", label: "Cluster" }];
@@ -542,7 +548,7 @@ const mapStateToProps = (state: AdminUIState): MapStateToProps => ({
   nodeIds: nodeIDsStringifiedSelector(state),
   storeIDsByNodeID: selectStoreIDsByNodeID(state),
   nodeDropdownOptions: nodeDropdownOptionsSelector(state),
-  nodeDisplayNameByID: nodeDisplayNameByIDSelector(state),
+  nodeDisplayNameByID: nodeDisplayNameByIDSelectorWithoutAddress(state),
   crossClusterReplicationEnabled: selectCrossClusterReplicationEnabled(state),
   tenantOptions: tenantDropdownOptions(state),
   currentTenant: getCookieValue("tenant"),

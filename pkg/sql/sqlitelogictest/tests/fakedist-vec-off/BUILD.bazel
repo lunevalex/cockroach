@@ -4,14 +4,12 @@ go_test(
     name = "fakedist-vec-off_test",
     size = "enormous",
     srcs = ["generated_test.go"],
+    args = ["-test.timeout=7195s"],
     data = [
         "//c-deps:libgeos",  # keep
         "@com_github_cockroachdb_sqllogictest//:testfiles",  # keep
     ],
-    exec_properties = select({
-        "//build/toolchains:is_heavy": {"Pool": "heavy"},
-        "//conditions:default": {"Pool": "large"},
-    }),
+    exec_properties = {"Pool": "large"},
     shard_count = 48,
     tags = [
         "cpu:2",

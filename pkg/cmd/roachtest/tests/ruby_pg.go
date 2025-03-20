@@ -1,12 +1,7 @@
 // Copyright 2021 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package tests
 
@@ -28,16 +23,12 @@ import (
 	rperrors "github.com/cockroachdb/cockroach/pkg/roachprod/errors"
 	"github.com/cockroachdb/cockroach/pkg/roachprod/install"
 	"github.com/cockroachdb/cockroach/pkg/roachprod/vm"
-	"github.com/cockroachdb/errors"
 	"github.com/stretchr/testify/require"
 )
 
 var rubyPGTestFailureRegex = regexp.MustCompile(`^rspec ./.*# .*`)
 var testFailureFilenameRegexp = regexp.MustCompile("^rspec .*.rb.*([0-9]|]) # ")
 var testSummaryRegexp = regexp.MustCompile("^([0-9]+) examples, [0-9]+ failures")
-
-// WARNING: DO NOT MODIFY the name of the below constant/variable without approval from the docs team.
-// This is used by docs automation to produce a list of supported versions for ORM's.
 var rubyPGVersion = "v1.3.5"
 
 // This test runs Ruby PG's full test suite against a single cockroach node.
@@ -52,9 +43,11 @@ func registerRubyPG(r registry.Registry) {
 		}
 		node := c.Node(1)
 		t.Status("setting up cockroach")
-		startOpts := option.DefaultStartOptsInMemory()
+		startOpts := option.NewStartOpts(sqlClientsInMemoryDB)
 		startOpts.RoachprodOpts.SQLPort = config.DefaultSQLPort
-		c.Start(ctx, t.L(), startOpts, install.MakeClusterSettings(), c.All())
+		// TODO(darrylwong): ruby-pg is currently being updated to run on Ubuntu 22.04.
+		// Once complete, fix up ruby_pg_helpers to accept a tls connection.
+		c.Start(ctx, t.L(), startOpts, install.MakeClusterSettings(install.SecureOption(false)), c.All())
 
 		version, err := fetchCockroachVersion(ctx, t.L(), c, node[0])
 		if err != nil {
@@ -158,13 +151,13 @@ func registerRubyPG(r registry.Registry) {
 		t.Status("running ruby-pg test suite")
 		// Note that this is expected to return an error, since the test suite
 		// will fail. And it is safe to swallow it here.
-		result, err := c.RunWithDetailsSingleNode(ctx, t.L(), option.WithNodes(node),
+		result, err := c.RunWithDetailsSingleNode(ctx, t.L(), node,
 			`cd /mnt/data1/ruby-pg/ && bundle exec rake compile test`,
 		)
 
-		// Fatal for a roachprod or SSH error. A roachprod error is when result.Err==nil.
+		// Fatal for a roachprod or transient error. A roachprod error is when result.Err==nil.
 		// Proceed for any other (command) errors
-		if err != nil && (result.Err == nil || errors.Is(err, rperrors.ErrSSH255)) {
+		if err != nil && (result.Err == nil || rperrors.IsTransient(err)) {
 			t.Fatal(err)
 		}
 
@@ -239,6 +232,7 @@ func registerRubyPG(r registry.Registry) {
 	}
 
 	r.Add(registry.TestSpec{
+		Skip:    "uses old ruby version",
 		Name:    "ruby-pg",
 		Timeout: 1 * time.Hour,
 		Owner:   registry.OwnerSQLFoundations,
@@ -249,7 +243,7 @@ func registerRubyPG(r registry.Registry) {
 		Leases:           registry.MetamorphicLeases,
 		NativeLibs:       registry.LibGEOS,
 		CompatibleClouds: registry.AllExceptAWS,
-		Suites:           registry.Suites(registry.Nightly, registry.Driver),
+		Suites:           registry.Suites(registry.Nightly, registry.ORM),
 		Run: func(ctx context.Context, t test.Test, c cluster.Cluster) {
 			runRubyPGTest(ctx, t, c)
 		},

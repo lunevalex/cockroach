@@ -1,4 +1,6 @@
-FROM ubuntu:focal
+# We use a docker image mirror to avoid pulling from 3rd party repos, which sometimes have reliability issues.
+# See https://cockroachlabs.atlassian.net/wiki/spaces/devinf/pages/3462594561/Docker+image+sync for the details.
+FROM us-east1-docker.pkg.dev/crl-docker-sync/docker-io/library/ubuntu:focal
 ARG TARGETPLATFORM
 
 RUN apt-get update \
@@ -92,6 +94,7 @@ RUN apt-get purge -y \
 
 # awscli - roachtests
 # NB: we don't use apt-get because we need an up to date version of awscli
+# If you update the below, you should probably also update build/builder/Dockerfile.
 RUN case ${TARGETPLATFORM} in \
     "linux/amd64") ARCH=x86_64; SHASUM=e679933eec90b0e5a75d485be6c2fae0f89a3f9ccdcb1748be69f8f456e9a85f ;; \
     "linux/arm64") ARCH=aarch64; SHASUM=7d6460f795712ebdac7e3c60d4800dde682d136d909810402aac164f2789b860 ;; \

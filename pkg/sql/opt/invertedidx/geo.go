@@ -1,12 +1,7 @@
 // Copyright 2020 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package invertedidx
 
@@ -65,7 +60,7 @@ func GetGeoIndexRelationship(expr opt.ScalarExpr) (_ geoindex.RelationshipType, 
 // geospatial relationship. It is implemented by getSpanExprForGeographyIndex
 // and getSpanExprForGeometryIndex and used in extractGeoFilterCondition.
 type getSpanExprForGeoIndexFn func(
-	context.Context, tree.Datum, []tree.Datum, geoindex.RelationshipType, geopb.Config,
+	context.Context, tree.Datum, []tree.Datum, geoindex.RelationshipType, geoindex.Config,
 ) inverted.Expression
 
 // getSpanExprForGeographyIndex gets a SpanExpression that constrains the given
@@ -75,7 +70,7 @@ func getSpanExprForGeographyIndex(
 	d tree.Datum,
 	additionalParams []tree.Datum,
 	relationship geoindex.RelationshipType,
-	indexConfig geopb.Config,
+	indexConfig geoindex.Config,
 ) inverted.Expression {
 	geogIdx := geoindex.NewS2GeographyIndex(*indexConfig.S2Geography)
 	geog := d.(*tree.DGeography).Geography
@@ -162,7 +157,7 @@ func getSpanExprForGeometryIndex(
 	d tree.Datum,
 	additionalParams []tree.Datum,
 	relationship geoindex.RelationshipType,
-	indexConfig geopb.Config,
+	indexConfig geoindex.Config,
 ) inverted.Expression {
 	geomIdx := geoindex.NewS2GeometryIndex(*indexConfig.S2Geometry)
 	geom := d.(*tree.DGeometry).Geometry
@@ -929,7 +924,7 @@ type geoDatumsToInvertedExpr struct {
 	evalCtx      *eval.Context
 	colTypes     []*types.T
 	invertedExpr tree.TypedExpr
-	indexConfig  geopb.Config
+	indexConfig  geoindex.Config
 	typ          *types.T
 	getSpanExpr  getSpanExprForGeoIndexFn
 
@@ -971,7 +966,7 @@ func NewGeoDatumsToInvertedExpr(
 	evalCtx *eval.Context,
 	colTypes []*types.T,
 	expr tree.TypedExpr,
-	config geopb.Config,
+	config geoindex.Config,
 ) (invertedexpr.DatumsToInvertedExpr, error) {
 	if config.IsEmpty() {
 		return nil, fmt.Errorf("inverted joins are currently only supported for geospatial indexes")

@@ -1,12 +1,7 @@
 // Copyright 2017 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package tests
 
@@ -37,7 +32,7 @@ func CheckKeyCount(t *testing.T, kvDB *kv.DB, span roachpb.Span, numKeys int) {
 // those whose tombstones are marked but not GC'ed yet) in the provided span
 // matches the expected number.
 func CheckKeyCountIncludingTombstoned(
-	t *testing.T, s serverutils.StorageLayerInterface, span roachpb.Span, expectedNum int,
+	t *testing.T, s serverutils.TestServerInterface, span roachpb.Span, expectedNum int,
 ) {
 	t.Helper()
 	if err := CheckKeyCountIncludingTombstonedE(t, s, span, expectedNum); err != nil {
@@ -58,7 +53,7 @@ func CheckKeyCountE(t *testing.T, kvDB *kv.DB, span roachpb.Span, numKeys int) e
 }
 
 func CheckKeyCountIncludingTombstonedE(
-	t *testing.T, s serverutils.StorageLayerInterface, tableSpan roachpb.Span, expectedNum int,
+	t *testing.T, s serverutils.TestServerInterface, tableSpan roachpb.Span, expectedNum int,
 ) error {
 	// Check key count including tombstoned ones.
 	engines := s.Engines()
@@ -68,7 +63,6 @@ func CheckKeyCountIncludingTombstonedE(
 
 	keyCount := 0
 	it, err := engines[0].NewMVCCIterator(
-		context.Background(),
 		storage.MVCCKeyIterKind,
 		storage.IterOptions{
 			LowerBound: tableSpan.Key,

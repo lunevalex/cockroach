@@ -1,12 +1,7 @@
 // Copyright 2018 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package props
 
@@ -551,21 +546,45 @@ func (f *FuncDepSet) CopyFrom(fdset *FuncDepSet) {
 }
 
 // RemapFrom copies the given FD into this FD, remapping column IDs according to
-// the from/to lists. Specifically, column from[i] is replaced with column
-// to[i] (see TranslateColSet).
-// Any columns not in the from list are removed from the FDs.
-func (f *FuncDepSet) RemapFrom(fdset *FuncDepSet, fromCols, toCols opt.ColList) {
+// the old/new lists. Specifically, column old[i] is replaced with column new[i]
+// (see TranslateColSet).
+//
+// Any columns not in the "old" list are removed from the FDs.
+func (f *FuncDepSet) RemapFrom(fdset *FuncDepSet, oldCols, newCols opt.ColList) {
 	f.CopyFrom(fdset)
 	colSet := f.ColSet()
-	fromSet := fromCols.ToSet()
+	fromSet := oldCols.ToSet()
 	if !colSet.SubsetOf(fromSet) {
 		f.ProjectCols(colSet.Intersection(fromSet))
 	}
-	for i := range f.deps {
-		f.deps[i].from = opt.TranslateColSetStrict(f.deps[i].from, fromCols, toCols)
-		f.deps[i].to = opt.TranslateColSetStrict(f.deps[i].to, fromCols, toCols)
+	n := 0
+	var newEquivCols []opt.ColSet
+	for i := 0; i < len(f.deps); i++ {
+		remappedFrom := opt.TranslateColSetStrict(f.deps[i].from, oldCols, newCols)
+		remappedTo := opt.TranslateColSetStrict(f.deps[i].to, oldCols, newCols)
+		if f.deps[i].equiv && remappedFrom.Len() != 1 {
+			// The original "from" column maps to more than one "to" column. Remove
+			// this FD, and keep track of the set of equivalent columns to be handled
+			// after the loop.
+			remappedFrom.UnionWith(remappedTo)
+			newEquivCols = append(newEquivCols, remappedFrom)
+			continue
+		}
+		f.deps[i].from = remappedFrom
+		f.deps[i].to = remappedTo
+		if n != i {
+			f.deps[n] = f.deps[i]
+		}
+		n++
 	}
-	f.key = opt.TranslateColSetStrict(f.key, fromCols, toCols)
+	f.deps = f.deps[:n]
+	f.key = opt.TranslateColSetStrict(f.key, oldCols, newCols)
+	if len(newEquivCols) > 0 {
+		for i := range newEquivCols {
+			f.addEquivalency(newEquivCols[i])
+		}
+		f.tryToReduceKey(opt.ColSet{} /* notNullCols */)
+	}
 }
 
 // ColsAreStrictKey returns true if the given columns contain a strict key for the
@@ -907,7 +926,6 @@ func (f *FuncDepSet) AddEquivalency(a, b opt.ColumnID) {
 	equiv.Add(a)
 	equiv.Add(b)
 	f.addEquivalency(equiv)
-	f.tryToReduceKey(opt.ColSet{} /* notNullCols */)
 }
 
 // AddConstants adds a strict FD to the set that declares each given column as
@@ -920,13 +938,6 @@ func (f *FuncDepSet) AddEquivalency(a, b opt.ColumnID) {
 // Since it is a constant, any set of determinant columns (including the empty
 // set) trivially determines the value of "a".
 func (f *FuncDepSet) AddConstants(cols opt.ColSet) {
-	f.addConstantsNoKeyReduction(cols)
-	f.tryToReduceKey(opt.ColSet{} /* notNullCols */)
-}
-
-// addConstantsNoKeyReduction adds constant FDs to the set. It does not attempt
-// to reduce the key. See AddConstants.
-func (f *FuncDepSet) addConstantsNoKeyReduction(cols opt.ColSet) {
 	if cols.Empty() {
 		return
 	}
@@ -976,6 +987,8 @@ func (f *FuncDepSet) addConstantsNoKeyReduction(cols opt.ColSet) {
 		n++
 	}
 	f.deps = f.deps[:n]
+
+	f.tryToReduceKey(opt.ColSet{} /* notNullCols */)
 }
 
 // AddSynthesizedCol adds an FD to the set that is derived from a synthesized
@@ -1094,7 +1107,7 @@ func (f *FuncDepSet) ProjectCols(cols opt.ColSet) {
 		// constant columns from dependants for nicer presentation.
 		if !fd.to.SubsetOf(cols) {
 			fd.to = fd.to.Intersection(cols)
-			if !fd.isConstant() {
+			if !fd.isConstant() && !fd.equiv {
 				fd.to.DifferenceWith(constCols)
 			}
 			if !fd.removeToCols(fd.from) {
@@ -1170,7 +1183,6 @@ func (f *FuncDepSet) AddEquivFrom(fdset *FuncDepSet) {
 			f.addDependency(fd.from, fd.to, fd.strict, fd.equiv)
 		}
 	}
-	f.tryToReduceKey(opt.ColSet{} /* notNullCols */)
 }
 
 // MakeProduct modifies the FD set to reflect the impact of a cartesian product
@@ -1829,7 +1841,7 @@ func (f *FuncDepSet) addDependency(from, to opt.ColSet, strict, equiv bool) {
 		if !strict {
 			panic(errors.AssertionFailedf("expected constant FD to be strict: %s", redact.Safe(f)))
 		}
-		f.addConstantsNoKeyReduction(to)
+		f.AddConstants(to)
 		return
 	}
 
@@ -1887,15 +1899,13 @@ func (f *FuncDepSet) addDependency(from, to opt.ColSet, strict, equiv bool) {
 	}
 }
 
-// addEquivalency adds a new equivalency into the set.
-// NOTE: The given equiv column set may be mutated.
 func (f *FuncDepSet) addEquivalency(equiv opt.ColSet) {
 	var addConst bool
 	var found opt.ColSet
 
 	// Start by finding complete set of all columns that are equivalent to the
 	// given set.
-	equiv = f.ComputeEquivClosureNoCopy(equiv)
+	equiv = f.ComputeEquivClosure(equiv)
 
 	n := 0
 	for i := 0; i < len(f.deps); i++ {
@@ -1932,7 +1942,7 @@ func (f *FuncDepSet) addEquivalency(equiv opt.ColSet) {
 
 	if addConst {
 		// Ensure that all equivalent columns are marked as constant.
-		f.addConstantsNoKeyReduction(equiv)
+		f.AddConstants(equiv)
 	}
 
 	if !equiv.SubsetOf(found) {
@@ -1949,6 +1959,8 @@ func (f *FuncDepSet) addEquivalency(equiv opt.ColSet) {
 		}
 		f.deps = deps
 	}
+
+	f.tryToReduceKey(opt.ColSet{} /* notNullCols */)
 }
 
 // setKey updates the key that the set is currently maintaining.

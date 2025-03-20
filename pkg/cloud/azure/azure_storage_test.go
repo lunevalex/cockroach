@@ -1,12 +1,7 @@
 // Copyright 2019 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package azure
 
@@ -208,7 +203,7 @@ func TestParseAzureURL(t *testing.T) {
 		u, err := url.Parse("azure://container/path?AZURE_ACCOUNT_NAME=account&AZURE_ACCOUNT_KEY=key")
 		require.NoError(t, err)
 
-		sut, err := parseAzureURL(u)
+		sut, err := parseAzureURL(cloud.ExternalStorageURIContext{}, u)
 		require.NoError(t, err)
 
 		require.Equal(t, azure.PublicCloud.Name, sut.AzureConfig.Environment)
@@ -218,7 +213,7 @@ func TestParseAzureURL(t *testing.T) {
 		u, err := url.Parse("azure://container/path?AZURE_ACCOUNT_NAME=account&AZURE_CLIENT_ID=client&AZURE_CLIENT_SECRET=secret&AZURE_TENANT_ID=tenant")
 		require.NoError(t, err)
 
-		_, err = parseAzureURL(u)
+		_, err = parseAzureURL(cloud.ExternalStorageURIContext{}, u)
 		require.NoError(t, err)
 	})
 
@@ -226,7 +221,7 @@ func TestParseAzureURL(t *testing.T) {
 		u, err := url.Parse("azure://container/path?AZURE_ACCOUNT_NAME=account&AZURE_ACCOUNT_KEY=key&AZURE_CLIENT_ID=client&AZURE_CLIENT_SECRET=secret&AZURE_TENANT_ID=tenant")
 		require.NoError(t, err)
 
-		_, err = parseAzureURL(u)
+		_, err = parseAzureURL(cloud.ExternalStorageURIContext{}, u)
 		require.Error(t, err)
 
 	})
@@ -235,7 +230,7 @@ func TestParseAzureURL(t *testing.T) {
 		u, err := url.Parse("azure://container/path?AZURE_ACCOUNT_NAME=account&AUTH=implicit")
 		require.NoError(t, err)
 
-		_, err = parseAzureURL(u)
+		_, err = parseAzureURL(cloud.ExternalStorageURIContext{}, u)
 		require.NoError(t, err)
 	})
 
@@ -243,7 +238,7 @@ func TestParseAzureURL(t *testing.T) {
 		u, err := url.Parse("azure-storage://container/path?AZURE_ACCOUNT_NAME=account&AZURE_ACCOUNT_KEY=key&AZURE_ENVIRONMENT=AzureUSGovernmentCloud")
 		require.NoError(t, err)
 
-		sut, err := parseAzureURL(u)
+		sut, err := parseAzureURL(cloud.ExternalStorageURIContext{}, u)
 		require.NoError(t, err)
 
 		require.Equal(t, azure.USGovernmentCloud.Name, sut.AzureConfig.Environment)
@@ -259,7 +254,8 @@ func TestMakeAzureStorageURLFromEnvironment(t *testing.T) {
 		{environment: azure.USGovernmentCloud.Name, expected: "https://account.blob.core.usgovcloudapi.net/container"},
 	} {
 		t.Run(tt.environment, func(t *testing.T) {
-			sut, err := makeAzureStorage(context.Background(), cloud.EarlyBootExternalStorageContext{}, cloudpb.ExternalStorage{
+			testSettings := cluster.MakeTestingClusterSettings()
+			sut, err := makeAzureStorage(context.Background(), cloud.ExternalStorageContext{Settings: testSettings}, cloudpb.ExternalStorage{
 				AzureConfig: &cloudpb.ExternalStorage_Azure{
 					Container:   "container",
 					Prefix:      "path",

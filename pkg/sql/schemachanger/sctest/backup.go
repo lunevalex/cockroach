@@ -1,12 +1,7 @@
 // Copyright 2023 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package sctest
 
@@ -41,7 +36,6 @@ func BackupSuccess(t *testing.T, path string, factory TestServerFactory) {
 	// These tests are expensive.
 	skip.UnderStress(t)
 	skip.UnderRace(t)
-	skip.UnderDeadlock(t)
 
 	cumulativeTestForEachPostCommitStage(t, path, factory, func(t *testing.T, cs CumulativeTestCaseSpec) {
 		backupSuccess(t, factory, cs)
@@ -54,7 +48,6 @@ func BackupRollbacks(t *testing.T, path string, factory TestServerFactory) {
 	// These tests are expensive.
 	skip.UnderStress(t)
 	skip.UnderRace(t)
-	skip.UnderDeadlock(t)
 	// These tests are only marginally more useful than BackupSuccess
 	// and at least as expensive to run.
 	skip.UnderShort(t)
@@ -70,7 +63,6 @@ func BackupSuccessMixedVersion(t *testing.T, path string, factory TestServerFact
 	// These tests are expensive.
 	skip.UnderStress(t)
 	skip.UnderRace(t)
-	skip.UnderDeadlock(t)
 	// These tests are only marginally more useful than BackupSuccess
 	// and at least as expensive to run.
 	skip.UnderShort(t)
@@ -87,7 +79,6 @@ func BackupRollbacksMixedVersion(t *testing.T, path string, factory TestServerFa
 	// These tests are expensive.
 	skip.UnderStress(t)
 	skip.UnderRace(t)
-	skip.UnderDeadlock(t)
 	// These tests are only marginally more useful than BackupSuccess
 	// and at least as expensive to run.
 	skip.UnderShort(t)
@@ -114,6 +105,7 @@ func maybeRandomlySkip(t *testing.T) {
 
 func backupSuccess(t *testing.T, factory TestServerFactory, cs CumulativeTestCaseSpec) {
 	maybeRandomlySkip(t)
+	t.Parallel() // SAFE FOR TESTING (this comment is for the linter)
 	ctx := context.Background()
 	url := fmt.Sprintf("userfile://backups.public.userfiles_$user/data_%s_%d",
 		cs.Phase, cs.StageOrdinal)
@@ -209,7 +201,7 @@ func backupSuccess(t *testing.T, factory TestServerFactory, cs CumulativeTestCas
 		}
 
 		// Upgrade the cluster if applicable.
-		tdb.Exec(t, "SET CLUSTER SETTING VERSION = $1", clusterversion.Latest.String())
+		tdb.Exec(t, "SET CLUSTER SETTING VERSION = $1", clusterversion.TestingBinaryVersion.String())
 
 		// Restore the backup of the database taken mid-successful-schema-change
 		// in various ways, check that it ends up in the same state as present.
@@ -223,6 +215,7 @@ func backupRollbacks(t *testing.T, factory TestServerFactory, cs CumulativeTestC
 		return
 	}
 	maybeRandomlySkip(t)
+	t.Parallel() // SAFE FOR TESTING (this comment is for the linter)
 	ctx := context.Background()
 	var urls atomic.Value
 	var dbForBackup atomic.Pointer[gosql.DB]

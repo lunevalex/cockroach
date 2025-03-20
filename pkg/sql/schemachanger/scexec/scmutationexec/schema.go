@@ -1,12 +1,7 @@
 // Copyright 2023 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package scmutationexec
 
@@ -25,12 +20,12 @@ func (i *immediateVisitor) CreateSchemaDescriptor(
 ) error {
 	mut := schemadesc.NewBuilder(&descpb.SchemaDescriptor{
 		ParentID:   catid.InvalidDescID, // Set by `SchemaParent` element
-		Name:       "",                  // Set by `SchemaName` element
+		Name:       "",                  // Set by `Namespace` element
 		ID:         op.SchemaID,
 		Privileges: &catpb.PrivilegeDescriptor{Version: catpb.Version23_2}, // Populated by `UserPrivileges` elements and `Owner` element
 		Version:    1,
-		State:      descpb.DescriptorState_ADD,
 	}).BuildCreatedMutableSchema()
+	mut.State = descpb.DescriptorState_ADD
 	i.CreateDescriptor(mut)
 	return nil
 }

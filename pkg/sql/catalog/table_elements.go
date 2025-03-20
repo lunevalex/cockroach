@@ -1,12 +1,7 @@
 // Copyright 2021 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package catalog
 
@@ -14,7 +9,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/cockroachdb/cockroach/pkg/geo/geopb"
+	"github.com/cockroachdb/cockroach/pkg/geo/geoindex"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/catenumpb"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/catpb"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/descpb"
@@ -177,7 +172,7 @@ type Index interface {
 	GetInvisibility() float64
 	GetPredicate() string
 	GetType() descpb.IndexDescriptor_Type
-	GetGeoConfig() geopb.Config
+	GetGeoConfig() geoindex.Config
 	GetVersion() descpb.IndexDescriptorVersion
 	GetEncodingType() catenumpb.IndexDescriptorEncodingType
 
@@ -968,6 +963,11 @@ func ColumnIDToOrdinalMap(columns []Column) TableColMap {
 		m.Set(col.GetID(), col.Ordinal())
 	}
 	return m
+}
+
+// ColumnTypes returns the types of the given columns
+func ColumnTypes(columns []Column) []*types.T {
+	return ColumnTypesWithInvertedCol(columns, nil /* invertedCol */)
 }
 
 // ColumnTypesWithInvertedCol returns the types of all given columns,

@@ -1,12 +1,7 @@
 // Copyright 2023 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package autoconfig_test
 
@@ -52,7 +47,7 @@ type testTask struct {
 var endProfileTask = autoconfigpb.Task{
 	TaskID:      autoconfigpb.TaskID(math.MaxUint64),
 	Description: "end of configuration profile",
-	MinVersion:  clusterversion.Latest.Version(),
+	MinVersion:  clusterversion.TestingBinaryVersion,
 	Payload: &autoconfigpb.Task_SimpleSQL{
 		SimpleSQL: &autoconfigpb.SimpleSQL{},
 	},
@@ -62,7 +57,7 @@ var testTasks = []testTask{
 	{task: autoconfigpb.Task{
 		TaskID:      123,
 		Description: "test task that creates a system table",
-		MinVersion:  clusterversion.Latest.Version(),
+		MinVersion:  clusterversion.TestingBinaryVersion,
 		Payload: &autoconfigpb.Task_SimpleSQL{
 			SimpleSQL: &autoconfigpb.SimpleSQL{
 				UsernameProto: username.NodeUserName().EncodeProto(),
@@ -80,7 +75,7 @@ var testTasks = []testTask{
 	{task: autoconfigpb.Task{
 		TaskID:      345,
 		Description: "test task that fails with an error",
-		MinVersion:  clusterversion.Latest.Version(),
+		MinVersion:  clusterversion.TestingBinaryVersion,
 		Payload: &autoconfigpb.Task_SimpleSQL{
 			SimpleSQL: &autoconfigpb.SimpleSQL{
 				TransactionalStatements: []string{"SELECT invalid"},
@@ -90,7 +85,7 @@ var testTasks = []testTask{
 	{task: autoconfigpb.Task{
 		TaskID:      456,
 		Description: "test task that creates another system table",
-		MinVersion:  clusterversion.Latest.Version(),
+		MinVersion:  clusterversion.TestingBinaryVersion,
 		Payload: &autoconfigpb.Task_SimpleSQL{
 			SimpleSQL: &autoconfigpb.SimpleSQL{
 				UsernameProto:           username.NodeUserName().EncodeProto(),
@@ -261,7 +256,7 @@ func TestAutoConfigWaitAtStartupTimesOut(t *testing.T) {
 			{task: autoconfigpb.Task{
 				TaskID:      123,
 				Description: "test task that takes longer than the maxWait",
-				MinVersion:  clusterversion.Latest.Version(),
+				MinVersion:  clusterversion.TestingBinaryVersion,
 				Payload: &autoconfigpb.Task_SimpleSQL{
 					SimpleSQL: &autoconfigpb.SimpleSQL{
 						UsernameProto: username.NodeUserName().EncodeProto(),
@@ -316,7 +311,7 @@ func TestAutoConfigWaitAtStartup(t *testing.T) {
 			{task: autoconfigpb.Task{
 				TaskID:      123,
 				Description: "create-test-table",
-				MinVersion:  clusterversion.Latest.Version(),
+				MinVersion:  clusterversion.TestingBinaryVersion,
 				Payload: &autoconfigpb.Task_SimpleSQL{
 					SimpleSQL: &autoconfigpb.SimpleSQL{
 						UsernameProto: username.NodeUserName().EncodeProto(),

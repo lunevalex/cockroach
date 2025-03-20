@@ -1,12 +1,7 @@
 // Copyright 2021 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package spec
 
@@ -175,19 +170,6 @@ func DisableLocalSSD() Option {
 func TerminateOnMigration() Option {
 	return func(spec *ClusterSpec) {
 		spec.TerminateOnMigration = true
-	}
-}
-
-// UseSpotVMs creates a spot vm or equivalent of a cloud provider.
-// Using this option creates SpotVMs instead of on demand VMS. SpotVMS are
-// cheaper but can be terminated at any time by the cloud provider.
-// This option is only supported by GCE for now.
-// See https://cloud.google.com/compute/docs/instances/spot,
-// https://azure.microsoft.com/en-in/products/virtual-machines/spot
-// and https://aws.amazon.com/ec2/spot/ for more details.
-func UseSpotVMs() Option {
-	return func(spec *ClusterSpec) {
-		spec.UseSpotVMs = true
 	}
 }
 

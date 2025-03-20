@@ -7,13 +7,8 @@
 //
 // Copyright 2020 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 // This code was derived from https://github.com/youtube/vitess.
 
@@ -46,10 +41,6 @@ const (
 	// EncBareIdentifiers indicates that identifiers will be rendered
 	// without wrapping quotes.
 	EncBareIdentifiers
-
-	// EncNoDoubleEscapeQuotes indicates that backslashes will not be
-	// escaped when they are used as escape quotes.
-	EncNoDoubleEscapeQuotes
 
 	// EncFirstFreeFlagBit needs to remain unused; it is used as base
 	// bit offset for tree.FmtFlags.
@@ -144,7 +135,6 @@ func EncodeSQLStringWithFlags(buf *bytes.Buffer, in string, flags EncodeFlags) {
 	start := 0
 	escapedString := false
 	bareStrings := flags.HasFlags(EncBareStrings)
-	noDoubleEscapeQuotes := flags.HasFlags(EncNoDoubleEscapeQuotes)
 	// Loop through each unicode code point.
 	for i, r := range in {
 		if i < start {
@@ -165,11 +155,7 @@ func EncodeSQLStringWithFlags(buf *bytes.Buffer, in string, flags EncodeFlags) {
 			buf.WriteString("e'") // begin e'xxx' string
 			escapedString = true
 		}
-		if noDoubleEscapeQuotes && i+1 < len(in) && in[i:i+2] == "\\\"" {
-			continue
-		}
 		buf.WriteString(in[start:i])
-
 		ln := utf8.RuneLen(r)
 		if ln < 0 {
 			start = i + 1

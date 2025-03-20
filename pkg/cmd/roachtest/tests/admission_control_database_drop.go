@@ -1,12 +1,7 @@
 // Copyright 2023 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package tests
 
@@ -33,7 +28,6 @@ func registerDatabaseDrop(r registry.Registry) {
 		10, /* nodeCount */
 		spec.CPU(8),
 		spec.VolumeSize(500),
-		spec.GCEMinCPUPlatform("Intel Ice Lake"),
 		spec.GCEVolumeType("pd-ssd"),
 		spec.GCEMachineType("n2-standard-8"),
 		spec.GCEZones("us-east1-b"),
@@ -81,7 +75,7 @@ func registerDatabaseDrop(r registry.Registry) {
 				//
 				// TODO(irfansharif): Make this versioning business a bit more
 				// explicit throughout. It works, but too tacitly.
-				c.Run(ctx, option.WithNodes(c.All()), fmt.Sprintf("cp %s ./cockroach", path))
+				c.Run(ctx, c.All(), fmt.Sprintf("cp %s ./cockroach", path))
 
 				// Set up TPC-E with 100k customers.
 				//
@@ -95,7 +89,7 @@ func registerDatabaseDrop(r registry.Registry) {
 				runTPCE(ctx, t, c, tpceOptions{
 					start: func(ctx context.Context, t test.Test, c cluster.Cluster) {
 						settings := install.MakeClusterSettings(install.NumRacksOption(crdbNodes))
-						startOpts := option.DefaultStartOptsNoBackups()
+						startOpts := option.NewStartOpts(option.NoBackupSchedule)
 						roachtestutil.SetDefaultSQLPort(c, &startOpts.RoachprodOpts)
 						if err := c.StartE(ctx, t.L(), startOpts, settings, c.Range(1, crdbNodes)); err != nil {
 							t.Fatal(err)
@@ -198,7 +192,7 @@ func registerDatabaseDrop(r registry.Registry) {
 			// test and use disk snapshots?
 			runTPCE(ctx, t, c, tpceOptions{
 				start: func(ctx context.Context, t test.Test, c cluster.Cluster) {
-					startOpts := option.DefaultStartOptsNoBackups()
+					startOpts := option.NewStartOpts(option.NoBackupSchedule)
 					roachtestutil.SetDefaultSQLPort(c, &startOpts.RoachprodOpts)
 					roachtestutil.SetDefaultAdminUIPort(c, &startOpts.RoachprodOpts)
 					settings := install.MakeClusterSettings(install.NumRacksOption(crdbNodes))

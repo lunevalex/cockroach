@@ -1,10 +1,7 @@
 // Copyright 2023 The Cockroach Authors.
 //
-// Licensed as a CockroachDB Enterprise file under the Cockroach Community
-// License (the "License"); you may not use this file except in compliance with
-// the License. You may obtain a copy of the License at
-//
-//     https://github.com/cockroachdb/cockroach/blob/master/licenses/CCL.txt
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package main
 
@@ -225,7 +222,7 @@ func rawStream(
 }
 
 func subscriptionConsumer(
-	sub streamclient.Subscription, frontier span.Frontier,
+	sub streamclient.Subscription, frontier *span.Frontier,
 ) func(ctx context.Context) error {
 	return func(ctx context.Context) error {
 		var (
@@ -235,8 +232,6 @@ func subscriptionConsumer(
 			totalEventCount    int
 			intervalEventCount int
 		)
-		defer frontier.Release()
-
 		intervalStart := timeutil.Now()
 		for {
 			var sz int

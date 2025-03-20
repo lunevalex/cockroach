@@ -1,12 +1,7 @@
 // Copyright 2021 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 // Package instancestorage provides a mock implementation
 // of instance storage for testing purposes.
@@ -97,8 +92,8 @@ func (s *Storage) CreateInstanceDataForTest(
 			return err
 		}
 
-		key := s.rowCodec.encodeKey(region, instanceID)
-		value, err := s.rowCodec.encodeValue(rpcAddr, sqlAddr, sessionID, locality, binaryVersion)
+		key := s.newRowCodec.encodeKey(region, instanceID)
+		value, err := s.newRowCodec.encodeValue(rpcAddr, sqlAddr, sessionID, locality, binaryVersion)
 		if err != nil {
 			return err
 		}
@@ -113,7 +108,7 @@ func (s *Storage) CreateInstanceDataForTest(
 func (s *Storage) GetInstanceDataForTest(
 	ctx context.Context, region []byte, instanceID base.SQLInstanceID,
 ) (sqlinstance.InstanceInfo, error) {
-	k := s.rowCodec.encodeKey(region, instanceID)
+	k := s.newRowCodec.encodeKey(region, instanceID)
 	ctx = multitenant.WithTenantCostControlExemption(ctx)
 	row, err := s.db.Get(ctx, k)
 	if err != nil {
@@ -122,7 +117,7 @@ func (s *Storage) GetInstanceDataForTest(
 	if row.Value == nil {
 		return sqlinstance.InstanceInfo{}, sqlinstance.NonExistentInstanceError
 	}
-	rpcAddr, sqlAddr, sessionID, locality, binaryVersion, _, err := s.rowCodec.decodeValue(*row.Value)
+	rpcAddr, sqlAddr, sessionID, locality, binaryVersion, _, err := s.newRowCodec.decodeValue(*row.Value)
 	if err != nil {
 		return sqlinstance.InstanceInfo{}, errors.Wrapf(err, "could not decode data for instance %d", instanceID)
 	}
@@ -145,8 +140,11 @@ func (s *Storage) GetAllInstancesDataForTest(
 	var rows []instancerow
 	ctx = multitenant.WithTenantCostControlExemption(ctx)
 	if err := s.db.Txn(ctx, func(ctx context.Context, txn *kv.Txn) error {
-		var err error
-		rows, err = s.getInstanceRows(ctx, nil /*global*/, txn, lock.WaitPolicy_Block)
+		version, err := s.versionGuard(ctx, txn)
+		if err != nil {
+			return err
+		}
+		rows, err = s.getInstanceRows(ctx, nil /*global*/, &version, txn, lock.WaitPolicy_Block)
 		return err
 	}); err != nil {
 		return nil, err

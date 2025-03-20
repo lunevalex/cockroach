@@ -1,12 +1,7 @@
 // Copyright 2019 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package kvserver
 
@@ -34,7 +29,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/cockroach/pkg/util/log/logcrash"
 	"github.com/cockroachdb/cockroach/pkg/util/timeutil"
-	"github.com/cockroachdb/cockroach/pkg/util/tracing"
 	"github.com/cockroachdb/errors"
 )
 
@@ -88,18 +82,6 @@ func (r *Replica) executeWriteBatch(
 	pErr *kvpb.Error,
 ) {
 	startTime := timeutil.Now()
-
-	spanName := "executeWriteBatch"
-	// Customize the span name for requests for which the aggregate timing of many
-	// spans is often examined so that they'll roll-up separately from the spans
-	// for other request types. This is a switch to select one of n constants,
-	// rather than sprintf, to avoid allocating a new string for every request.
-	if ba.IsSingleAddSSTableRequest() {
-		spanName = "executeWriteBatchAddSSTable"
-	}
-	var sp *tracing.Span
-	ctx, sp = tracing.ChildSpan(ctx, spanName)
-	defer sp.Finish()
 
 	// Even though we're not a read-only operation by definition, we have to
 	// take out a read lock on readOnlyCmdMu while performing any reads during
@@ -157,8 +139,7 @@ func (r *Replica) executeWriteBatch(
 	// Examine the timestamp cache for preceding commands which require this
 	// command to move its timestamp forward. Or, in the case of a transactional
 	// write, the txn timestamp and possible write-too-old bool.
-	var bumped bool
-	if ba, bumped = r.applyTimestampCache(ctx, ba, minTS); bumped {
+	if bumped := r.applyTimestampCache(ctx, ba, minTS); bumped {
 		// If we bump the transaction's timestamp, we must absolutely
 		// tell the client in a response transaction (for otherwise it
 		// doesn't know about the incremented timestamp). Response
@@ -463,8 +444,7 @@ func (r *Replica) evaluateWriteBatch(
 
 	ms := newMVCCStats()
 	defer releaseMVCCStats(ms)
-	rec := NewReplicaEvalContext(
-		ctx, r, g.LatchSpans(), ba.RequiresClosedTSOlderThanStorageSnapshot(), ba.AdmissionHeader)
+	rec := NewReplicaEvalContext(ctx, r, g.LatchSpans(), ba.RequiresClosedTSOlderThanStorageSnapshot())
 	defer rec.Release()
 	// For non-transactional writes, omitInRangefeeds should always be false.
 	// For transactional writes, we propagate the flag from the txn.
@@ -540,8 +520,7 @@ func (r *Replica) evaluate1PC(
 	// Is this relying on the batch being write-only?
 	ui := uncertainty.Interval{}
 
-	rec := NewReplicaEvalContext(
-		ctx, r, g.LatchSpans(), ba.RequiresClosedTSOlderThanStorageSnapshot(), ba.AdmissionHeader)
+	rec := NewReplicaEvalContext(ctx, r, g.LatchSpans(), ba.RequiresClosedTSOlderThanStorageSnapshot())
 	defer rec.Release()
 	var br *kvpb.BatchResponse
 	var res result.Result

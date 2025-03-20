@@ -1,12 +1,7 @@
 // Copyright 2021 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package storage
 
@@ -83,7 +78,8 @@ func TestMVCCScanWithManyVersionsAndSeparatedIntents(t *testing.T) {
 
 	reader := eng.NewReadOnly(StandardDurability)
 	defer reader.Close()
-	iter, err := reader.NewMVCCIterator(context.Background(), MVCCKeyAndIntentsIterKind, IterOptions{LowerBound: keys[0], UpperBound: roachpb.Key("d")})
+	iter, err := reader.NewMVCCIterator(
+		MVCCKeyAndIntentsIterKind, IterOptions{LowerBound: keys[0], UpperBound: roachpb.Key("d")})
 	require.NoError(t, err)
 	defer iter.Close()
 
@@ -151,7 +147,8 @@ func TestMVCCScanWithLargeKeyValue(t *testing.T) {
 
 	reader := eng.NewReadOnly(StandardDurability)
 	defer reader.Close()
-	iter, err := reader.NewMVCCIterator(context.Background(), MVCCKeyAndIntentsIterKind, IterOptions{LowerBound: keys[0], UpperBound: roachpb.Key("e")})
+	iter, err := reader.NewMVCCIterator(
+		MVCCKeyAndIntentsIterKind, IterOptions{LowerBound: keys[0], UpperBound: roachpb.Key("e")})
 	require.NoError(t, err)
 	defer iter.Close()
 
@@ -231,7 +228,8 @@ func TestMVCCScanWithMemoryAccounting(t *testing.T) {
 	}()
 
 	// iterator that can span over all the written keys.
-	iter, err := eng.NewMVCCIterator(context.Background(), MVCCKeyAndIntentsIterKind, IterOptions{LowerBound: makeKey(nil, 0), UpperBound: makeKey(nil, 11)})
+	iter, err := eng.NewMVCCIterator(MVCCKeyAndIntentsIterKind,
+		IterOptions{LowerBound: makeKey(nil, 0), UpperBound: makeKey(nil, 11)})
 	require.NoError(t, err)
 	defer iter.Close()
 

@@ -1,12 +1,7 @@
 // Copyright 2018 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package rangefeed
 
@@ -15,22 +10,15 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/cockroachdb/cockroach/pkg/clusterversion"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/concurrency/isolation"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
-	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
 	"github.com/cockroachdb/cockroach/pkg/storage/enginepb"
 	"github.com/cockroachdb/cockroach/pkg/util/container/heap"
-	"github.com/cockroachdb/cockroach/pkg/util/envutil"
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/cockroach/pkg/util/uuid"
 	"github.com/cockroachdb/errors"
 )
-
-// TODO(erikgrinaker): remove this once we're confident it won't fire.
-var DisableCommitIntentTimestampAssertion = envutil.EnvOrDefaultBool(
-	"COCKROACH_RANGEFEED_DISABLE_COMMIT_INTENT_TIMESTAMP_ASSERTION", false)
 
 // A rangefeed's "resolved timestamp" is defined as the timestamp at which no
 // future updates will be emitted to the feed at or before. The timestamp is
@@ -90,13 +78,11 @@ type resolvedTimestamp struct {
 	closedTS   hlc.Timestamp
 	resolvedTS hlc.Timestamp
 	intentQ    unresolvedIntentQueue
-	settings   *cluster.Settings
 }
 
-func makeResolvedTimestamp(st *cluster.Settings) resolvedTimestamp {
+func makeResolvedTimestamp() resolvedTimestamp {
 	return resolvedTimestamp{
-		intentQ:  makeUnresolvedIntentQueue(),
-		settings: st,
+		intentQ: makeUnresolvedIntentQueue(),
 	}
 }
 
@@ -170,14 +156,10 @@ func (rts *resolvedTimestamp) consumeLogicalOp(
 		return rts.intentQ.UpdateTS(t.TxnID, t.Timestamp)
 
 	case *enginepb.MVCCCommitIntentOp:
-		// This assertion can be violated in mixed-version clusters, so make it
-		// fatal only in 24.1, gated by an envvar just in case. See:
+		// This assertion can be violated in mixed-version clusters prior
+		// to 24.1, so make it non-fatal for now. See:
 		// https://github.com/cockroachdb/cockroach/issues/104309
-		//
-		// TODO(erikgrinaker): make this unconditionally fatal.
-		fatal := rts.settings.Version.IsActive(ctx, clusterversion.V24_1Start) &&
-			!DisableCommitIntentTimestampAssertion
-		rts.assertOpAboveRTS(ctx, op, t.Timestamp, fatal)
+		rts.assertOpAboveRTS(ctx, op, t.Timestamp, false /* fatal */)
 		return rts.intentQ.DecrRef(t.TxnID, t.Timestamp)
 
 	case *enginepb.MVCCAbortIntentOp:
@@ -292,8 +274,11 @@ func (rts *resolvedTimestamp) assertOpAboveRTS(
 	ctx context.Context, op enginepb.MVCCLogicalOp, opTS hlc.Timestamp, fatal bool,
 ) {
 	if opTS.LessEq(rts.resolvedTS) {
+		// NB: MVCCLogicalOp.String() is only implemented for pointer receiver.
+		// We shadow the variable to avoid it escaping to the heap.
+		op := op
 		err := errors.AssertionFailedf(
-			"resolved timestamp %s equal to or above timestamp of operation %v", rts.resolvedTS, op)
+			"resolved timestamp %s equal to or above timestamp of operation %v", rts.resolvedTS, &op)
 		if fatal {
 			// TODO(erikgrinaker): use log.Fatalf. Panic for now, since tests expect
 			// it and to minimize code churn for backports.

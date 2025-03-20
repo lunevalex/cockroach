@@ -1,10 +1,7 @@
 // Copyright 2020 The Cockroach Authors.
 //
-// Licensed as a CockroachDB Enterprise file under the Cockroach Community
-// License (the "License"); you may not use this file except in compliance with
-// the License. You may obtain a copy of the License at
-//
-//     https://github.com/cockroachdb/cockroach/blob/master/licenses/CCL.txt
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package streamingest
 
@@ -176,7 +173,7 @@ func TestStreamIngestionJobWithRandomClient(t *testing.T) {
 		ServerArgs: base.TestServerArgs{
 			// Test hangs with test tenant. More investigation is required.
 			// Tracked with #76378.
-			DefaultTestTenant: base.TestControlsTenantsExplicitly,
+			DefaultTestTenant: base.TODOTestTenantDisabled,
 			Knobs: base.TestingKnobs{
 				TenantTestingKnobs: &sql.TenantTestingKnobs{
 					// Needed to pin down the ID of the replication target.
@@ -300,7 +297,7 @@ func assertExactlyEqualKVs(
 ) hlc.Timestamp {
 	// Iterate over the store.
 	store := tc.GetFirstStoreFromServer(t, 0)
-	it, err := store.TODOEngine().NewMVCCIterator(context.Background(), storage.MVCCKeyIterKind, storage.IterOptions{
+	it, err := store.TODOEngine().NewMVCCIterator(storage.MVCCKeyIterKind, storage.IterOptions{
 		LowerBound: tenantSpan.Key,
 		UpperBound: tenantSpan.EndKey,
 	})

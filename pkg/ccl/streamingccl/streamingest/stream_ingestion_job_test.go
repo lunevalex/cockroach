@@ -1,10 +1,7 @@
 // Copyright 2021 The Cockroach Authors.
 //
-// Licensed as a CockroachDB Enterprise file under the Cockroach Community
-// License (the "License"); you may not use this file except in compliance with
-// the License. You may obtain a copy of the License at
-//
-//     https://github.com/cockroachdb/cockroach/blob/master/licenses/CCL.txt
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package streamingest
 
@@ -14,6 +11,7 @@ import (
 	"fmt"
 	"net/url"
 	"testing"
+	"time"
 
 	"github.com/cockroachdb/cockroach/pkg/base"
 	_ "github.com/cockroachdb/cockroach/pkg/ccl/changefeedccl"
@@ -33,6 +31,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/testutils/serverutils"
 	"github.com/cockroachdb/cockroach/pkg/testutils/skip"
 	"github.com/cockroachdb/cockroach/pkg/testutils/sqlutils"
+	"github.com/cockroachdb/cockroach/pkg/testutils/testcluster"
 	"github.com/cockroachdb/cockroach/pkg/util/ctxgroup"
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
 	"github.com/cockroachdb/cockroach/pkg/util/leaktest"
@@ -64,14 +63,27 @@ func TestTenantStreamingCreationErrors(t *testing.T) {
 		sysSQL.ExpectErr(t, `pq: neither the source tenant "source" nor the destination tenant "system" \(0\) can be the system tenant`,
 			"CREATE TENANT system FROM REPLICATION OF source ON $1", srcPgURL.String())
 	})
-	t.Run("cannot set expiration window on creat tenant from replication", func(t *testing.T) {
-		sysSQL.ExpectErr(t, `pq: cannot specify EXPIRATION WINDOW option while starting a physical replication stream`,
-			"CREATE TENANT system FROM REPLICATION OF source ON $1 WITH EXPIRATION WINDOW='42s'", srcPgURL.String())
-	})
 	t.Run("destination cannot exist without resume timestamp", func(t *testing.T) {
 		sysSQL.Exec(t, "CREATE TENANT foo")
 		sysSQL.ExpectErr(t, "pq: tenant with name \"foo\" already exists",
 			"CREATE TENANT foo FROM REPLICATION OF source ON $1", srcPgURL.String())
+	})
+	t.Run("destination tenant cannot be online", func(t *testing.T) {
+		sysSQL.Exec(t, "CREATE TENANT bar")
+		sysSQL.Exec(t, "ALTER VIRTUAL CLUSTER bar START SERVICE SHARED")
+		sysSQL.ExpectErr(t, "service mode must be none",
+			"CREATE TENANT bar FROM REPLICATION OF source ON $1 WITH RESUME TIMESTAMP = now()", srcPgURL.String())
+	})
+	t.Run("destination tenant must have known revert timestamp", func(t *testing.T) {
+		sysSQL.Exec(t, "CREATE TENANT baz")
+		sysSQL.ExpectErr(t, "no last revert timestamp found",
+			"CREATE TENANT baz FROM REPLICATION OF source ON $1 WITH RESUME TIMESTAMP = now()", srcPgURL.String())
+	})
+	t.Run("destination tenant revert timestamp must match resume timestamp", func(t *testing.T) {
+		sysSQL.Exec(t, "CREATE TENANT bat")
+		sysSQL.Exec(t, "SELECT crdb_internal.unsafe_revert_tenant_to_timestamp('bat', cluster_logical_timestamp())")
+		sysSQL.ExpectErr(t, "doesn't match last revert timestamp",
+			"CREATE TENANT bat FROM REPLICATION OF source ON $1 WITH RESUME TIMESTAMP = cluster_logical_timestamp()", srcPgURL.String())
 	})
 	t.Run("external connection must be reachable", func(t *testing.T) {
 		badPgURL := srcPgURL
@@ -87,7 +99,7 @@ func TestTenantStreamingFailback(t *testing.T) {
 	defer log.Scope(t).Close(t)
 	ctx := context.Background()
 
-	skip.UnderStressRace(t, "test takes ~5 minutes under stressrace")
+	skip.WithIssue(t, 121221, "failback unsuppported on 23.2")
 
 	serverA, aDB, _ := serverutils.StartServer(t, base.TestServerArgs{
 		DefaultTestTenant: base.TestControlsTenantsExplicitly,
@@ -238,7 +250,8 @@ func TestTenantStreamingFailback(t *testing.T) {
 	sqlA.Exec(t, "ALTER VIRTUAL CLUSTER f STOP SERVICE")
 	waitUntilTenantServerStopped(t, serverA.SystemLayer(), "f")
 	t.Logf("starting replication g->f")
-	sqlA.Exec(t, "ALTER VIRTUAL CLUSTER f START REPLICATION OF g ON $1", serverBURL.String())
+	sqlA.Exec(t, fmt.Sprintf("SELECT crdb_internal.unsafe_revert_tenant_to_timestamp('f', %s)", ts1))
+	sqlA.Exec(t, fmt.Sprintf("CREATE VIRTUAL CLUSTER f FROM REPLICATION OF g ON $1 WITH RESUME TIMESTAMP = '%s'", ts1), serverBURL.String())
 	_, consumerFJobID := replicationtestutils.GetStreamJobIds(t, ctx, sqlA, roachpb.TenantName("f"))
 	t.Logf("waiting for f@%s", ts2)
 	replicationtestutils.WaitUntilReplicatedTime(t,
@@ -264,13 +277,11 @@ func TestTenantStreamingFailback(t *testing.T) {
 	jobutils.WaitForJobToSucceed(t, sqlA, jobspb.JobID(consumerFJobID))
 	sqlA.Exec(t, "ALTER VIRTUAL CLUSTER f START SERVICE SHARED")
 
-	sqlB.ExpectErr(t, "service mode must be none", "ALTER VIRTUAL CLUSTER g START REPLICATION OF f ON $1", serverAURL.String())
-
 	sqlB.Exec(t, "ALTER VIRTUAL CLUSTER g STOP SERVICE")
 	waitUntilTenantServerStopped(t, serverB.SystemLayer(), "g")
-	sqlB.ExpectErr(t, "cannot specify EXPIRATION WINDOW option while starting a physical replication stream", "ALTER VIRTUAL CLUSTER g START REPLICATION OF f ON $1 WITH EXPIRATION WINDOW = '1ms'", serverAURL.String())
 	t.Logf("starting replication f->g")
-	sqlB.Exec(t, "ALTER VIRTUAL CLUSTER g START REPLICATION OF f ON $1", serverAURL.String())
+	sqlB.Exec(t, fmt.Sprintf("SELECT crdb_internal.unsafe_revert_tenant_to_timestamp('g', %s)", ts3))
+	sqlB.Exec(t, fmt.Sprintf("CREATE VIRTUAL CLUSTER g FROM REPLICATION OF f ON $1 WITH RESUME TIMESTAMP = '%s'", ts3), serverAURL.String())
 	_, consumerGJobID = replicationtestutils.GetStreamJobIds(t, ctx, sqlB, roachpb.TenantName("g"))
 	t.Logf("waiting for g@%s", ts3)
 	replicationtestutils.WaitUntilReplicatedTime(t,
@@ -288,6 +299,96 @@ func TestTenantStreamingFailback(t *testing.T) {
 	defer tenF2DB.Close()
 	sqlTenF = sqlutils.MakeSQLRunner(tenF2DB)
 	sqlTenF.CheckQueryResults(t, "SELECT max(k) FROM test.t", [][]string{{"555"}})
+}
+
+func TestCutoverBuiltin(t *testing.T) {
+	defer leaktest.AfterTest(t)()
+	ctx := context.Background()
+
+	args := base.TestClusterArgs{
+		ServerArgs: base.TestServerArgs{
+			// Disable the test tenant as the test below looks for a
+			// streaming job assuming that it's within the system tenant.
+			// Tracked with #76378.
+			DefaultTestTenant: base.TODOTestTenantDisabled,
+			Knobs: base.TestingKnobs{
+				JobsTestingKnobs: jobs.NewTestingKnobsWithShortIntervals(),
+			},
+		},
+	}
+	tc := testcluster.StartTestCluster(t, 1, args)
+	defer tc.Stopper().Stop(ctx)
+	registry := tc.Server(0).JobRegistry().(*jobs.Registry)
+	sqlDB := sqlutils.MakeSQLRunner(tc.ServerConn(0))
+	db := sqlDB.DB
+
+	streamIngestJobRecord := jobs.Record{
+		Description: "test stream ingestion",
+		Username:    username.RootUserName(),
+		Details: jobspb.StreamIngestionDetails{
+			StreamAddress: "randomgen://test",
+			Span:          roachpb.Span{Key: keys.LocalMax, EndKey: keys.LocalMax.Next()},
+		},
+		Progress: jobspb.StreamIngestionProgress{},
+	}
+	var job *jobs.StartableJob
+	id := registry.MakeJobID()
+	err := tc.Server(0).InternalDB().(isql.DB).Txn(ctx, func(
+		ctx context.Context, txn isql.Txn,
+	) (err error) {
+		return registry.CreateStartableJobWithTxn(ctx, &job, id, txn, streamIngestJobRecord)
+	})
+	require.NoError(t, err)
+
+	// Check that sentinel is not set.
+	progress := job.Progress()
+	sp, ok := progress.GetDetails().(*jobspb.Progress_StreamIngest)
+	require.True(t, ok)
+	require.True(t, sp.StreamIngest.CutoverTime.IsEmpty())
+
+	var replicatedTime time.Time
+	err = job.NoTxn().Update(ctx, func(_ isql.Txn, md jobs.JobMetadata, ju *jobs.JobUpdater) error {
+		if err := md.CheckRunningOrReverting(); err != nil {
+			return err
+		}
+		replicatedTime = timeutil.Now().Round(time.Microsecond)
+		hlcReplicatedTime := hlc.Timestamp{WallTime: replicatedTime.UnixNano()}
+
+		progress := md.Progress
+		streamProgress := progress.Details.(*jobspb.Progress_StreamIngest).StreamIngest
+		streamProgress.ReplicatedTime = hlcReplicatedTime
+		progress.Progress = &jobspb.Progress_HighWater{
+			HighWater: &hlcReplicatedTime,
+		}
+
+		ju.UpdateProgress(progress)
+		return nil
+	})
+	require.NoError(t, err)
+
+	// Ensure that the builtin runs locally.
+	var explain string
+	err = db.QueryRowContext(ctx,
+		`EXPLAIN SELECT crdb_internal.complete_stream_ingestion_job($1, $2)`, job.ID(),
+		replicatedTime).Scan(&explain)
+	require.NoError(t, err)
+	require.Equal(t, "distribution: local", explain)
+
+	var jobID int64
+	err = db.QueryRowContext(
+		ctx,
+		`SELECT crdb_internal.complete_stream_ingestion_job($1, $2)`,
+		job.ID(), replicatedTime).Scan(&jobID)
+	require.NoError(t, err)
+	require.Equal(t, job.ID(), jobspb.JobID(jobID))
+
+	// Check that sentinel is set on the job progress.
+	sj, err := registry.LoadJob(ctx, job.ID())
+	require.NoError(t, err)
+	progress = sj.Progress()
+	sp, ok = progress.GetDetails().(*jobspb.Progress_StreamIngest)
+	require.True(t, ok)
+	require.Equal(t, hlc.Timestamp{WallTime: replicatedTime.UnixNano()}, sp.StreamIngest.CutoverTime)
 }
 
 // TestReplicationJobResumptionStartTime tests that a replication job picks the
@@ -413,6 +514,7 @@ func TestCutoverFractionProgressed(t *testing.T) {
 				},
 			},
 		},
+		DefaultTestTenant: base.TODOTestTenantDisabled,
 	})
 	defer s.Stopper().Stop(ctx)
 

@@ -1,12 +1,7 @@
 // Copyright 2019 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package kvserver
 
@@ -28,7 +23,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/rpc"
 	"github.com/cockroachdb/cockroach/pkg/server/telemetry"
 	"github.com/cockroachdb/cockroach/pkg/util"
-	"github.com/cockroachdb/cockroach/pkg/util/envutil"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/cockroach/pkg/util/timeutil"
 	"github.com/cockroachdb/cockroach/pkg/util/uuid"
@@ -41,18 +35,6 @@ const (
 	splitQueueThrottleDuration = 5 * time.Second
 	mergeQueueThrottleDuration = 5 * time.Second
 )
-
-// defRaftConnClass is the default rpc.ConnectionClass used for non-system raft
-// traffic. Normally it is RaftClass, but can be flipped to DefaultClass if the
-// corresponding env variable is true.
-//
-// NB: for a subset of system ranges, SystemClass is used instead of this.
-var defRaftConnClass = func() rpc.ConnectionClass {
-	if envutil.EnvOrDefaultBool("COCKROACH_RAFT_USE_DEFAULT_CONNECTION_CLASS", false) {
-		return rpc.DefaultClass
-	}
-	return rpc.RaftClass
-}()
 
 // loadInitializedReplicaForTesting loads and constructs an initialized Replica,
 // after checking its invariants.
@@ -161,7 +143,7 @@ func newUninitializedReplicaWithoutRaftGroup(
 				QuotaAlloc: p.quotaAlloc,
 				CmdID:      p.idKey,
 				SeedID:     seedID,
-				Req:        p.Request,
+				Req:        *p.Request,
 			})
 		}
 	}
@@ -180,6 +162,7 @@ func newUninitializedReplicaWithoutRaftGroup(
 			store.rebalanceObjManager.Objective().ToSplitObjective(),
 		)
 	}
+	r.lastProblemRangeReplicateEnqueueTime.Store(store.Clock().PhysicalTime())
 
 	// NB: the state will be loaded when the replica gets initialized.
 	r.mu.state = uninitState
@@ -409,7 +392,7 @@ func (r *Replica) setDescLockedRaftMuLocked(ctx context.Context, desc *roachpb.R
 
 	r.rangeStr.store(r.replicaID, desc)
 	r.isInitialized.Set(desc.IsInitialized())
-	r.connectionClass.set(rpc.ConnectionClassForKey(desc.StartKey, defRaftConnClass))
+	r.connectionClass.set(rpc.ConnectionClassForKey(desc.StartKey))
 	r.concMgr.OnRangeDescUpdated(desc)
 	r.mu.state.Desc = desc
 	r.mu.replicaFlowControlIntegration.onDescChanged(ctx)

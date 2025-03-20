@@ -1,12 +1,7 @@
 // Copyright 2020 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package server
 
@@ -19,6 +14,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/kvstorage"
 	"github.com/cockroachdb/cockroach/pkg/server/serverpb"
 	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
+	"github.com/cockroachdb/cockroach/pkg/storage"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/cockroach/pkg/util/syncutil"
 	"github.com/cockroachdb/errors"
@@ -53,9 +49,9 @@ func (m *migrationServer) ValidateTargetClusterVersion(
 	// We're validating the following:
 	//
 	//   node's minimum supported version <= target version <= node's binary version
-	if targetCV.Less(versionSetting.MinSupportedVersion()) {
+	if targetCV.Less(versionSetting.BinaryMinSupportedVersion()) {
 		msg := fmt.Sprintf("target cluster version %s less than binary's min supported version %s",
-			targetCV, versionSetting.MinSupportedVersion())
+			targetCV, versionSetting.BinaryMinSupportedVersion())
 		log.Warningf(ctx, "%s", msg)
 		return nil, errors.Newf("%s", redact.Safe(msg))
 	}
@@ -72,9 +68,9 @@ func (m *migrationServer) ValidateTargetClusterVersion(
 	// It would be a bit clearer to use negative internal versions, to be able
 	// to surface more obvious errors. Alternatively we could simply construct
 	// a better error message here.
-	if versionSetting.LatestVersion().Less(targetCV.Version) {
+	if versionSetting.BinaryVersion().Less(targetCV.Version) {
 		msg := fmt.Sprintf("binary version %s less than target cluster version %s",
-			versionSetting.LatestVersion(), targetCV)
+			versionSetting.BinaryVersion(), targetCV)
 		log.Warningf(ctx, "%s", msg)
 		return nil, errors.Newf("%s", redact.Safe(msg))
 	}
@@ -112,8 +108,8 @@ func bumpClusterVersion(
 
 	versionSetting := st.Version
 	prevCV, err := kvstorage.SynthesizeClusterVersionFromEngines(
-		ctx, engines, versionSetting.LatestVersion(),
-		versionSetting.MinSupportedVersion(),
+		ctx, engines, versionSetting.BinaryVersion(),
+		versionSetting.BinaryMinSupportedVersion(),
 	)
 	if err != nil {
 		return err
@@ -169,8 +165,7 @@ func (m *migrationServer) SyncAllEngines(
 		m.server.node.waitForAdditionalStoreInit()
 
 		for _, eng := range m.server.engines {
-			batch := eng.NewBatch()
-			if err := batch.LogData(nil); err != nil {
+			if err := storage.WriteSyncNoop(eng); err != nil {
 				return err
 			}
 		}

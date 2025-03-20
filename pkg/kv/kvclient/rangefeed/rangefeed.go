@@ -1,12 +1,7 @@
 // Copyright 2020 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package rangefeed
 
@@ -206,7 +201,6 @@ func (f *RangeFeed) Start(ctx context.Context, spans []roachpb.Span) error {
 
 	for _, sp := range spans {
 		if _, err := frontier.Forward(sp, f.initialTimestamp); err != nil {
-			frontier.Release() // release whatever was allocated.
 			return err
 		}
 	}
@@ -219,8 +213,6 @@ func (f *RangeFeed) Start(ctx context.Context, spans []roachpb.Span) error {
 	})
 
 	runWithFrontier := func(ctx context.Context) {
-		defer frontier.Release()
-
 		// pprof.Do function does exactly what we do here, but it also results in
 		// pprof.Do function showing up in the stack traces -- so, just set and reset
 		// labels manually.
@@ -266,11 +258,11 @@ func (f *RangeFeed) Close() {
 // will be reset.
 const resetThreshold = 30 * time.Second
 
-var useMuxRangeFeed = util.ConstantWithMetamorphicTestBool("use-mux-rangefeed", true)
+var useMuxRangeFeed = util.ConstantWithMetamorphicTestBool("use-mux-rangefeed", false)
 
 // run will run the RangeFeed until the context is canceled or if the client
 // indicates that an initial scan error is non-recoverable.
-func (f *RangeFeed) run(ctx context.Context, frontier span.Frontier) {
+func (f *RangeFeed) run(ctx context.Context, frontier *span.Frontier) {
 	defer f.running.Done()
 	r := retry.StartWithCtx(ctx, f.retryOptions)
 	restartLogEvery := log.Every(10 * time.Second)
@@ -294,8 +286,8 @@ func (f *RangeFeed) run(ctx context.Context, frontier span.Frontier) {
 	if f.scanConfig.overSystemTable {
 		rangefeedOpts = append(rangefeedOpts, kvcoord.WithSystemTablePriority())
 	}
-	if !useMuxRangeFeed {
-		rangefeedOpts = append(rangefeedOpts, kvcoord.WithoutMuxRangeFeed())
+	if f.useMuxRangefeed {
+		rangefeedOpts = append(rangefeedOpts, kvcoord.WithMuxRangeFeed())
 	}
 	if f.withDiff {
 		rangefeedOpts = append(rangefeedOpts, kvcoord.WithDiff())
@@ -353,7 +345,7 @@ func (f *RangeFeed) run(ctx context.Context, frontier span.Frontier) {
 
 // processEvents processes events sent by the rangefeed on the eventCh.
 func (f *RangeFeed) processEvents(
-	ctx context.Context, frontier span.Frontier, eventCh <-chan kvcoord.RangeFeedMessage,
+	ctx context.Context, frontier *span.Frontier, eventCh <-chan kvcoord.RangeFeedMessage,
 ) error {
 	for {
 		select {

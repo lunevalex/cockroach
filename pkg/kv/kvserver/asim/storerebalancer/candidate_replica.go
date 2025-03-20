@@ -1,12 +1,7 @@
 // Copyright 2022 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package storerebalancer
 
@@ -77,10 +72,10 @@ func (sr *simulatorReplica) GetFirstIndex() kvpb.RaftIndex {
 	return 2
 }
 
-// LoadSpanConfig returns the authoritative range descriptor as well
+// DescAndSpanConfig returns the authoritative range descriptor as well
 // as the span config for the replica.
-func (sr *simulatorReplica) LoadSpanConfig(ctx context.Context) (*roachpb.SpanConfig, error) {
-	return sr.rng.SpanConfig(), nil
+func (sr *simulatorReplica) DescAndSpanConfig() (*roachpb.RangeDescriptor, *roachpb.SpanConfig) {
+	return sr.rng.Descriptor(), sr.rng.SpanConfig()
 }
 
 // Desc returns the authoritative range descriptor, acquiring a replica lock in

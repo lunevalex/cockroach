@@ -1,12 +1,7 @@
 // Copyright 2018 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package sql
 
@@ -44,7 +39,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/pgerror"
 	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/pgnotice"
 	"github.com/cockroachdb/cockroach/pkg/sql/physicalplan"
-	"github.com/cockroachdb/cockroach/pkg/sql/regions"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/asof"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/eval"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
@@ -107,7 +101,7 @@ func (ex *connExecutor) execStmt(
 ) (fsm.Event, fsm.EventPayload, error) {
 	ast := parserStmt.AST
 	if log.V(2) || logStatementsExecuteEnabled.Get(&ex.server.cfg.Settings.SV) ||
-		log.HasSpan(ctx) {
+		log.HasSpanOrEvent(ctx) {
 		log.VEventf(ctx, 2, "executing: %s in state: %s", ast, ex.machine.CurState())
 	}
 
@@ -161,13 +155,7 @@ func (ex *connExecutor) execStmt(
 		panic(errors.AssertionFailedf("unexpected txn state: %#v", ex.machine.CurState()))
 	}
 
-	if ex.sessionData().IdleInSessionTimeout > 0 {
-		// Cancel the session if the idle time exceeds the idle in session timeout.
-		ex.mu.IdleInSessionTimeout = timeout{time.AfterFunc(
-			ex.sessionData().IdleInSessionTimeout,
-			ex.CancelSession,
-		)}
-	}
+	ex.startIdleInSessionTimeout()
 
 	if ex.sessionData().IdleInTransactionSessionTimeout > 0 {
 		startIdleInTransactionSessionTimeout := func() {
@@ -195,6 +183,17 @@ func (ex *connExecutor) execStmt(
 	}
 
 	return ev, payload, err
+}
+
+// startIdleInSessionTimeout will start the timer for the idle in session timeout.
+func (ex *connExecutor) startIdleInSessionTimeout() {
+	if ex.sessionData().IdleInSessionTimeout > 0 {
+		// Cancel the session if the idle time exceeds the idle in session timeout.
+		ex.mu.IdleInSessionTimeout = timeout{time.AfterFunc(
+			ex.sessionData().IdleInSessionTimeout,
+			ex.CancelSession,
+		)}
+	}
 }
 
 func (ex *connExecutor) recordFailure() {
@@ -502,9 +501,9 @@ func (ex *connExecutor) execStmtInOpenState(
 			cancelQuery()
 		})
 
-		if ex.executorType != executorTypeInternal {
-			ex.metrics.EngineMetrics.SQLActiveStatements.Dec(1)
-		}
+		// Note ex.metrics is Server.Metrics for the connExecutor that serves the
+		// client connection, and is Server.InternalMetrics for internal executors.
+		ex.metrics.EngineMetrics.SQLActiveStatements.Dec(1)
 
 		// If the query timed out, we intercept the error, payload, and event here
 		// for the same reasons we intercept them for canceled queries above.
@@ -533,9 +532,9 @@ func (ex *connExecutor) execStmtInOpenState(
 		}
 	}(ctx, res)
 
-	if ex.executorType != executorTypeInternal {
-		ex.metrics.EngineMetrics.SQLActiveStatements.Inc(1)
-	}
+	// Note ex.metrics is Server.Metrics for the connExecutor that serves the
+	// client connection, and is Server.InternalMetrics for internal executors.
+	ex.metrics.EngineMetrics.SQLActiveStatements.Inc(1)
 
 	// TODO(sql-sessions): persist the planner for a pausable portal, and reuse
 	// it for each re-execution.
@@ -547,6 +546,40 @@ func (ex *connExecutor) execStmtInOpenState(
 	p.sessionDataMutatorIterator.paramStatusUpdater = res
 	p.noticeSender = res
 	ih := &p.instrumentation
+
+	if ex.executorType != executorTypeInternal {
+		// NB: ex.metrics includes internal executor transactions when executorType
+		// is executorTypeInternal, so that's why we exclude internal executors
+		// in the conditional.
+		curOpen := ex.metrics.EngineMetrics.SQLTxnsOpen.Value()
+		if maxOpen := maxOpenTransactions.Get(&ex.server.cfg.Settings.SV); maxOpen > 0 {
+			if curOpen > maxOpen {
+				hasAdmin, err := ex.planner.HasAdminRole(ctx)
+				if err != nil {
+					return makeErrEvent(err)
+				}
+				if !hasAdmin {
+					return makeErrEvent(errors.WithHintf(
+						pgerror.Newf(
+							pgcode.ConfigurationLimitExceeded,
+							"cannot execute operation due to server.max_open_transactions_per_gateway cluster setting",
+						),
+						"the maximum number of open transactions is %d", maxOpen,
+					))
+				}
+			}
+		}
+
+		// Enforce license policies. Throttling can occur if there is no valid
+		// license or if the existing one has expired.
+		if isSQLOkayToThrottle(ast) {
+			if notice, err := ex.server.cfg.LicenseEnforcer.MaybeFailIfThrottled(ctx, curOpen); err != nil {
+				return makeErrEvent(err)
+			} else if notice != nil {
+				p.BufferClientNotice(ctx, notice)
+			}
+		}
+	}
 
 	// Special top-level handling for EXPLAIN ANALYZE.
 	if e, ok := ast.(*tree.ExplainAnalyze); ok {
@@ -1253,6 +1286,10 @@ func (ex *connExecutor) handleAOST(ctx context.Context, stmt tree.Statement) err
 					return err
 				}
 			}
+			if err := ex.state.setReadOnlyMode(tree.ReadOnly); err != nil {
+				return err
+			}
+			p.extendedEvalCtx.TxnReadOnly = ex.state.readOnly.Load()
 			return nil
 		}
 		if *p.extendedEvalCtx.AsOfSystemTime == *asOf {
@@ -1332,17 +1369,12 @@ func (ex *connExecutor) checkDescriptorTwoVersionInvariant(ctx context.Context) 
 	if knobs := ex.server.cfg.SchemaChangerTestingKnobs; knobs != nil {
 		inRetryBackoff = knobs.TwoVersionLeaseViolation
 	}
-	regionCache, err := regions.NewCachedDatabaseRegions(ctx, ex.server.cfg.DB, ex.server.cfg.LeaseManager)
-	if err != nil {
-		return err
-	}
+
 	return descs.CheckTwoVersionInvariant(
 		ctx,
 		ex.server.cfg.Clock,
-		ex.server.cfg.InternalDB,
+		ex.server.cfg.InternalDB.Executor(),
 		ex.extraTxnState.descCollection,
-		regionCache,
-		ex.server.cfg.Settings,
 		ex.state.mu.txn,
 		inRetryBackoff,
 	)
@@ -1775,13 +1807,6 @@ func (ex *connExecutor) dispatchToExecutionEngine(
 			ppInfo.dispatchToExecutionEngine.cleanup.appendFunc(namedFunc{
 				fName: "log statement",
 				f: func() {
-					if planner.extendedEvalCtx.Annotations == nil {
-						// This is a safety check in case resetPlanner() was
-						// executed, but then we never set the annotations on
-						// the planner. Formatting the stmt for logging requires
-						// non-nil annotations.
-						planner.extendedEvalCtx.Annotations = &planner.semaCtx.Annotations
-					}
 					planner.maybeLogStatement(
 						ctx,
 						ex.executorType,
@@ -1864,7 +1889,7 @@ func (ex *connExecutor) dispatchToExecutionEngine(
 			// un-pausable (normal) portal.
 			// With pauseInfo is nil, no cleanup function will be added to the stack
 			// and all clean-up steps will be performed as for normal portals.
-			// TODO(#115887): We may need to move resetting pauseInfo before we add
+			// TODO(harding): We may need to move resetting pauseInfo before we add
 			// the pausable portal cleanup step above.
 			planner.pausablePortal.pauseInfo = nil
 			// We need this so that the result consumption for this portal cannot be
@@ -1875,7 +1900,7 @@ func (ex *connExecutor) dispatchToExecutionEngine(
 			}
 		}
 	}
-	distributePlan := getPlanDistribution(
+	distributePlan, distSQLProhibitedErr := getPlanDistribution(
 		ctx, planner.Descriptors().HasUncommittedTypes(),
 		distSQLMode, planner.curPlan.main,
 	)
@@ -1910,6 +1935,10 @@ func (ex *connExecutor) dispatchToExecutionEngine(
 		panic(err)
 	}
 
+	if !planner.ExecCfg().Codec.ForSystemTenant() {
+		planner.curPlan.flags.Set(planFlagTenant)
+	}
+
 	switch distributePlan {
 	case physicalplan.FullyDistributedPlan:
 		planner.curPlan.flags.Set(planFlagFullyDistributed)
@@ -1929,7 +1958,7 @@ func (ex *connExecutor) dispatchToExecutionEngine(
 	}
 	ex.sessionTracing.TraceExecStart(ctx, "distributed")
 	stats, err = ex.execWithDistSQLEngine(
-		ctx, planner, stmt.AST.StatementReturnType(), res, distribute, progAtomic,
+		ctx, planner, stmt.AST.StatementReturnType(), res, distribute, progAtomic, distSQLProhibitedErr,
 	)
 	if ppInfo := getPausablePortalInfo(); ppInfo != nil {
 		// For pausable portals, we log the stats when closing the portal, so we need
@@ -1981,7 +2010,7 @@ func (ex *connExecutor) dispatchToExecutionEngine(
 	}
 
 	if ex.server.cfg.TestingKnobs.AfterExecute != nil {
-		ex.server.cfg.TestingKnobs.AfterExecute(ctx, stmt.String(), res.Err())
+		ex.server.cfg.TestingKnobs.AfterExecute(ctx, stmt.String(), ex.executorType == executorTypeInternal, res.Err())
 	}
 
 	if limitsErr := ex.handleTxnRowsWrittenReadLimits(ctx); limitsErr != nil && res.Err() == nil {
@@ -2060,12 +2089,11 @@ func populateQueryLevelStats(
 			if costController := cfg.DistSQLSrv.TenantCostController; costController != nil {
 				if costCfg := costController.GetCostConfig(); costCfg != nil {
 					networkEgressRUEstimate := costCfg.PGWireEgressCost(topLevelStats.networkEgressEstimate)
-					ih.queryLevelStatsWithErr.Stats.RUEstimate += float64(networkEgressRUEstimate)
-					ih.queryLevelStatsWithErr.Stats.RUEstimate += cpuStats.EndCollection(ctx)
+					ih.queryLevelStatsWithErr.Stats.RUEstimate += int64(networkEgressRUEstimate)
+					ih.queryLevelStatsWithErr.Stats.RUEstimate += int64(cpuStats.EndCollection(ctx))
 				}
 			}
 		}
-		ih.queryLevelStatsWithErr.Stats.ClientTime = topLevelStats.clientTime
 	}
 	if ih.traceMetadata != nil && ih.explainPlan != nil {
 		ih.traceMetadata.annotateExplain(
@@ -2286,6 +2314,8 @@ func (ex *connExecutor) makeExecPlan(ctx context.Context, planner *planner) erro
 			if hasLargeScan {
 				// We don't execute the statement if:
 				// - plan contains a full table or full index scan.
+				//   TODO(#123783): this currently doesn't apply to full scans
+				//   of virtual tables.
 				// - the session setting disallows full table/index scans.
 				// - the scan is considered large.
 				// - the query is not an internal query.
@@ -2326,10 +2356,6 @@ type topLevelQueryStats struct {
 	// networkEgressEstimate is an estimate for the number of bytes sent to the
 	// client. It is used for estimating the number of RUs consumed by a query.
 	networkEgressEstimate int64
-	// clientTime is the amount of time query execution was blocked on the
-	// client receiving the PGWire protocol messages (as well as construcing
-	// those messages).
-	clientTime time.Duration
 }
 
 func (s *topLevelQueryStats) add(other *topLevelQueryStats) {
@@ -2337,7 +2363,6 @@ func (s *topLevelQueryStats) add(other *topLevelQueryStats) {
 	s.rowsRead += other.rowsRead
 	s.rowsWritten += other.rowsWritten
 	s.networkEgressEstimate += other.networkEgressEstimate
-	s.clientTime += other.clientTime
 }
 
 // execWithDistSQLEngine converts a plan to a distributed SQL physical plan and
@@ -2353,6 +2378,7 @@ func (ex *connExecutor) execWithDistSQLEngine(
 	res RestrictedCommandResult,
 	distribute DistributionType,
 	progressAtomic *uint64,
+	distSQLProhibitedErr error,
 ) (topLevelQueryStats, error) {
 	defer planner.curPlan.savePlanInfo()
 	recv := MakeDistSQLReceiver(
@@ -2362,7 +2388,6 @@ func (ex *connExecutor) execWithDistSQLEngine(
 		ex.server.cfg.Clock,
 		&ex.sessionTracing,
 	)
-	recv.measureClientTime = planner.instrumentation.ShouldCollectExecStats()
 	recv.progressAtomic = progressAtomic
 	if ex.server.cfg.TestingKnobs.DistSQLReceiverPushCallbackFactory != nil {
 		recv.testingKnobs.pushCallback = ex.server.cfg.TestingKnobs.DistSQLReceiverPushCallbackFactory(planner.stmt.SQL)
@@ -2377,24 +2402,23 @@ func (ex *connExecutor) execWithDistSQLEngine(
 		evalCtx := planner.ExtendedEvalContext()
 		planCtx := ex.server.cfg.DistSQLPlanner.NewPlanningCtx(ctx, evalCtx, planner, planner.txn, distribute)
 		planCtx.setUpForMainQuery(ctx, planner, recv)
+		planCtx.distSQLProhibitedErr = distSQLProhibitedErr
 
 		var evalCtxFactory func(usedConcurrently bool) *extendedEvalContext
 		if len(planner.curPlan.subqueryPlans) != 0 ||
 			len(planner.curPlan.cascades) != 0 ||
 			len(planner.curPlan.checkPlans) != 0 {
-			var serialEvalCtx extendedEvalContext
-			ex.initEvalCtx(ctx, &serialEvalCtx, planner)
+			serialEvalCtx := planner.ExtendedEvalContextCopyAndReset()
+			ex.initEvalCtx(ctx, serialEvalCtx, planner)
 			evalCtxFactory = func(usedConcurrently bool) *extendedEvalContext {
 				// Reuse the same object if this factory is not used concurrently.
-				factoryEvalCtx := &serialEvalCtx
+				factoryEvalCtx := serialEvalCtx
 				if usedConcurrently {
-					factoryEvalCtx = &extendedEvalContext{}
+					factoryEvalCtx = planner.ExtendedEvalContextCopyAndReset()
 					ex.initEvalCtx(ctx, factoryEvalCtx, planner)
 				}
 				ex.resetEvalCtx(factoryEvalCtx, planner.txn, planner.ExtendedEvalContext().StmtTimestamp)
-				factoryEvalCtx.Placeholders = &planner.semaCtx.Placeholders
-				factoryEvalCtx.Annotations = &planner.semaCtx.Annotations
-				factoryEvalCtx.SessionID = planner.ExtendedEvalContext().SessionID
+				planner.ExtendedEvalContextReset(factoryEvalCtx)
 				return factoryEvalCtx
 			}
 		}
@@ -3117,13 +3141,7 @@ func (ex *connExecutor) onTxnFinish(ctx context.Context, ev txnEvent, txnErr err
 		ex.phaseTimes.SetSessionPhaseTime(sessionphase.SessionEndExecTransaction, timeutil.Now())
 		transactionFingerprintID :=
 			appstatspb.TransactionFingerprintID(ex.extraTxnState.transactionStatementsHash.Sum())
-
-		err := ex.txnFingerprintIDCache.Add(transactionFingerprintID)
-		if err != nil {
-			if log.V(1) {
-				log.Warningf(ctx, "failed to enqueue transactionFingerprintID = %d: %s", transactionFingerprintID, err)
-			}
-		}
+		ex.txnFingerprintIDCache.Add(transactionFingerprintID)
 
 		ex.statsCollector.EndTransaction(
 			ctx,
@@ -3139,7 +3157,7 @@ func (ex *connExecutor) onTxnFinish(ctx context.Context, ev txnEvent, txnErr err
 			)
 		}
 
-		err = ex.recordTransactionFinish(ctx, transactionFingerprintID, ev, implicit, txnStart, txnErr)
+		err := ex.recordTransactionFinish(ctx, transactionFingerprintID, ev, implicit, txnStart, txnErr)
 		if err != nil {
 			if log.V(1) {
 				log.Warningf(ctx, "failed to record transaction stats: %s", err)
@@ -3182,10 +3200,6 @@ func (ex *connExecutor) recordTransactionStart(txnID uuid.UUID) {
 		TxnFingerprintID: appstatspb.InvalidTransactionFingerprintID,
 	})
 
-	tracingEnabled := ex.planner.ExtendedEvalContext().Tracing.Enabled()
-	ex.extraTxnState.shouldLogToTelemetry =
-		ex.server.TelemetryLoggingMetrics.shouldEmitTransactionLog(tracingEnabled, ex.executorType == executorTypeInternal)
-
 	ex.state.mu.RLock()
 	txnStart := ex.state.mu.txnStart
 	ex.state.mu.RUnlock()
@@ -3197,7 +3211,6 @@ func (ex *connExecutor) recordTransactionStart(txnID uuid.UUID) {
 	ex.extraTxnState.transactionStatementsHash = util.MakeFNV64()
 	ex.extraTxnState.transactionStatementFingerprintIDs = nil
 	ex.extraTxnState.numRows = 0
-	ex.extraTxnState.shouldCollectTxnExecutionStats = false
 	ex.extraTxnState.accumulatedStats = execstats.QueryLevelStats{}
 	ex.extraTxnState.idleLatency = 0
 	ex.extraTxnState.rowsRead = 0
@@ -3205,18 +3218,26 @@ func (ex *connExecutor) recordTransactionStart(txnID uuid.UUID) {
 	ex.extraTxnState.rowsWritten = 0
 	ex.extraTxnState.rowsWrittenLogged = false
 	ex.extraTxnState.rowsReadLogged = false
-	if txnExecStatsSampleRate := collectTxnStatsSampleRate.Get(&ex.server.GetExecutorConfig().Settings.SV); txnExecStatsSampleRate > 0 {
-		ex.extraTxnState.shouldCollectTxnExecutionStats = txnExecStatsSampleRate > ex.rng.Float64()
-	}
 
-	if ex.executorType != executorTypeInternal {
-		ex.metrics.EngineMetrics.SQLTxnsOpen.Inc(1)
-	}
+	txnExecStatsSampleRate := collectTxnStatsSampleRate.Get(&ex.server.GetExecutorConfig().Settings.SV)
+	ex.extraTxnState.shouldCollectTxnExecutionStats = !ex.server.cfg.TestingKnobs.DisableProbabilisticSampling &&
+		txnExecStatsSampleRate > ex.rng.Float64()
+
+	// Note ex.metrics is Server.Metrics for the connExecutor that serves the
+	// client connection, and is Server.InternalMetrics for internal executors.
+	ex.metrics.EngineMetrics.SQLTxnsOpen.Inc(1)
 
 	ex.extraTxnState.shouldExecuteOnTxnFinish = true
 	ex.extraTxnState.txnFinishClosure.txnStartTime = txnStart
 	ex.extraTxnState.txnFinishClosure.implicit = ex.implicitTxn()
 	ex.extraTxnState.shouldExecuteOnTxnRestart = true
+
+	// Determine telemetry logging.
+	isTracing := ex.planner.ExtendedEvalContext().Tracing.Enabled()
+	ex.extraTxnState.shouldLogToTelemetry, ex.extraTxnState.telemetrySkippedTxns =
+		ex.server.TelemetryLoggingMetrics.shouldEmitTransactionLog(isTracing,
+			ex.executorType == executorTypeInternal,
+			ex.applicationName.Load().(string))
 
 	ex.statsCollector.StartTransaction()
 
@@ -3243,14 +3264,14 @@ func (ex *connExecutor) recordTransactionFinish(
 	txnEnd := timeutil.Now()
 	txnTime := txnEnd.Sub(txnStart)
 	ex.totalActiveTimeStopWatch.Stop()
-	if ex.executorType != executorTypeInternal {
-		ex.metrics.EngineMetrics.SQLTxnsOpen.Dec(1)
-	}
-	ex.metrics.EngineMetrics.SQLTxnLatency.RecordValue(txnTime.Nanoseconds())
 
+	// Note ex.metrics is Server.Metrics for the connExecutor that serves the
+	// client connection, and is Server.InternalMetrics for internal executors.
 	if contentionDuration := ex.extraTxnState.accumulatedStats.ContentionTime.Nanoseconds(); contentionDuration > 0 {
 		ex.metrics.EngineMetrics.SQLContendedTxns.Inc(1)
 	}
+	ex.metrics.EngineMetrics.SQLTxnsOpen.Dec(1)
+	ex.metrics.EngineMetrics.SQLTxnLatency.RecordValue(txnTime.Nanoseconds())
 
 	ex.txnIDCacheWriter.Record(contentionpb.ResolvedTxnID{
 		TxnID:            ev.txnID,
@@ -3300,10 +3321,24 @@ func (ex *connExecutor) recordTransactionFinish(
 	}
 
 	if ex.server.cfg.TestingKnobs.OnRecordTxnFinish != nil {
-		ex.server.cfg.TestingKnobs.OnRecordTxnFinish(ex.executorType == executorTypeInternal, ex.phaseTimes, ex.planner.stmt.SQL)
+		ex.server.cfg.TestingKnobs.OnRecordTxnFinish(
+			ex.executorType == executorTypeInternal, ex.phaseTimes, ex.planner.stmt.SQL, recordedTxnStats,
+		)
 	}
 
 	ex.maybeRecordRetrySerializableContention(ev.txnID, transactionFingerprintID, txnErr)
+
+	if ex.extraTxnState.shouldLogToTelemetry {
+
+		ex.planner.logTransaction(ctx,
+			int(ex.extraTxnState.txnCounter.Load()),
+			transactionFingerprintID,
+			&recordedTxnStats,
+			ex.extraTxnState.telemetrySkippedTxns,
+		)
+	}
+
+	ex.statsCollector.ObserveTransaction(ctx, transactionFingerprintID, recordedTxnStats)
 
 	return ex.statsCollector.RecordTransaction(
 		ctx,
@@ -3385,4 +3420,17 @@ func (ex *connExecutor) execWithProfiling(
 		err = op(ctx)
 	}
 	return err
+}
+
+// isSQLOkayToThrottle will return true if the given statement is allowed to be throttled.
+func isSQLOkayToThrottle(ast tree.Statement) bool {
+	switch ast.(type) {
+	// We do not throttle the SET CLUSTER command, as this is how a new license
+	// would be installed to disable throttling. We want to avoid the situation
+	// where the action to disable throttling is itself throttled.
+	case *tree.SetClusterSetting:
+		return false
+	default:
+		return true
+	}
 }

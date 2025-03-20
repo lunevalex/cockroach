@@ -26,11 +26,8 @@ go_test(
         "insights_test.go",
         "main_test.go",
     ],
+    args = ["-test.timeout=55s"],
     embed = [":insights"],
-    exec_properties = select({
-        "//build/toolchains:is_heavy": {"Pool": "heavy"},
-        "//conditions:default": {"Pool": "default"},
-    }),
     deps = [
         "//pkg/base",
         "//pkg/security/securityassets",

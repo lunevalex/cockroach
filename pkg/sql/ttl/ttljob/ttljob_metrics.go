@@ -1,12 +1,7 @@
 // Copyright 2022 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package ttljob
 
@@ -18,11 +13,9 @@ import (
 
 	"github.com/cockroachdb/cockroach/pkg/jobs"
 	"github.com/cockroachdb/cockroach/pkg/jobs/jobspb"
-	"github.com/cockroachdb/cockroach/pkg/security/username"
 	"github.com/cockroachdb/cockroach/pkg/sql"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/catpb"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
-	"github.com/cockroachdb/cockroach/pkg/sql/sessiondata"
 	"github.com/cockroachdb/cockroach/pkg/sql/sessiondatapb"
 	"github.com/cockroachdb/cockroach/pkg/util/metric"
 	"github.com/cockroachdb/cockroach/pkg/util/metric/aggmetric"
@@ -199,24 +192,35 @@ func (m *rowLevelTTLMetrics) fetchStatistics(
 		return err
 	}
 
-	for _, c := range []struct {
+	type statsQuery struct {
 		opName string
 		query  string
 		args   []interface{}
 		gauge  *aggmetric.Gauge
-	}{
-		{
+	}
+	var statsQueries []statsQuery
+	if ttlKnobs := execCfg.TTLTestingKnobs; ttlKnobs != nil && ttlKnobs.ExtraStatsQuery != "" {
+		statsQueries = append(statsQueries, statsQuery{
+			opName: fmt.Sprintf("ttl extra stats query %s", relationName),
+			query:  ttlKnobs.ExtraStatsQuery,
+		},
+		)
+	}
+	statsQueries = append(statsQueries,
+		statsQuery{
 			opName: fmt.Sprintf("ttl num rows stats %s", relationName),
 			query:  `SELECT count(1) FROM [%d AS t] AS OF SYSTEM TIME %s`,
 			gauge:  m.TotalRows,
 		},
-		{
+		statsQuery{
 			opName: fmt.Sprintf("ttl num expired rows stats %s", relationName),
 			query:  `SELECT count(1) FROM [%d AS t] AS OF SYSTEM TIME %s WHERE (` + string(ttlExpr) + `) < $1`,
 			args:   []interface{}{details.Cutoff},
 			gauge:  m.TotalExpiredRows,
 		},
-	} {
+	)
+
+	for _, c := range statsQueries {
 		// User a super low quality of service (lower than TTL low), as we don't
 		// really care if statistics gets left behind and prefer the TTL job to
 		// have priority.
@@ -225,10 +229,7 @@ func (m *rowLevelTTLMetrics) fetchStatistics(
 			ctx,
 			c.opName,
 			nil,
-			sessiondata.InternalExecutorOverride{
-				User:             username.RootUserName(),
-				QualityOfService: &qosLevel,
-			},
+			getInternalExecutorOverride(qosLevel),
 			fmt.Sprintf(c.query, details.TableID, aost.String()),
 			c.args...,
 		)

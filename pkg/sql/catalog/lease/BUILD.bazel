@@ -1,5 +1,4 @@
 load("@io_bazel_rules_go//go:def.bzl", "go_library", "go_test")
-load("//build:STRINGER.bzl", "stringer")
 
 go_library(
     name = "lease",
@@ -14,19 +13,18 @@ go_library(
         "name_cache.go",
         "storage.go",
         "testutils.go",
-        ":gen-lease-mode-stringer",  # keep
     ],
     importpath = "github.com/cockroachdb/cockroach/pkg/sql/catalog/lease",
     visibility = ["//visibility:public"],
     deps = [
         "//pkg/base",
+        "//pkg/clusterversion",
         "//pkg/keys",
         "//pkg/kv",
         "//pkg/kv/kvclient/rangefeed",
         "//pkg/kv/kvpb",
         "//pkg/multitenant",
         "//pkg/roachpb",
-        "//pkg/server/serverpb",
         "//pkg/server/settingswatcher",
         "//pkg/settings",
         "//pkg/settings/cluster",
@@ -44,10 +42,8 @@ go_library(
         "//pkg/sql/isql",
         "//pkg/sql/pgwire/pgcode",
         "//pkg/sql/pgwire/pgerror",
-        "//pkg/sql/regionliveness",
         "//pkg/sql/sem/tree",
         "//pkg/sql/sessiondata",
-        "//pkg/sql/sqlliveness",
         "//pkg/storage",
         "//pkg/util/grpcutil",
         "//pkg/util/hlc",
@@ -66,12 +62,6 @@ go_library(
     ],
 )
 
-stringer(
-    name = "gen-lease-mode-stringer",
-    src = "lease.go",
-    typ = "SessionBasedLeasingMode",
-)
-
 go_test(
     name = "lease_test",
     size = "large",
@@ -83,11 +73,9 @@ go_test(
         "lease_test.go",
         "main_test.go",
     ],
+    args = ["-test.timeout=895s"],
     embed = [":lease"],
-    exec_properties = select({
-        "//build/toolchains:is_heavy": {"Pool": "heavy"},
-        "//conditions:default": {"Pool": "large"},
-    }),
+    exec_properties = {"Pool": "medium"},
     shard_count = 4,
     deps = [
         "//pkg/base",
@@ -106,6 +94,7 @@ go_test(
         "//pkg/settings/cluster",
         "//pkg/sql",
         "//pkg/sql/catalog",
+        "//pkg/sql/catalog/bootstrap",
         "//pkg/sql/catalog/catalogkeys",
         "//pkg/sql/catalog/descbuilder",
         "//pkg/sql/catalog/descpb",
@@ -116,11 +105,10 @@ go_test(
         "//pkg/sql/enum",
         "//pkg/sql/isql",
         "//pkg/sql/pgwire/pgcode",
-        "//pkg/sql/regions",
         "//pkg/sql/rowenc/keyside",
         "//pkg/sql/sem/tree",
         "//pkg/sql/sessiondata",
-        "//pkg/sql/sqlliveness/slprovider",
+        "//pkg/sql/stats",
         "//pkg/sql/types",
         "//pkg/storage",
         "//pkg/testutils",
@@ -129,6 +117,7 @@ go_test(
         "//pkg/testutils/sqlutils",
         "//pkg/testutils/testcluster",
         "//pkg/util/admission",
+        "//pkg/util/allstacks",
         "//pkg/util/encoding",
         "//pkg/util/hlc",
         "//pkg/util/leaktest",

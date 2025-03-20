@@ -1,12 +1,7 @@
 // Copyright 2015 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package tree
 
@@ -14,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/cockroachdb/cockroach/pkg/sql/lex"
+	"github.com/cockroachdb/cockroach/pkg/sql/lexbase"
 )
 
 // AlterTable represents an ALTER TABLE statement.
@@ -629,7 +625,7 @@ func (node *AlterTableSetStorageParams) Format(ctx *FmtCtx) {
 
 // AlterTableResetStorageParams represents a ALTER TABLE RESET command.
 type AlterTableResetStorageParams struct {
-	Params NameList
+	Params []string
 }
 
 // TelemetryName implements the AlterTableCmd interface.
@@ -639,8 +635,14 @@ func (node *AlterTableResetStorageParams) TelemetryName() string {
 
 // Format implements the NodeFormatter interface.
 func (node *AlterTableResetStorageParams) Format(ctx *FmtCtx) {
+	buf, f := &ctx.Buffer, ctx.flags
 	ctx.WriteString(" RESET (")
-	ctx.FormatNode(&node.Params)
+	for i, param := range node.Params {
+		if i > 0 {
+			ctx.WriteString(", ")
+		}
+		lexbase.EncodeSQLStringWithFlags(buf, param, f.EncodeFlags())
+	}
 	ctx.WriteString(")")
 }
 

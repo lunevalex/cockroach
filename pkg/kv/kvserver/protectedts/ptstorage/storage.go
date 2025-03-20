@@ -1,12 +1,7 @@
 // Copyright 2019 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 // Package ptstorage implements protectedts.Storage.
 package ptstorage
@@ -91,7 +86,7 @@ func (p *storage) Protect(ctx context.Context, r *ptpb.Record) error {
 		sessiondata.NodeUserSessionDataOverride,
 		protectQuery,
 		s.maxSpans, s.maxBytes, len(r.DeprecatedSpans),
-		r.ID, r.Timestamp.AsOfSystemTime(),
+		r.ID, r.Timestamp.WithSynthetic(false).AsOfSystemTime(),
 		r.MetaType, meta,
 		len(r.DeprecatedSpans), encodedTarget, encodedTarget)
 	if err != nil {
@@ -230,7 +225,7 @@ func (p *storage) getRecords(ctx context.Context) ([]ptpb.Record, error) {
 func (p storage) UpdateTimestamp(ctx context.Context, id uuid.UUID, timestamp hlc.Timestamp) error {
 	row, err := p.txn.QueryRowEx(ctx, "protectedts-update", p.txn.KV(),
 		sessiondata.NodeUserSessionDataOverride,
-		updateTimestampQuery, id.GetBytesMut(), timestamp.AsOfSystemTime())
+		updateTimestampQuery, id.GetBytesMut(), timestamp.WithSynthetic(false).AsOfSystemTime())
 	if err != nil {
 		return errors.Wrapf(err, "failed to update record %v", id)
 	}
@@ -322,7 +317,7 @@ func (p *storage) deprecatedProtect(ctx context.Context, r *ptpb.Record, meta []
 		sessiondata.NodeUserSessionDataOverride,
 		protectQueryWithoutTarget,
 		s.maxSpans, s.maxBytes, len(r.DeprecatedSpans),
-		r.ID, r.Timestamp.AsOfSystemTime(),
+		r.ID, r.Timestamp.WithSynthetic(false).AsOfSystemTime(),
 		r.MetaType, meta,
 		len(r.DeprecatedSpans), encodedSpans)
 	if err != nil {

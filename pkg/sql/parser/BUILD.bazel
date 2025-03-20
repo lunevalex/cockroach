@@ -55,12 +55,9 @@ go_test(
         "scanner_test.go",
         ":gen-helpmap-test",  # keep
     ],
+    args = ["-test.timeout=55s"],
     data = glob(["testdata/**"]),
     embed = [":parser"],
-    exec_properties = select({
-        "//build/toolchains:is_heavy": {"Pool": "heavy"},
-        "//conditions:default": {"Pool": "default"},
-    }),
     deps = [
         "//pkg/sql/lexbase",
         "//pkg/sql/pgwire/pgerror",

@@ -1,12 +1,7 @@
 // Copyright 2021 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package screl
 
@@ -30,6 +25,15 @@ func GetDescID(e scpb.Element) catid.DescID {
 		))
 	}
 	return id.(catid.DescID)
+}
+
+// GetIndexID retrieves the index ID from the element if it has one.
+func GetIndexID(e scpb.Element) (catid.IndexID, bool) {
+	v, err := Schema.GetAttribute(IndexID, e)
+	if err != nil {
+		return 0, false
+	}
+	return v.(catid.IndexID), true
 }
 
 // AllTargetStateDescIDs applies AllTargetDescIDs to the whole target state.
@@ -113,16 +117,14 @@ func VersionSupportsElementUse(el scpb.Element, version clusterversion.ClusterVe
 		// These elements need v22.1 so they can be used without checking any version gates.
 		return true
 	case *scpb.IndexColumn, *scpb.EnumTypeValue, *scpb.TableZoneConfig:
-		// These elements need v22.2 so they can be used without checking any version gates.
-		return true
+		return version.IsActive(clusterversion.V22_2)
 	case *scpb.DatabaseData, *scpb.TableData, *scpb.IndexData, *scpb.TablePartitioning,
 		*scpb.Function, *scpb.FunctionName, *scpb.FunctionVolatility, *scpb.FunctionLeakProof,
 		*scpb.FunctionNullInputBehavior, *scpb.FunctionBody, *scpb.FunctionParamDefaultExpression,
 		*scpb.ColumnNotNull, *scpb.CheckConstraintUnvalidated, *scpb.UniqueWithoutIndexConstraintUnvalidated,
 		*scpb.ForeignKeyConstraintUnvalidated, *scpb.IndexZoneConfig, *scpb.TableSchemaLocked, *scpb.CompositeType,
 		*scpb.CompositeTypeAttrType, *scpb.CompositeTypeAttrName:
-		// These elements need v23.1 so they can be used without checking any version gates.
-		return true
+		return version.IsActive(clusterversion.V23_1)
 	case *scpb.SequenceOption:
 		return version.IsActive(clusterversion.V23_2)
 	default:
@@ -133,5 +135,9 @@ func VersionSupportsElementUse(el scpb.Element, version clusterversion.ClusterVe
 // MaxElementVersion returns the maximum cluster version at which an element
 // may be used.
 func MaxElementVersion(el scpb.Element) (version clusterversion.Key, exists bool) {
-	return 0, false /* exists */
+	switch el.(type) {
+	case *scpb.SecondaryIndexPartial:
+		return clusterversion.V23_1_SchemaChangerDeprecatedIndexPredicates, true /* exists */
+	}
+	return version, false /* exists */
 }

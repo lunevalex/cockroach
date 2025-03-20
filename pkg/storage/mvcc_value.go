@@ -1,12 +1,7 @@
 // Copyright 2022 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package storage
 
@@ -105,6 +100,17 @@ func (v MVCCValue) LocalTimestampNeeded(keyTS hlc.Timestamp) bool {
 // provided key version timestamp and returned.
 func (v MVCCValue) GetLocalTimestamp(keyTS hlc.Timestamp) hlc.ClockTimestamp {
 	if v.LocalTimestamp.IsEmpty() {
+		if keyTS.Synthetic {
+			// A synthetic version timestamp means that the version timestamp is
+			// disconnected from real time and did not come from an HLC clock on the
+			// leaseholder that wrote the value or from somewhere else in the system.
+			// As a result, the version timestamp cannot be cast to a clock timestamp,
+			// so we return min_clock_timestamp instead. The effect of this is that
+			// observed timestamps can not be used to avoid uncertainty retries for
+			// values without a local timestamp and with a synthetic version
+			// timestamp.
+			return hlc.MinClockTimestamp
+		}
 		return hlc.ClockTimestamp(keyTS)
 	}
 	return v.LocalTimestamp

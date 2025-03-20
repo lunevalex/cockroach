@@ -1,12 +1,7 @@
 // Copyright 2018 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package kvcoord
 
@@ -30,6 +25,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/server/telemetry"
 	"github.com/cockroachdb/cockroach/pkg/settings"
 	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
+	"github.com/cockroachdb/cockroach/pkg/util"
 	"github.com/cockroachdb/cockroach/pkg/util/admission/admissionpb"
 	"github.com/cockroachdb/cockroach/pkg/util/ctxgroup"
 	"github.com/cockroachdb/cockroach/pkg/util/envutil"
@@ -55,15 +51,13 @@ type singleRangeInfo struct {
 	token      rangecache.EvictionToken
 }
 
-// defRangefeedConnClass is the default rpc.ConnectionClass used for rangefeed
-// traffic. Normally it is RangefeedClass, but can be flipped to DefaultClass if
-// the corresponding env variable is true.
-var defRangefeedConnClass = func() rpc.ConnectionClass {
-	if envutil.EnvOrDefaultBool("COCKROACH_RANGEFEED_USE_DEFAULT_CONNECTION_CLASS", false) {
-		return rpc.DefaultClass
-	}
-	return rpc.RangefeedClass
-}()
+var useDedicatedRangefeedConnectionClass = settings.RegisterBoolSetting(
+	settings.SystemVisible,
+	"kv.rangefeed.use_dedicated_connection_class.enabled",
+	"uses dedicated connection when running rangefeeds",
+	util.ConstantWithMetamorphicTestBool(
+		"kv.rangefeed.use_dedicated_connection_class.enabled", false),
+)
 
 var catchupStartupRate = settings.RegisterIntSetting(
 	settings.ApplicationLevel,
@@ -72,6 +66,14 @@ var catchupStartupRate = settings.RegisterIntSetting(
 	100, // e.g.: 200 seconds for 20k ranges.
 	settings.NonNegativeInt,
 	settings.WithPublic,
+)
+
+var catchupScanConcurrency = settings.RegisterIntSetting(
+	settings.ApplicationLevel,
+	"kv.rangefeed.catchup_scan_concurrency",
+	"number of catchup scans that a single rangefeed can execute concurrently; 0 implies unlimited",
+	8,
+	settings.NonNegativeInt,
 )
 
 var rangefeedRangeStuckThreshold = settings.RegisterDurationSetting(
@@ -85,12 +87,16 @@ var rangefeedRangeStuckThreshold = settings.RegisterDurationSetting(
 // ForEachRangeFn is used to execute `fn` over each range in a rangefeed.
 type ForEachRangeFn func(fn ActiveRangeFeedIterFn) error
 
+// A RangeObserver is a function that observes the ranges in a rangefeed
+// by polling fn.
+type RangeObserver func(fn ForEachRangeFn)
+
 type rangeFeedConfig struct {
-	disableMuxRangeFeed bool
-	overSystemTable     bool
-	withDiff            bool
-	withFiltering       bool
-	rangeObserver       func(ForEachRangeFn)
+	useMuxRangeFeed bool
+	overSystemTable bool
+	withDiff        bool
+	withFiltering   bool
+	rangeObserver   RangeObserver
 
 	knobs struct {
 		// onRangefeedEvent invoked on each rangefeed event.
@@ -117,14 +123,10 @@ type optionFunc func(*rangeFeedConfig)
 
 func (o optionFunc) set(c *rangeFeedConfig) { o(c) }
 
-// WithoutMuxRangeFeed configures range feed to use legacy RangeFeed RPC.
-//
-// TODO(erikgrinaker): this should be removed when support for the legacy
-// RangeFeed protocol is no longer needed in mixed-version clusters, and we
-// don't need test coverage for it.
-func WithoutMuxRangeFeed() RangeFeedOption {
+// WithMuxRangeFeed configures range feed to use MuxRangeFeed RPC.
+func WithMuxRangeFeed() RangeFeedOption {
 	return optionFunc(func(c *rangeFeedConfig) {
-		c.disableMuxRangeFeed = true
+		c.useMuxRangeFeed = true
 	})
 }
 
@@ -153,11 +155,14 @@ func WithFiltering() RangeFeedOption {
 
 // WithRangeObserver is called when the rangefeed starts with a function that
 // can be used to iterate over all the ranges.
-func WithRangeObserver(observer func(ForEachRangeFn)) RangeFeedOption {
+func WithRangeObserver(observer RangeObserver) RangeFeedOption {
 	return optionFunc(func(c *rangeFeedConfig) {
 		c.rangeObserver = observer
 	})
 }
+
+// A "kill switch" to disable multiplexing rangefeed if severe issues discovered with new implementation.
+var enableMuxRangeFeed = envutil.EnvOrDefaultBool("COCKROACH_ENABLE_MULTIPLEXING_RANGEFEED", true)
 
 // RangeFeed divides a RangeFeed request on range boundaries and establishes a
 // RangeFeed to each of the individual ranges. It streams back results on the
@@ -232,9 +237,9 @@ func (ds *DistSender) RangeFeedSpans(
 		cfg.rangeObserver(rr.ForEachPartialRangefeed)
 	}
 
-	rl := newCatchupScanRateLimiter(&ds.st.SV)
+	rl := newCatchupScanRateLimiter(&ds.st.SV, cfg.useMuxRangeFeed)
 
-	if !cfg.disableMuxRangeFeed {
+	if enableMuxRangeFeed && cfg.useMuxRangeFeed {
 		return muxRangeFeed(ctx, cfg, spans, ds, rr, rl, eventCh)
 	}
 
@@ -395,10 +400,6 @@ type activeRangeFeed struct {
 	// active rangefeed completes.
 	release func()
 
-	// localConnection indicates if this rangefeed connected
-	// to a local node.
-	localConnection bool
-
 	// catchupRes is the catchup scan quota acquired upon the
 	// start of rangefeed.
 	// It is released when this stream receives first checkpoint
@@ -429,23 +430,6 @@ func (a *activeRangeFeed) onRangeEvent(
 
 	a.NodeID = nodeID
 	a.RangeID = rangeID
-}
-
-// onConnect is a callback invoked when attempt to connect to the specified
-// destination is made.
-func (a *activeRangeFeed) onConnect(
-	dest rpc.RestrictedInternalClient, metrics *DistSenderRangeFeedMetrics,
-) {
-	if rpc.IsLocal(dest) {
-		if !a.localConnection {
-			metrics.RangefeedLocalRanges.Inc(1)
-		}
-		a.localConnection = true
-	} else if a.localConnection {
-		// We used to connect to local node, but no more.
-		a.localConnection = false
-		metrics.RangefeedLocalRanges.Dec(1)
-	}
 }
 
 func (a *activeRangeFeed) setLastError(err error) {
@@ -547,9 +531,6 @@ func newActiveRangeFeed(
 		active.releaseCatchupScan()
 		rr.ranges.Delete(active)
 		metrics.RangefeedRanges.Dec(1)
-		if active.localConnection {
-			metrics.RangefeedLocalRanges.Dec(1)
-		}
 	}
 
 	rr.ranges.Store(active, nil)
@@ -729,6 +710,9 @@ func (a catchupAlloc) Release() {
 func (a *activeRangeFeed) acquireCatchupScanQuota(
 	ctx context.Context, rl *catchupScanRateLimiter, metrics *DistSenderRangeFeedMetrics,
 ) error {
+	metrics.RangefeedCatchupRangesWaitingClientSide.Inc(1)
+	defer metrics.RangefeedCatchupRangesWaitingClientSide.Dec(1)
+
 	// Indicate catchup scan is starting.
 	alloc, err := rl.Pace(ctx)
 	if err != nil {
@@ -750,13 +734,17 @@ func (a *activeRangeFeed) acquireCatchupScanQuota(
 func newTransportForRange(
 	ctx context.Context, desc *roachpb.RangeDescriptor, ds *DistSender,
 ) (Transport, error) {
+	var latencyFn LatencyFunc
+	if ds.rpcContext != nil {
+		latencyFn = ds.rpcContext.RemoteClocks.Latency
+	}
 	replicas, err := NewReplicaSlice(ctx, ds.nodeDescs, desc, nil, AllExtantReplicas)
 	if err != nil {
 		return nil, err
 	}
-	replicas.OptimizeReplicaOrder(ds.st, ds.nodeIDGetter(), ds.healthFunc, ds.latencyFunc, ds.locality)
-	opts := SendOptions{class: defRangefeedConnClass}
-	return ds.transportFactory(opts, replicas)
+	replicas.OptimizeReplicaOrder(ds.st, ds.nodeIDGetter(), ds.HealthFunc(), latencyFn, ds.locality)
+	opts := SendOptions{class: connectionClass(&ds.st.SV)}
+	return ds.transportFactory(opts, ds.nodeDialer, replicas)
 }
 
 // makeRangeFeedRequest constructs kvpb.RangeFeedRequest for specified span and
@@ -882,7 +870,6 @@ func (ds *DistSender) singleRangeFeed(
 		ctx, restore := pprofutil.SetProfilerLabelsFromCtxTags(ctx)
 		streamCleanup = restore
 
-		active.onConnect(client, metrics)
 		stream, err := client.RangeFeed(ctx, &args)
 		if err != nil {
 			restore()
@@ -958,6 +945,13 @@ func (ds *DistSender) singleRangeFeed(
 	}
 }
 
+func connectionClass(sv *settings.Values) rpc.ConnectionClass {
+	if useDedicatedRangefeedConnectionClass.Get(sv) {
+		return rpc.RangefeedClass
+	}
+	return rpc.DefaultClass
+}
+
 func handleStuckEvent(
 	args *kvpb.RangeFeedRequest,
 	afterCatchupScan bool,
@@ -1017,19 +1011,48 @@ type catchupScanRateLimiter struct {
 	pacer *quotapool.RateLimiter
 	sv    *settings.Values
 	limit quotapool.Limit
+
+	// In addition to rate limiting catchup scans, a semaphore is used to restrict
+	// catchup scan concurrency for regular range feeds (catchupSem is nil for mux
+	// rangefeed).
+	// This additional limit is necessary due to the fact that regular
+	// rangefeed may buffer up to 2MB of data (or 128KB if
+	// useDedicatedRangefeedConnectionClass set to true) per rangefeed stream in the
+	// http2/gRPC buffers -- making OOMs likely if the consumer does not consume
+	// events quickly enough. See
+	// https://github.com/cockroachdb/cockroach/issues/74219 for details.
+	// TODO(yevgeniy): Drop this once regular rangefeed gets deprecated.
+	catchupSemLimit int
+	catchupSem      *limit.ConcurrentRequestLimiter
 }
 
-func newCatchupScanRateLimiter(sv *settings.Values) *catchupScanRateLimiter {
+func newCatchupScanRateLimiter(sv *settings.Values, useMuxRangeFeed bool) *catchupScanRateLimiter {
 	const slowAcquisitionThreshold = 5 * time.Second
 	lim := getCatchupRateLimit(sv)
 
-	return &catchupScanRateLimiter{
+	rl := &catchupScanRateLimiter{
 		sv:    sv,
 		limit: lim,
 		pacer: quotapool.NewRateLimiter(
 			"distSenderCatchupLimit", lim, 0, /* smooth rate limit without burst */
 			quotapool.OnSlowAcquisition(slowAcquisitionThreshold, logSlowCatchupScanAcquisition(slowAcquisitionThreshold))),
 	}
+
+	if !useMuxRangeFeed {
+		rl.catchupSemLimit = maxConcurrentCatchupScans(sv)
+		l := limit.MakeConcurrentRequestLimiter("distSenderCatchupLimit", rl.catchupSemLimit)
+		rl.catchupSem = &l
+	}
+
+	return rl
+}
+
+func maxConcurrentCatchupScans(sv *settings.Values) int {
+	l := catchupScanConcurrency.Get(sv)
+	if l == 0 {
+		return math.MaxInt
+	}
+	return int(l)
 }
 
 func getCatchupRateLimit(sv *settings.Values) quotapool.Limit {
@@ -1049,6 +1072,15 @@ func (rl *catchupScanRateLimiter) Pace(ctx context.Context) (limit.Reservation, 
 
 	if err := rl.pacer.WaitN(ctx, 1); err != nil {
 		return nil, err
+	}
+
+	// Regular rangefeed, in addition to pacing also acquires catchup scan quota.
+	if rl.catchupSem != nil {
+		// Take opportunity to update limits if they have changed.
+		if lim := maxConcurrentCatchupScans(rl.sv); lim != rl.catchupSemLimit {
+			rl.catchupSem.SetLimit(lim)
+		}
+		return rl.catchupSem.Begin(ctx)
 	}
 
 	return catchupAlloc(releaseNothing), nil

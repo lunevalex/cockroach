@@ -14,7 +14,6 @@ go_library(
     visibility = ["//visibility:public"],
     deps = [
         "//pkg/cmd/roachtest/cluster",
-        "//pkg/cmd/roachtest/option",
         "//pkg/cmd/roachtest/test",
         "//pkg/roachprod/logger",
         "//pkg/roachprod/prometheus",
@@ -34,11 +33,8 @@ go_test(
         "streamer_test.go",
         ":clusterstats_mock",  # keep
     ],
+    args = ["-test.timeout=295s"],
     embed = [":clusterstats"],
-    exec_properties = select({
-        "//build/toolchains:is_heavy": {"Pool": "heavy"},
-        "//conditions:default": {"Pool": "default"},
-    }),
     deps = [
         "//pkg/roachprod/logger",
         "//pkg/roachprod/prometheus",

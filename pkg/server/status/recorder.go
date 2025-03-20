@@ -1,12 +1,7 @@
 // Copyright 2015 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package status
 
@@ -221,6 +216,13 @@ func (mr *MetricsRecorder) RemoveTenantRegistry(tenantID roachpb.TenantID) {
 	defer mr.mu.Unlock()
 
 	delete(mr.mu.tenantRegistries, tenantID)
+}
+
+// AppRegistry returns the metric registry for application-level metrics.
+func (mr *MetricsRecorder) AppRegistry() *metric.Registry {
+	mr.mu.Lock()
+	defer mr.mu.Unlock()
+	return mr.mu.appRegistry
 }
 
 // AddNode adds various metric registries an initialized server, along

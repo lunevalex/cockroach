@@ -1,12 +1,7 @@
 // Copyright 2019 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package main
 
@@ -81,11 +76,15 @@ func (s *mockStorage) PutObject(i *release.PutObjectInput) error {
 type mockExecRunner struct {
 	fakeBazelBin string
 	cmds         []string
+	pkgDir       string
 }
 
 func (r *mockExecRunner) run(c *exec.Cmd) ([]byte, error) {
 	if r.fakeBazelBin == "" {
 		panic("r.fakeBazelBin not set")
+	}
+	if r.pkgDir == "" {
+		panic("r.pkgDir not set")
 	}
 	if c.Dir == "" {
 		return nil, fmt.Errorf("`Dir` must be specified")
@@ -132,6 +131,8 @@ func (r *mockExecRunner) run(c *exec.Cmd) ([]byte, error) {
 			}
 		}
 		paths = append(paths, path, pathSQL)
+		paths = append(paths, filepath.Join(r.pkgDir, "LICENSE"))
+		paths = append(paths, filepath.Join(r.pkgDir, "licenses", "THIRD-PARTY-NOTICES.txt"))
 		ext := release.SharedLibraryExtensionFromPlatform(platform)
 		if platform != release.PlatformMacOSArm && platform != release.PlatformWindows {
 			for _, lib := range release.CRDBSharedLibraries {
@@ -473,6 +474,7 @@ func TestProvisional(t *testing.T) {
 			fakeBazelBin, cleanup := testutils.TempDir(t)
 			defer cleanup()
 			runner.fakeBazelBin = fakeBazelBin
+			runner.pkgDir = dir
 			flags := test.flags
 			flags.pkgDir = dir
 			execFn := release.ExecFn{MockExecFn: runner.run}

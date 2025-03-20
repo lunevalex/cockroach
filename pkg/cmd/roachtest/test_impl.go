@@ -1,12 +1,7 @@
 // Copyright 2018 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package main
 
@@ -487,25 +482,63 @@ func (t *testImpl) failureMsg() string {
 	return b.String()
 }
 
-// failureContainsError returns true if any of the errors in a given failure
-// matches the reference error
-func failureContainsError(f failure, refError error) bool {
-	for _, err := range f.errors {
-		if errors.Is(err, refError) {
+// failuresMatchingError checks whether the first error in trees of
+// any of the errors in the failures passed match the `refError`
+// target. If it does, `refError` is set to that target error value
+// and returns true. Otherwise, it returns false.
+func failuresMatchingError(failures []failure, refError any) bool {
+	// unwrap unwraps the error passed to find the innermost error in the
+	// chain that satisfies the `refError` provided.
+	unwrap := func(err error) bool {
+		var matched bool
+		for {
+			if isRef := errors.As(err, refError); !isRef {
+				break
+			}
+
+			matched = true
+			err = errors.Unwrap(err)
+			if err == nil {
+				break
+			}
+		}
+
+		return matched
+	}
+
+	for _, f := range failures {
+		for _, err := range f.errors {
+			if unwrap(err) {
+				return true
+			}
+		}
+
+		if unwrap(f.squashedErr) {
 			return true
 		}
 	}
-	return errors.Is(f.squashedErr, refError)
+
+	return false
 }
 
-// failuresContainsError returns true if any of the failures contains the reference error
-func failuresContainsError(failures []failure, refError error) bool {
+// failuresSpecifyOwner checks if any of the errors in any of the
+// given failures is a failure that is associated with an owner. If
+// such an error is found, it is returned; otherwise, nil is returned.
+func failuresSpecifyOwner(failures []failure) *registry.ErrorWithOwnership {
+	var ref registry.ErrorWithOwnership
 	for _, f := range failures {
-		if failureContainsError(f, refError) {
-			return true
+		for _, err := range f.errors {
+			if errors.As(err, &ref) {
+				return &ref
+			}
+		}
+
+		if errors.As(f.squashedErr, &ref) {
+			return &ref
 		}
 	}
-	return false
+
+	return nil
 }
 
 func (t *testImpl) ArtifactsDir() string {

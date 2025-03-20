@@ -1,12 +1,7 @@
 // Copyright 2022 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 // Package randidentcfg is defined separately from randident so that
 // client packages can avoid a direct dependency on randident, and
@@ -40,9 +35,9 @@ const ConfigDoc = `
 // The caller is responsible for calling the Finalize() method
 // before using a config object.
 type Config struct {
-	// Suffix adds an identifying suffix to the name.
-	// The pattern name can contain '#' to indicate where the suffix should go.
-	Suffix bool `json:"suffix"`
+	// Number adds an identifying number to the name.
+	// The pattern name can contain '#' to indicate where the number should go.
+	Number bool `json:"number"`
 
 	// Noise indicates that non-zero name generation options get
 	// a non-zero value.
@@ -146,7 +141,7 @@ func (cfg *Config) Finalize() {
 // is guaranteed to return different names with the same config
 // and name number.
 func (cfg *Config) HasVariability() bool {
-	return cfg.Suffix ||
+	return cfg.Number ||
 		cfg.Punctuate > 0 ||
 		cfg.Quote > 0 ||
 		cfg.Emote > 0 ||

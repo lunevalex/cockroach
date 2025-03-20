@@ -25,10 +25,7 @@ go_test(
         "constant_eval_test.go",
         "normalize_test.go",
     ],
-    exec_properties = select({
-        "//build/toolchains:is_heavy": {"Pool": "heavy"},
-        "//conditions:default": {"Pool": "default"},
-    }),
+    args = ["-test.timeout=295s"],
     deps = [
         ":normalize",
         "//pkg/settings/cluster",

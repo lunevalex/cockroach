@@ -1,12 +1,7 @@
 // Copyright 2015 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package base
 
@@ -746,14 +741,17 @@ func (cfg RaftConfig) NodeLivenessDurations() (livenessActive, livenessRenewal t
 	return
 }
 
-// SentinelGossipTTL is time-to-live for the gossip sentinel. The sentinel
-// informs a node whether or not it's connected to the primary gossip network
-// and not just a partition. As such it must expire fairly quickly and be
-// continually re-gossiped as a connected gossip network is necessary to
-// propagate liveness. The replica which is the lease holder of the first range
-// gossips it.
+// SentinelGossipTTL is time-to-live for the gossip sentinel, which is gossiped
+// by the leaseholder of the first range. The sentinel informs a node whether or
+// not it is connected to the primary gossip network and not just a partition.
+// As such it must expire fairly quickly and be continually re-gossiped as a
+// connected gossip network is necessary to propagate liveness. Notably, it must
+// expire faster than the liveness records carried by the gossip network so that
+// a gossip partition is detected and healed before that liveness information
+// expires. Failure to do so can result in false positive dead node detection,
+// which can show up as false positive range unavailability in metrics.
 func (cfg RaftConfig) SentinelGossipTTL() time.Duration {
-	return cfg.RangeLeaseDuration
+	return cfg.RangeLeaseDuration / 2
 }
 
 // DefaultRetryOptions should be used for retrying most
@@ -782,6 +780,15 @@ func maxInflightBytesFrom(maxInflightMsgs int, maxSizePerMsg uint64) uint64 {
 	return math.MaxUint64
 }
 
+// StoreSize configures the maximum allowable size for a store.
+// Can be specified either as a percentage of total capacity or
+// an absolute byte size; if both are specified, the percentage takes
+// precedence.
+type StoreSize struct {
+	Bytes   int64
+	Percent float64
+}
+
 // StorageConfig contains storage configs for all storage engine.
 type StorageConfig struct {
 	Attrs roachpb.Attributes
@@ -794,7 +801,7 @@ type StorageConfig struct {
 	MustExist bool
 	// MaxSize is used for calculating free space and making rebalancing
 	// decisions. Zero indicates that there is no maximum size.
-	MaxSize int64
+	MaxSize StoreSize
 	// BallastSize is the amount reserved by a ballast file for manual
 	// out-of-disk recovery.
 	BallastSize int64

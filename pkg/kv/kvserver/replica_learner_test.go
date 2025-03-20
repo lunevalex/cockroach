@@ -1,12 +1,7 @@
 // Copyright 2019 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package kvserver_test
 
@@ -2232,13 +2227,13 @@ func getExpectedSnapshotSizeBytes(
 	b := originStore.TODOEngine().NewWriteBatch()
 	defer b.Close()
 
-	err = rditer.IterateReplicaKeySpans(
-		ctx, snap.State.Desc, snap.EngineSnap, true /* replicatedOnly */, rditer.ReplicatedSpansAll,
-		func(iter storage.EngineIterator, _ roachpb.Span, keyType storage.IterKeyType) error {
+	err = rditer.IterateReplicaKeySpans(snap.State.Desc, snap.EngineSnap, true /* replicatedOnly */, rditer.ReplicatedSpansAll,
+		func(iter storage.EngineIterator, _ roachpb.Span) error {
 			var err error
 			for ok := true; ok && err == nil; ok, err = iter.NextEngineKey() {
-				switch keyType {
-				case storage.IterKeyTypePointsOnly:
+				hasPoint, hasRange := iter.HasPointAndRange()
+
+				if hasPoint {
 					unsafeKey, err := iter.UnsafeEngineKey()
 					if err != nil {
 						return err
@@ -2250,8 +2245,8 @@ func getExpectedSnapshotSizeBytes(
 					if err := b.PutEngineKey(unsafeKey, v); err != nil {
 						return err
 					}
-
-				case storage.IterKeyTypeRangesOnly:
+				}
+				if hasRange && iter.RangeKeyChanged() {
 					bounds, err := iter.EngineRangeBounds()
 					if err != nil {
 						return err
@@ -2262,9 +2257,6 @@ func getExpectedSnapshotSizeBytes(
 							return err
 						}
 					}
-
-				default:
-					return errors.Errorf("unexpected key type %v", keyType)
 				}
 			}
 			return err

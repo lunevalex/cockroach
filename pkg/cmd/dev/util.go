@@ -1,12 +1,7 @@
 // Copyright 2020 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package main
 
@@ -104,6 +99,7 @@ func mustGetFlagDuration(cmd *cobra.Command, name string) time.Duration {
 
 func (d *dev) getBazelInfo(ctx context.Context, key string, extraArgs []string) (string, error) {
 	args := []string{"info", key, "--color=no"}
+	args = append(args, extraArgs...)
 	out, err := d.exec.CommandContextSilent(ctx, "bazel", args...)
 	if err != nil {
 		return "", err
@@ -126,8 +122,8 @@ func (d *dev) getBazelBin(ctx context.Context, configArgs []string) (string, err
 	return d.getBazelInfo(ctx, "bazel-bin", configArgs)
 }
 
-func (d *dev) getExecutionRoot(ctx context.Context) (string, error) {
-	return d.getBazelInfo(ctx, "execution_root", []string{})
+func (d *dev) getExecutionRoot(ctx context.Context, configArgs []string) (string, error) {
+	return d.getBazelInfo(ctx, "execution_root", configArgs)
 }
 
 // getArchivedCdepString returns a non-empty string iff the force_build_cdeps

@@ -1,12 +1,7 @@
 // Copyright 2016 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package execinfrapb
 
@@ -57,19 +52,6 @@ func TestProcessExpression(t *testing.T) {
 
 	str := expr.String()
 	expectedStr := "(var0 * (var1 + var2)) + var0"
-	if str != expectedStr {
-		t.Errorf("invalid expression string '%s', expected '%s'", str, expectedStr)
-	}
-
-	// We can process a new expression with the same tree.IndexedVarHelper.
-	e = Expression{Expr: "@4 - @1"}
-	expr, err = processExpression(context.Background(), e, &evalCtx, &semaCtx, &h)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	str = expr.String()
-	expectedStr = "var3 - var0"
 	if str != expectedStr {
 		t.Errorf("invalid expression string '%s', expected '%s'", str, expectedStr)
 	}

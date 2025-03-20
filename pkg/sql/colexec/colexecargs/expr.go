@@ -1,12 +1,7 @@
 // Copyright 2019 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package colexecargs
 
@@ -35,6 +30,7 @@ func NewExprHelper() *ExprHelper {
 // vectorized engine.
 type ExprHelper struct {
 	SemaCtx *tree.SemaContext
+	helper  execinfrapb.ExprHelper
 }
 
 // ProcessExpr processes the given expression and returns a well-typed
@@ -47,5 +43,7 @@ func (h *ExprHelper) ProcessExpr(
 	if expr.LocalExpr != nil {
 		return expr.LocalExpr, nil
 	}
-	return execinfrapb.DeserializeExprWithTypes(ctx, expr.Expr, typs, h.SemaCtx, evalCtx)
+	h.helper.Types = typs
+	tempVars := tree.MakeIndexedVarHelper(&h.helper, len(typs))
+	return execinfrapb.DeserializeExpr(ctx, expr.Expr, h.SemaCtx, evalCtx, &tempVars)
 }

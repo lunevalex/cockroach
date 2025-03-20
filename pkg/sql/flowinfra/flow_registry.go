@@ -1,12 +1,7 @@
 // Copyright 2016 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package flowinfra
 
@@ -315,16 +310,6 @@ func (fr *FlowRegistry) RegisterFlow(
 			// drain all the processors.
 			numTimedOutReceivers := fr.cancelPendingStreams(id, errNoInboundStreamConnection)
 			if numTimedOutReceivers != 0 {
-				// The whole plan will error out. So far we only pushed the
-				// error to the timed out receivers, and eventually it'll make
-				// its way to the DistSQLReceiver which will transition the plan
-				// into draining state. However, non-timed out streams will only
-				// learn about the error and the draining state the next time
-				// the producer sends something on the stream which might not
-				// happen for a while. To speed up the shutdown of the whole
-				// plan we cancel the flow on this node which will trigger quick
-				// ungraceful shutdown of the whole plan.
-				f.Cancel()
 				// The span in the context might be finished by the time this runs. In
 				// principle, we could ForkSpan() beforehand, but we don't want to
 				// create the extra span every time.

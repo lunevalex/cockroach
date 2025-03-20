@@ -1,12 +1,7 @@
 // Copyright 2020 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package main
 
@@ -16,9 +11,11 @@ import (
 	"fmt"
 	"log"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 
+	"github.com/cockroachdb/cockroach/pkg/util/buildutil"
 	"github.com/spf13/cobra"
 )
 
@@ -76,6 +73,8 @@ func (d *dev) getDockerRunArgs(
 		return
 	}
 
+	// Apply the same munging for the UID/GID that we do in build/builder.sh.
+	// Quoth a comment from there:
 	// Attempt to run in the container with the same UID/GID as we have on the host,
 	// as this results in the correct permissions on files created in the shared
 	// volumes. This isn't always possible, however, as IDs less than 100 are
@@ -156,7 +155,11 @@ func (d *dev) getDockerRunArgs(
 	}
 	args = append(args, "-v", workspace+":/cockroach")
 	args = append(args, "--workdir=/cockroach")
-	args = append(args, "-v", filepath.Join(workspace, "build", "bazelutil", "empty.bazelrc")+":/cockroach/.bazelrc.user")
+	bazelRc := "empty.bazelrc"
+	if !buildutil.CrdbTestBuild && (runtime.GOOS == "darwin" && runtime.GOARCH == "arm64") {
+		bazelRc = "darwinarm64cross.bazelrc"
+	}
+	args = append(args, "-v", filepath.Join(workspace, "build", "bazelutil", bazelRc)+":/cockroach/.bazelrc.user")
 	// Create the artifacts directory.
 	artifacts := filepath.Join(workspace, "artifacts")
 	err = d.os.MkdirAll(artifacts)

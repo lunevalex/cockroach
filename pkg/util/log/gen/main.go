@@ -1,12 +1,7 @@
 // Copyright 2020 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package main
 
@@ -266,13 +261,13 @@ type ChannelLogger interface {
   Shoutf(ctx context.Context, sev Severity, format string, args ...interface{})
 
   // VEvent either logs a message to the channel (which also outputs to the
-  // active trace) or to the trace alone, depending on whether the specified
-  // verbosity level is active.
+  // active trace or event log) or to the trace/event log alone, depending on
+  // whether the specified verbosity level is active.
   VEvent(ctx context.Context, level Level, msg string)
 
   // VEventf either logs a message to the channel (which also outputs to the
-  // active trace) or to the trace alone, depending on whether the specified
-  // verbosity level is active.
+  // active trace or event log) or to the trace/event log alone, depending on
+  // whether the specified verbosity level is active.
   VEventf(ctx context.Context, level Level, format string, args ...interface{})
 
   // VEventfDepth performs the same as VEventf but checks the verbosity level
@@ -418,16 +413,16 @@ func (logger{{.Name}}) Shoutf(ctx context.Context, sev Severity, format string, 
 }
 
 // VEvent either logs a message to the channel (which also outputs to the
-// active trace) or to the trace alone, depending on whether the specified
-// verbosity level is active.
+// active trace or event log) or to the trace/event log alone, depending on
+// whether the specified verbosity level is active.
 {{.Comment -}}
 func (logger{{.Name}}) VEvent(ctx context.Context, level Level, msg string) {
 	vEventf(ctx, false /* isErr */, 1, level, channel.{{.NAME}}, msg)
 }
 
 // VEventf either logs a message to the channel (which also outputs to the
-// active trace) or to the trace alone, depending on whether the specified
-// verbosity level is active.
+// active trace or event log) or to the trace/event log alone, depending on
+// whether the specified verbosity level is active.
 {{.Comment -}}
 func (logger{{.Name}}) VEventf(ctx context.Context, level Level, format string, args ...interface{}) {
 	vEventf(ctx, false /* isErr */, 1, level, channel.{{.NAME}}, format, args...)

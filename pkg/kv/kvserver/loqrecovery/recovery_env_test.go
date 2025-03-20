@@ -1,12 +1,7 @@
 // Copyright 2021 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package loqrecovery
 
@@ -626,7 +621,7 @@ func (e *quorumRecoveryEnv) getOrCreateStore(
 		); err != nil {
 			t.Fatalf("failed to populate test store ident: %v", err)
 		}
-		v := clusterversion.Latest.Version()
+		v := clusterversion.ByKey(clusterversion.BinaryVersionKey)
 		if err := kvstorage.WriteClusterVersionToEngines(ctx, []storage.Engine{eng}, clusterversion.ClusterVersion{Version: v}); err != nil {
 			t.Fatalf("failed to populate test store cluster version: %v", err)
 		}
@@ -658,7 +653,7 @@ func (e *quorumRecoveryEnv) handleCollectReplicas(
 		// This is unrealistic as we don't have metadata. We need to fake it here
 		// to pass planner checks.
 		e.replicas.ClusterID = e.clusterID.String()
-		e.replicas.Version = clusterversion.Latest.Version()
+		e.replicas.Version = clusterversion.ByKey(clusterversion.BinaryVersionKey)
 	}
 	e.replicas.Descriptors = e.meta
 	return "ok", nil

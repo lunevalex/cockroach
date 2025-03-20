@@ -1,12 +1,7 @@
 // Copyright 2017 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package tscache
 
@@ -47,16 +42,14 @@ func (tc *sklImpl) clear(lowWater hlc.Timestamp) {
 }
 
 // Add implements the Cache interface.
-func (tc *sklImpl) Add(
-	ctx context.Context, start, end roachpb.Key, ts hlc.Timestamp, txnID uuid.UUID,
-) {
+func (tc *sklImpl) Add(start, end roachpb.Key, ts hlc.Timestamp, txnID uuid.UUID) {
 	start, end = tc.boundKeyLengths(start, end)
 
 	val := cacheValue{ts: ts, txnID: txnID}
 	if len(end) == 0 {
-		tc.cache.Add(ctx, nonNil(start), val)
+		tc.cache.Add(nonNil(start), val)
 	} else {
-		tc.cache.AddRange(ctx, nonNil(start), end, excludeTo, val)
+		tc.cache.AddRange(nonNil(start), end, excludeTo, val)
 	}
 }
 
@@ -66,12 +59,12 @@ func (tc *sklImpl) getLowWater() hlc.Timestamp {
 }
 
 // GetMax implements the Cache interface.
-func (tc *sklImpl) GetMax(ctx context.Context, start, end roachpb.Key) (hlc.Timestamp, uuid.UUID) {
+func (tc *sklImpl) GetMax(start, end roachpb.Key) (hlc.Timestamp, uuid.UUID) {
 	var val cacheValue
 	if len(end) == 0 {
-		val = tc.cache.LookupTimestamp(ctx, nonNil(start))
+		val = tc.cache.LookupTimestamp(nonNil(start))
 	} else {
-		val = tc.cache.LookupTimestampRange(ctx, nonNil(start), end, excludeTo)
+		val = tc.cache.LookupTimestampRange(nonNil(start), end, excludeTo)
 	}
 	return val.ts, val.txnID
 }

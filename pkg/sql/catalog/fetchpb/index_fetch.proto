@@ -1,12 +1,7 @@
 // Copyright 2022 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 // Cannot be proto3 because we use nullable primitives.
 syntax = "proto2";
@@ -16,7 +11,7 @@ option go_package = "github.com/cockroachdb/cockroach/pkg/sql/catalog/fetchpb";
 import "gogoproto/gogo.proto";
 import "sql/types/types.proto";
 import "sql/catalog/catenumpb/index.proto";
-import "geo/geopb/config.proto";
+import "geo/geoindex/config.proto";
 
 // IndexFetchSpec contains the subset of information (from TableDescriptor and
 // IndexDescriptor) that is necessary to decode KVs into SQL keys and values.

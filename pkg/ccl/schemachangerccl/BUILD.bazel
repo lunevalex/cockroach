@@ -23,14 +23,15 @@ go_test(
         ":test_gen_backup_base",  # keep
         ":test_gen_ccl",  # keep
     ],
+    args = select({
+        "//build/toolchains:use_ci_timeouts": ["-test.timeout=895s"],
+        "//conditions:default": ["-test.timeout=3595s"],
+    }),
     data = glob(["testdata/**"]) + [
         "//pkg/sql/schemachanger:end_to_end_testdata",
     ],
     embed = [":schemachangerccl"],
-    exec_properties = select({
-        "//build/toolchains:is_heavy": {"Pool": "heavy"},
-        "//conditions:default": {"Pool": "large"},
-    }),
+    exec_properties = {"Pool": "large"},
     shard_count = 48,
     tags = [
         "ccl_test",
@@ -40,6 +41,7 @@ go_test(
         "//pkg/base",
         "//pkg/ccl",
         "//pkg/ccl/multiregionccl/multiregionccltestutils",
+        "//pkg/clusterversion",
         "//pkg/jobs",
         "//pkg/security/securityassets",
         "//pkg/security/securitytest",

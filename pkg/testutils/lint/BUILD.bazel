@@ -18,6 +18,7 @@ go_test(
         "lint_test.go",
         "nightly_lint_test.go",
     ],
+    args = ["-test.timeout=295s"],
     data = glob(["testdata/**"]) + [
         "@co_honnef_go_tools//cmd/staticcheck",
         "@go_sdk//:files",
@@ -25,10 +26,7 @@ go_test(
     embed = [":lint"],
     embedsrcs = ["gcassert_paths.txt"],
     gotags = ["lint"],
-    tags = [
-        "integration",
-        "no-remote-exec",
-    ],
+    tags = ["integration"],
     visibility = ["//build/bazelutil:__subpackages__"],
     deps = [
         "//pkg/build/bazel",

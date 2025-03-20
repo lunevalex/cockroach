@@ -1,12 +1,7 @@
 // Copyright 2022 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package rowcontainer
 
@@ -66,12 +61,17 @@ func (b *kvStreamerResultDiskBuffer) Serialize(
 	ctx context.Context, r *kvstreamer.Result,
 ) (resultID int, _ error) {
 	if !b.initialized {
-		b.container = MakeDiskRowContainer(
+		var err error
+		b.container, err = MakeDiskRowContainer(
+			ctx,
 			b.monitor,
 			inOrderResultsBufferSpillTypeSchema,
 			colinfo.ColumnOrdering{},
 			b.engine,
 		)
+		if err != nil {
+			return 0, err
+		}
 		b.initialized = true
 		b.rowScratch = make(rowenc.EncDatumRow, len(inOrderResultsBufferSpillTypeSchema))
 	}
@@ -158,7 +158,8 @@ var inOrderResultsBufferSpillTypeSchema = []*types.T{
 	//	Timestamp hlc.Timestamp
 	//	  WallTime int64
 	//	  Logical int32
-	types.Bytes, types.Int, types.Int,
+	//	  Synthetic bool
+	types.Bytes, types.Int, types.Int, types.Bool,
 	// ScanResp:
 	//  BatchResponses [][]byte
 	types.BytesArray,
@@ -171,6 +172,7 @@ const (
 	getRawBytesIdx
 	getTSWallTimeIdx
 	getTSLogicalIdx
+	getTSSyntheticIdx
 	scanBatchResponsesIdx
 )
 
@@ -184,11 +186,13 @@ func serialize(r *kvstreamer.Result, row rowenc.EncDatumRow, alloc *tree.DatumAl
 		row[getRawBytesIdx] = rowenc.EncDatum{Datum: alloc.NewDBytes(tree.DBytes(v.RawBytes))}
 		row[getTSWallTimeIdx] = rowenc.EncDatum{Datum: alloc.NewDInt(tree.DInt(v.Timestamp.WallTime))}
 		row[getTSLogicalIdx] = rowenc.EncDatum{Datum: alloc.NewDInt(tree.DInt(v.Timestamp.Logical))}
+		row[getTSSyntheticIdx] = rowenc.EncDatum{Datum: tree.MakeDBool(tree.DBool(v.Timestamp.Synthetic))}
 		row[scanBatchResponsesIdx] = rowenc.EncDatum{Datum: tree.DNull}
 	} else {
 		row[getRawBytesIdx] = rowenc.EncDatum{Datum: tree.DNull}
 		row[getTSWallTimeIdx] = rowenc.EncDatum{Datum: tree.DNull}
 		row[getTSLogicalIdx] = rowenc.EncDatum{Datum: tree.DNull}
+		row[getTSSyntheticIdx] = rowenc.EncDatum{Datum: tree.DNull}
 		if r.GetResp != nil {
 			// We have an empty Get response.
 			row[scanBatchResponsesIdx] = rowenc.EncDatum{Datum: tree.DNull}
@@ -225,8 +229,9 @@ func deserialize(r *kvstreamer.Result, row rowenc.EncDatumRow, alloc *tree.Datum
 			r.GetResp.Value = &roachpb.Value{
 				RawBytes: []byte(tree.MustBeDBytes(row[getRawBytesIdx].Datum)),
 				Timestamp: hlc.Timestamp{
-					WallTime: int64(tree.MustBeDInt(row[getTSWallTimeIdx].Datum)),
-					Logical:  int32(tree.MustBeDInt(row[getTSLogicalIdx].Datum)),
+					WallTime:  int64(tree.MustBeDInt(row[getTSWallTimeIdx].Datum)),
+					Logical:   int32(tree.MustBeDInt(row[getTSLogicalIdx].Datum)),
+					Synthetic: bool(tree.MustBeDBool(row[getTSSyntheticIdx].Datum)),
 				},
 			}
 		}

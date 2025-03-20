@@ -152,7 +152,7 @@ project
       │              ├── columns: v:8(int!null) n:13(int!null)
       │              ├── outer: (1)
       │              ├── multiplicity: left-rows(zero-or-one), right-rows(zero-or-more)
-      │              ├── fd: ()-->(8,13)
+      │              ├── fd: ()-->(8,13), (8)==(13), (13)==(8)
       │              ├── interesting orderings: (+13)
       │              ├── scan uv
       │              │    ├── columns: v:8(int!null)
@@ -915,7 +915,7 @@ expr
 ----
 semi-join-apply
  ├── columns: a:1(int)
- ├── cardinality: [0 - 0]
+ ├── cardinality: [0 - 10]
  ├── fake-rel
  │    ├── columns: a:1(int)
  │    └── cardinality: [0 - 10]
@@ -2951,7 +2951,9 @@ inner-join (hash)
            ├── variable: xyz.x:1 [type=int]
            └── variable: foo.x:6 [type=int]
 
-# TODO(#39054): if the optimizer could see that the same row is being selected
+# Self-join filters can only be inferred even if the join key was a key in the
+# base table.
+# TODO(drewk): if the optimizer could see that the same row is being selected
 # from each input, we could still infer equalities.
 norm
 SELECT * FROM xyz INNER JOIN xyz foo ON xyz.x = foo.x AND xyz.y = 1 AND foo.y = 1
@@ -3053,119 +3055,110 @@ inner-join (hash)
            ├── variable: xyz.x:1 [type=int]
            └── variable: foo.x:6 [type=int]
 
-# Regression tests for #116943.
+# Regression test for #119441 - marking a set of columns constant should not
+# remove equalities among them.
+exec-ddl
+CREATE TABLE table1_119441 (col1_5 REGTYPE NULL, col1_8 BYTES, col1_11 STRING, col1_12 STRING, INDEX (col1_11));
+----
 
-# Semi-joins with right side cardinality of 0 have cardinality of 0.
-norm disable=(EliminateExistsZeroRows,SimplifyZeroCardinalitySemiJoin)
-SELECT * FROM mn WHERE m = 5 AND n::FLOAT IN (SELECT x::FLOAT FROM xysd WHERE false)
+exec-ddl
+CREATE TABLE table2_119441 (col2_1 INT4, col2_2 STRING, col2_3 BYTES);
+----
+
+exec-ddl
+CREATE TABLE table3_119441 (col3_5 VARCHAR NOT NULL, col3_11 CHAR, col3_16 INT8);
+----
+
+opt
+SELECT (
+  SELECT baz.col3_5 FROM table1_119441
+  JOIN table2_119441 ON (table1_119441.col1_8) = (table2_119441.col2_3) AND (table1_119441.col1_12) = (table2_119441.col2_2) AND (table1_119441.col1_11) = (table2_119441.col2_2)
+  JOIN (SELECT baz.col3_11, table3_119441.col3_16 FROM table3_119441 ORDER BY table3_119441.col3_16 LIMIT 6) AS t(foo, bar)
+  ON table1_119441.col1_11 = foo AND table2_119441.col2_1 = bar AND table1_119441.col1_12 = foo
+  LIMIT 1
+)
+FROM table3_119441 AS baz;
 ----
 project
- ├── columns: m:1(int!null) n:2(int)
- ├── cardinality: [0 - 0]
- ├── immutable
- ├── key: ()
- ├── fd: ()-->(1,2)
- ├── prune: (1,2)
- └── semi-join (hash)
-      ├── columns: m:1(int!null) n:2(int) column12:12(float)
-      ├── cardinality: [0 - 0]
-      ├── immutable
-      ├── key: ()
-      ├── fd: ()-->(1,2,12)
-      ├── prune: (1,2)
-      ├── project
-      │    ├── columns: column12:12(float) m:1(int!null) n:2(int)
-      │    ├── cardinality: [0 - 1]
-      │    ├── immutable
-      │    ├── key: ()
-      │    ├── fd: ()-->(1,2,12)
-      │    ├── prune: (1,2,12)
-      │    ├── select
-      │    │    ├── columns: m:1(int!null) n:2(int)
-      │    │    ├── cardinality: [0 - 1]
-      │    │    ├── key: ()
-      │    │    ├── fd: ()-->(1,2)
-      │    │    ├── prune: (2)
-      │    │    ├── scan mn
-      │    │    │    ├── columns: m:1(int!null) n:2(int)
-      │    │    │    ├── key: (1)
-      │    │    │    ├── fd: (1)-->(2), (2)~~>(1)
-      │    │    │    ├── prune: (1,2)
-      │    │    │    └── interesting orderings: (+1) (+2,+1)
-      │    │    └── filters
-      │    │         └── eq [type=bool, outer=(1), constraints=(/1: [/5 - /5]; tight), fd=()-->(1)]
-      │    │              ├── variable: m:1 [type=int]
-      │    │              └── const: 5 [type=int]
-      │    └── projections
-      │         └── cast: FLOAT8 [as=column12:12, type=float, outer=(2), immutable]
-      │              └── variable: n:2 [type=int]
-      ├── project
-      │    ├── columns: x:11(float!null)
-      │    ├── cardinality: [0 - 0]
-      │    ├── immutable
-      │    ├── key: ()
-      │    ├── fd: ()-->(11)
-      │    ├── prune: (11)
-      │    ├── values
-      │    │    ├── columns: xysd.x:5(int!null)
-      │    │    ├── cardinality: [0 - 0]
-      │    │    ├── key: ()
-      │    │    ├── fd: ()-->(5)
-      │    │    └── prune: (5)
-      │    └── projections
-      │         └── cast: FLOAT8 [as=x:11, type=float, outer=(5), immutable]
-      │              └── variable: xysd.x:5 [type=int]
-      └── filters
-           └── eq [type=bool, outer=(11,12), constraints=(/11: (/NULL - ]; /12: (/NULL - ]), fd=(11)==(12), (12)==(11)]
-                ├── variable: column12:12 [type=float]
-                └── variable: x:11 [type=float]
-
-# Anti-joins with right side cardinality of 0 have cardinality equal to left side cardinality.
-norm disable=(EliminateExistsZeroRows,EliminateAntiJoin)
-SELECT * FROM mn WHERE m = 5 AND n::FLOAT NOT IN (SELECT x::FLOAT FROM xysd WHERE false)
-----
-anti-join (cross)
- ├── columns: m:1(int!null) n:2(int)
- ├── cardinality: [0 - 1]
- ├── immutable
- ├── key: ()
- ├── fd: ()-->(1,2)
- ├── select
- │    ├── columns: m:1(int!null) n:2(int)
- │    ├── cardinality: [0 - 1]
- │    ├── key: ()
- │    ├── fd: ()-->(1,2)
- │    ├── prune: (2)
- │    ├── scan mn
- │    │    ├── columns: m:1(int!null) n:2(int)
- │    │    ├── key: (1)
- │    │    ├── fd: (1)-->(2), (2)~~>(1)
+ ├── columns: col3_5:28(varchar)
+ ├── prune: (28)
+ ├── reject-nulls: (28)
+ ├── left-join-apply
+ │    ├── columns: baz.col3_5:1(varchar!null) baz.col3_11:2(char) col3_5:27(varchar)
+ │    ├── prune: (27)
+ │    ├── reject-nulls: (27)
+ │    ├── scan table3_119441 [as=baz]
+ │    │    ├── columns: baz.col3_5:1(varchar!null) baz.col3_11:2(char)
  │    │    ├── prune: (1,2)
- │    │    └── interesting orderings: (+1) (+2,+1)
- │    └── filters
- │         └── eq [type=bool, outer=(1), constraints=(/1: [/5 - /5]; tight), fd=()-->(1)]
- │              ├── variable: m:1 [type=int]
- │              └── const: 5 [type=int]
- ├── project
- │    ├── columns: x:11(float!null)
- │    ├── cardinality: [0 - 0]
- │    ├── immutable
- │    ├── key: ()
- │    ├── fd: ()-->(11)
- │    ├── prune: (11)
- │    ├── values
- │    │    ├── columns: xysd.x:5(int!null)
- │    │    ├── cardinality: [0 - 0]
+ │    │    └── unfiltered-cols: (1-6)
+ │    ├── project
+ │    │    ├── columns: col3_5:27(varchar)
+ │    │    ├── outer: (1,2)
+ │    │    ├── cardinality: [0 - 1]
  │    │    ├── key: ()
- │    │    ├── fd: ()-->(5)
- │    │    └── prune: (5)
- │    └── projections
- │         └── cast: FLOAT8 [as=x:11, type=float, outer=(5), immutable]
- │              └── variable: xysd.x:5 [type=int]
- └── filters
-      └── is-not [type=bool, outer=(2,11), immutable]
-           ├── eq [type=bool]
-           │    ├── variable: x:11 [type=float]
-           │    └── cast: FLOAT8 [type=float]
-           │         └── variable: n:2 [type=int]
-           └── false [type=bool]
+ │    │    ├── fd: ()-->(27)
+ │    │    ├── prune: (27)
+ │    │    ├── limit
+ │    │    │    ├── columns: col1_8:8(bytes!null) col1_11:9(string!null) col1_12:10(string!null) col2_1:14(int4!null) col2_2:15(string!null) col2_3:16(bytes!null) table3_119441.col3_16:22(int!null)
+ │    │    │    ├── outer: (2)
+ │    │    │    ├── cardinality: [0 - 1]
+ │    │    │    ├── key: ()
+ │    │    │    ├── fd: ()-->(8-10,14-16,22), (10)==(9,15), (8)==(16), (16)==(8), (15)==(9,10), (14)==(22), (22)==(14), (9)==(10,15)
+ │    │    │    ├── interesting orderings: (+(9|10)) (+22)
+ │    │    │    ├── inner-join (hash)
+ │    │    │    │    ├── columns: col1_8:8(bytes!null) col1_11:9(string!null) col1_12:10(string!null) col2_1:14(int4!null) col2_2:15(string!null) col2_3:16(bytes!null) table3_119441.col3_16:22(int!null)
+ │    │    │    │    ├── outer: (2)
+ │    │    │    │    ├── fd: ()-->(9,10,15), (9)==(10,15), (10)==(9,15), (8)==(16), (16)==(8), (15)==(9,10), (14)==(22), (22)==(14)
+ │    │    │    │    ├── limit hint: 1.00
+ │    │    │    │    ├── interesting orderings: (+(9|10)) (+22)
+ │    │    │    │    ├── top-k
+ │    │    │    │    │    ├── columns: table3_119441.col3_16:22(int)
+ │    │    │    │    │    ├── internal-ordering: +22
+ │    │    │    │    │    ├── k: 6
+ │    │    │    │    │    ├── cardinality: [0 - 6]
+ │    │    │    │    │    ├── interesting orderings: (+22)
+ │    │    │    │    │    └── scan table3_119441
+ │    │    │    │    │         ├── columns: table3_119441.col3_16:22(int)
+ │    │    │    │    │         └── prune: (22)
+ │    │    │    │    ├── inner-join (hash)
+ │    │    │    │    │    ├── columns: col1_8:8(bytes!null) col1_11:9(string!null) col1_12:10(string!null) col2_1:14(int4) col2_2:15(string!null) col2_3:16(bytes!null)
+ │    │    │    │    │    ├── fd: (9)==(10,15), (10)==(9,15), (8)==(16), (16)==(8), (15)==(9,10)
+ │    │    │    │    │    ├── prune: (14)
+ │    │    │    │    │    ├── interesting orderings: (+(9|10))
+ │    │    │    │    │    ├── scan table2_119441
+ │    │    │    │    │    │    ├── columns: col2_1:14(int4) col2_2:15(string) col2_3:16(bytes)
+ │    │    │    │    │    │    ├── prune: (14-16)
+ │    │    │    │    │    │    └── unfiltered-cols: (14-19)
+ │    │    │    │    │    ├── select
+ │    │    │    │    │    │    ├── columns: col1_8:8(bytes) col1_11:9(string!null) col1_12:10(string!null)
+ │    │    │    │    │    │    ├── fd: (9)==(10), (10)==(9)
+ │    │    │    │    │    │    ├── prune: (8)
+ │    │    │    │    │    │    ├── interesting orderings: (+(9|10))
+ │    │    │    │    │    │    ├── scan table1_119441
+ │    │    │    │    │    │    │    ├── columns: col1_8:8(bytes) col1_11:9(string) col1_12:10(string)
+ │    │    │    │    │    │    │    ├── prune: (8-10)
+ │    │    │    │    │    │    │    └── interesting orderings: (+9)
+ │    │    │    │    │    │    └── filters
+ │    │    │    │    │    │         └── eq [type=bool, outer=(9,10), constraints=(/9: (/NULL - ]; /10: (/NULL - ]), fd=(9)==(10), (10)==(9)]
+ │    │    │    │    │    │              ├── variable: col1_11:9 [type=string]
+ │    │    │    │    │    │              └── variable: col1_12:10 [type=string]
+ │    │    │    │    │    └── filters
+ │    │    │    │    │         ├── eq [type=bool, outer=(8,16), constraints=(/8: (/NULL - ]; /16: (/NULL - ]), fd=(8)==(16), (16)==(8)]
+ │    │    │    │    │         │    ├── variable: col1_8:8 [type=bytes]
+ │    │    │    │    │         │    └── variable: col2_3:16 [type=bytes]
+ │    │    │    │    │         └── eq [type=bool, outer=(9,15), constraints=(/9: (/NULL - ]; /15: (/NULL - ]), fd=(9)==(15), (15)==(9)]
+ │    │    │    │    │              ├── variable: col1_11:9 [type=string]
+ │    │    │    │    │              └── variable: col2_2:15 [type=string]
+ │    │    │    │    └── filters
+ │    │    │    │         ├── eq [type=bool, outer=(14,22), constraints=(/14: (/NULL - ]; /22: (/NULL - ]), fd=(14)==(22), (22)==(14)]
+ │    │    │    │         │    ├── variable: col2_1:14 [type=int4]
+ │    │    │    │         │    └── variable: table3_119441.col3_16:22 [type=int]
+ │    │    │    │         └── eq [type=bool, outer=(2,9), constraints=(/2: (/NULL - ]; /9: (/NULL - ]), fd=(2)==(9), (9)==(2)]
+ │    │    │    │              ├── variable: col1_11:9 [type=string]
+ │    │    │    │              └── variable: baz.col3_11:2 [type=char]
+ │    │    │    └── const: 1 [type=int]
+ │    │    └── projections
+ │    │         └── variable: baz.col3_5:1 [as=col3_5:27, type=varchar, outer=(1)]
+ │    └── filters (true)
+ └── projections
+      └── variable: col3_5:27 [as=col3_5:28, type=varchar, outer=(27)]

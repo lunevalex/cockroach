@@ -1,12 +1,7 @@
 // Copyright 2018 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package opttester
 
@@ -24,9 +19,11 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"runtime/debug"
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"text/tabwriter"
 	"time"
@@ -61,6 +58,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/eval"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/volatility"
+	"github.com/cockroachdb/cockroach/pkg/sql/sessiondatapb"
 	"github.com/cockroachdb/cockroach/pkg/sql/stats"
 	"github.com/cockroachdb/cockroach/pkg/testutils/datapathutils"
 	"github.com/cockroachdb/cockroach/pkg/testutils/floatcmp"
@@ -74,6 +72,7 @@ import (
 	"github.com/cockroachdb/datadriven"
 	"github.com/cockroachdb/errors"
 	"github.com/cockroachdb/errors/oserror"
+	"github.com/dustin/go-humanize"
 	"github.com/pmezard/go-difflib/difflib"
 )
 
@@ -164,6 +163,9 @@ type Flags struct {
 
 	// DisableRules is a set of rules that are not allowed to run.
 	DisableRules RuleSet
+
+	// Generic enables optimizations for generic query plans.
+	Generic bool
 
 	// ExploreTraceRule restricts the ExploreTrace output to only show the effects
 	// of a specific rule.
@@ -263,6 +265,10 @@ type Flags struct {
 
 	// TxnIsoLevel is the isolation level to plan for.
 	TxnIsoLevel isolation.Level
+
+	// MaxStackBytes specifies the number of bytes to limit the stack size to.
+	// If it is zero, the stack size has the default Go limit.
+	MaxStackBytes int
 }
 
 // New constructs a new instance of the OptTester for the given SQL statement.
@@ -308,7 +314,7 @@ func New(catalog cat.Catalog, sql string) *OptTester {
 	ot.evalCtx.SessionData().OptimizerUseImprovedComputedColumnFiltersDerivation = true
 	ot.evalCtx.SessionData().OptimizerUseImprovedJoinElimination = true
 	ot.evalCtx.SessionData().OptimizerUseProvidedOrderingFix = true
-	ot.evalCtx.SessionData().OptimizerMergeJoinsEnabled = true
+	ot.evalCtx.SessionData().TrigramSimilarityThreshold = 0.3
 
 	return ot
 }
@@ -463,7 +469,7 @@ func New(catalog cat.Catalog, sql string) *OptTester {
 //     modifies the existing set of the flags.
 //
 //   - no-stable-folds: disallows constant folding for stable operators; only
-//     used with "norm".
+//     used with "norm", "opt", "exprnorm", and "expropt".
 //
 //   - fully-qualify-names: fully qualify all column names in the test output.
 //
@@ -478,6 +484,11 @@ func New(catalog cat.Catalog, sql string) *OptTester {
 //   - disable: disables optimizer rules by name. Examples:
 //     opt disable=ConstrainScan
 //     norm disable=(NegateOr,NegateAnd)
+//
+//   - generic: enables optimizations for generic query plans.
+//     NOTE: This flag sets the plan_cache_mode session setting to "auto", which
+//     cannot be done via the "set" flag because it requires a CCL license,
+//     which optimizer tests are not set up to utilize.
 //
 //   - rule: used with exploretrace; the value is the name of a rule. When
 //     specified, the exploretrace output is filtered to only show expression
@@ -569,6 +580,9 @@ func New(catalog cat.Catalog, sql string) *OptTester {
 //     full path or a relative path to testdata.
 //
 //   - isolation: sets the isolation level to plan for.
+//
+//   - max-stack: sets the maximum stack size for the goroutine that optimizes
+//     the query. See debug.SetMaxStack.
 func (ot *OptTester) RunCommand(tb testing.TB, d *datadriven.TestData) string {
 	// Allow testcases to override the flags.
 	for _, a := range d.CmdArgs {
@@ -592,6 +606,26 @@ func (ot *OptTester) RunCommand(tb testing.TB, d *datadriven.TestData) string {
 	ot.evalCtx.Placeholders = nil
 	ot.evalCtx.TxnIsoLevel = ot.Flags.TxnIsoLevel
 
+	if ot.Flags.MaxStackBytes > 0 {
+		originalMaxStack := debug.SetMaxStack(ot.Flags.MaxStackBytes)
+		defer debug.SetMaxStack(originalMaxStack)
+		// Spawn a separate goroutine. A fresh stack makes tests using this
+		// setting more reliable.
+		var wg sync.WaitGroup
+		wg.Add(1)
+		var res string
+		go func() {
+			defer wg.Done()
+			res = ot.runCommandInternal(tb, d)
+		}()
+		wg.Wait()
+		return res
+	} else {
+		return ot.runCommandInternal(tb, d)
+	}
+}
+
+func (ot *OptTester) runCommandInternal(tb testing.TB, d *datadriven.TestData) string {
 	switch d.Cmd {
 	case "exec-ddl":
 		testCatalog, ok := ot.catalog.(*testcat.Catalog)
@@ -988,6 +1022,9 @@ func (f *Flags) Set(arg datadriven.CmdArg) error {
 			f.DisableRules.Add(int(r))
 		}
 
+	case "generic":
+		f.evalCtx.SessionData().PlanCacheMode = sessiondatapb.PlanCacheModeAuto
+
 	case "rule":
 		if len(arg.Vals) != 1 {
 			return fmt.Errorf("rule requires one argument")
@@ -1158,6 +1195,16 @@ func (f *Flags) Set(arg datadriven.CmdArg) error {
 		}
 		f.TxnIsoLevel = isolation.Level(level)
 
+	case "max-stack":
+		if len(arg.Vals) != 1 {
+			return fmt.Errorf("max-stack requires one argument")
+		}
+		bytes, err := humanize.ParseBytes(arg.Vals[0])
+		if err != nil {
+			return err
+		}
+		f.MaxStackBytes = int(bytes)
+
 	default:
 		return fmt.Errorf("unknown argument: %s", arg.Key)
 	}
@@ -1209,7 +1256,9 @@ func (ot *OptTester) OptimizeWithTables(tables map[cat.StableID]cat.Table) (opt.
 	o.NotifyOnMatchedRule(func(ruleName opt.RuleName) bool {
 		return !ot.Flags.DisableRules.Contains(int(ruleName))
 	})
-	o.Factory().FoldingControl().AllowStableFolds()
+	if !ot.Flags.NoStableFolds {
+		o.Factory().FoldingControl().AllowStableFolds()
+	}
 	return ot.optimizeExpr(o, tables)
 }
 

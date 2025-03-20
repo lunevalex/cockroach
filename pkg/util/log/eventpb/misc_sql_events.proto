@@ -1,12 +1,7 @@
 // Copyright 2020 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 syntax = "proto3";
 package cockroach.util.log.eventpb;
@@ -17,7 +12,7 @@ import "util/log/eventpb/events.proto";
 import "util/log/logpb/event.proto";
 
 // Category: Miscellaneous SQL events
-// Channel: OPS
+// Channel: DEV
 //
 // Events in this category report miscellaneous SQL events.
 //

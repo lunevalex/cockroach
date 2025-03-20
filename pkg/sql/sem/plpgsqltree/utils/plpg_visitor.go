@@ -1,12 +1,7 @@
 // Copyright 2023 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package utils
 
@@ -98,6 +93,24 @@ func CountPLpgSQLStmt(sql string) (PLpgSQLStmtCounter, error) {
 	plpgsqltree.Walk(&v, stmt.AST)
 
 	return v.StmtCnt, v.Err
+}
+
+// ParseAndCollectTelemetryForPLpgSQLFunc takes a plpgsql function and parses and collects
+// telemetry on the parsable statements.
+func ParseAndCollectTelemetryForPLpgSQLFunc(stmt *tree.CreateRoutine) error {
+	// Assert that the function language is PLPGSQL.
+	var funcBodyStr string
+	for _, option := range stmt.Options {
+		switch opt := option.(type) {
+		case tree.RoutineBodyStr:
+			funcBodyStr = string(opt)
+		}
+	}
+
+	if _, err := CountPLpgSQLStmt(funcBodyStr); err != nil {
+		return errors.Wrap(err, "plpgsql not supported in user-defined functions")
+	}
+	return unimp.New("plpgsql", "plpgsql not supported in user-defined functions")
 }
 
 // SQLStmtVisitor calls Fn for every SQL statement and expression found while

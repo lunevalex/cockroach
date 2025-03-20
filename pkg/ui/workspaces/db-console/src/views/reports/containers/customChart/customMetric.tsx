@@ -1,12 +1,7 @@
 // Copyright 2018 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 import _ from "lodash";
 import * as React from "react";
@@ -54,9 +49,9 @@ export class CustomMetricState {
   downsampler = TimeSeriesQueryAggregator.AVG;
   aggregator = TimeSeriesQueryAggregator.SUM;
   derivative = TimeSeriesQueryDerivative.NONE;
-  perNode = false;
+  perSource = false;
   perTenant = false;
-  source = "";
+  nodeSource = "";
   tenantSource = "";
 }
 
@@ -112,9 +107,9 @@ export class CustomMetricRow extends React.Component<CustomMetricRowProps> {
     });
   };
 
-  changeSource = (selectedOption: DropdownOption) => {
+  changeNodeSource = (selectedOption: DropdownOption) => {
     this.changeState({
-      source: selectedOption.value,
+      nodeSource: selectedOption.value,
     });
   };
 
@@ -124,9 +119,9 @@ export class CustomMetricRow extends React.Component<CustomMetricRowProps> {
     });
   };
 
-  changePerNode = (selection: React.FormEvent<HTMLInputElement>) => {
+  changePerSource = (selection: React.FormEvent<HTMLInputElement>) => {
     this.changeState({
-      perNode: selection.currentTarget.checked,
+      perSource: selection.currentTarget.checked,
     });
   };
 
@@ -151,8 +146,8 @@ export class CustomMetricRow extends React.Component<CustomMetricRowProps> {
         downsampler,
         aggregator,
         derivative,
-        source,
-        perNode,
+        nodeSource,
+        perSource,
         tenantSource,
         perTenant,
       },
@@ -217,17 +212,17 @@ export class CustomMetricRow extends React.Component<CustomMetricRowProps> {
               className="metric-table-dropdown__select"
               clearable={false}
               searchable={false}
-              value={source}
+              value={nodeSource}
               options={nodeOptions}
-              onChange={this.changeSource}
+              onChange={this.changeNodeSource}
             />
           </div>
         </td>
         <td className="metric-table__cell">
           <input
             type="checkbox"
-            checked={perNode}
-            onChange={this.changePerNode}
+            checked={perSource}
+            onChange={this.changePerSource}
           />
         </td>
         {canViewTenantOptions && (
@@ -340,7 +335,7 @@ export class CustomChartTable extends React.Component<CustomChartTableProps> {
               <td className="metric-table__header">Aggregator</td>
               <td className="metric-table__header">Rate</td>
               <td className="metric-table__header">Source</td>
-              <td className="metric-table__header">Per Node</td>
+              <td className="metric-table__header">Per Node/Store</td>
               {canViewTenantOptions && (
                 <td className="metric-table__header">Virtual Cluster</td>
               )}

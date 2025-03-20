@@ -1,12 +1,7 @@
 // Copyright 2021 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package storage
 
@@ -89,9 +84,25 @@ func Attributes(attrs roachpb.Attributes) ConfigOption {
 	}
 }
 
-// MaxSize sets the intended maximum store size. MaxSize is used for
-// calculating free space and making rebalancing decisions.
-func MaxSize(size int64) ConfigOption {
+// MaxSizeBytes ets the intended maximum store size as an absolute byte
+// value. MaxSizeBytes is used for calculating free space and making rebalancing
+// decisions.
+func MaxSizeBytes(size int64) ConfigOption {
+	return maxSize(base.StoreSize{Bytes: size})
+}
+
+// MaxSizePercent ets the intended maximum store size as the specified percentage
+// of total capacity. MaxSizePercent is used for calculating free space and making
+// rebalancing decisions.
+func MaxSizePercent(percent float64) ConfigOption {
+	return maxSize(base.StoreSize{Percent: percent})
+}
+
+// maxSize sets the intended maximum store size. MaxSize is used for
+// calculating free space and making rebalancing decisions. Either an
+// absolute size or a percentage of total capacity can be specified;
+// if both are specified, the percentage is used.
+func maxSize(size base.StoreSize) ConfigOption {
 	return func(cfg *engineConfig) error {
 		cfg.MaxSize = size
 		return nil
@@ -171,9 +182,6 @@ func BallastSize(size int64) ConfigOption {
 func SharedStorage(sharedStorage cloud.ExternalStorage) ConfigOption {
 	return func(cfg *engineConfig) error {
 		cfg.SharedStorage = sharedStorage
-		if cfg.SharedStorage != nil && cfg.Opts.FormatMajorVersion < pebble.FormatMinForSharedObjects {
-			cfg.Opts.FormatMajorVersion = pebble.FormatMinForSharedObjects
-		}
 		return nil
 	}
 }
@@ -187,7 +195,7 @@ func SecondaryCache(size int64) ConfigOption {
 }
 
 // RemoteStorageFactory enables use of remote storage (experimental).
-func RemoteStorageFactory(accessor *cloud.EarlyBootExternalStorageAccessor) ConfigOption {
+func RemoteStorageFactory(accessor *cloud.ExternalStorageAccessor) ConfigOption {
 	return func(cfg *engineConfig) error {
 		cfg.RemoteStorageFactory = accessor
 		return nil
@@ -235,6 +243,18 @@ func Hook(hookFunc func(*base.StorageConfig) error) ConfigOption {
 			return nil
 		}
 		return hookFunc(&cfg.PebbleConfig.StorageConfig)
+	}
+}
+
+// BlockConcurrencyLimitDivisor sets the divisor used to calculate the block
+// load concurrency limit: the current value of the BlockLoadConcurrencyLimit
+// setting divided by the divisor. It should be set to the number of stores.
+//
+// A value of 0 disables the limiter.
+func BlockConcurrencyLimitDivisor(d int) ConfigOption {
+	return func(cfg *engineConfig) error {
+		cfg.blockConcurrencyLimitDivisor = d
+		return nil
 	}
 }
 

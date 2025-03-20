@@ -1,12 +1,7 @@
 // Copyright 2015 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package kvcoord
 
@@ -84,6 +79,9 @@ func TestNewReplicaSlice(t *testing.T) {
 	rs, err := NewReplicaSlice(ctx, ns, rd, nil, OnlyPotentialLeaseholders)
 	require.NoError(t, err)
 	require.Equal(t, 3, rs.Len())
+	rs, err = NewReplicaSlice(ctx, ns, rd, nil, AllReplicas)
+	require.NoError(t, err)
+	require.Equal(t, 3, rs.Len())
 
 	// Check that learners are not included.
 	rd.InternalReplicas[2].Type = roachpb.LEARNER
@@ -93,6 +91,9 @@ func TestNewReplicaSlice(t *testing.T) {
 	rs, err = NewReplicaSlice(ctx, ns, rd, nil, AllExtantReplicas)
 	require.NoError(t, err)
 	require.Equal(t, 2, rs.Len())
+	rs, err = NewReplicaSlice(ctx, ns, rd, nil, AllReplicas)
+	require.NoError(t, err)
+	require.Equal(t, 3, rs.Len())
 
 	// Check that non-voters are included iff we ask for them to be.
 	rd.InternalReplicas[2].Type = roachpb.NON_VOTER
@@ -102,11 +103,18 @@ func TestNewReplicaSlice(t *testing.T) {
 	rs, err = NewReplicaSlice(ctx, ns, rd, nil, OnlyPotentialLeaseholders)
 	require.NoError(t, err)
 	require.Equal(t, 2, rs.Len())
+	rs, err = NewReplicaSlice(ctx, ns, rd, nil, AllReplicas)
+	require.NoError(t, err)
+	require.Equal(t, 3, rs.Len())
 
 	// Check that, if the leaseholder points to a learner, that learner is
 	// included.
+	rd.InternalReplicas[2].Type = roachpb.LEARNER
 	leaseholder := &roachpb.ReplicaDescriptor{NodeID: 3, StoreID: 3, ReplicaID: 3}
 	rs, err = NewReplicaSlice(ctx, ns, rd, leaseholder, OnlyPotentialLeaseholders)
+	require.NoError(t, err)
+	require.Equal(t, 3, rs.Len())
+	rs, err = NewReplicaSlice(ctx, ns, rd, leaseholder, AllReplicas)
 	require.NoError(t, err)
 	require.Equal(t, 3, rs.Len())
 }
@@ -170,7 +178,7 @@ func locality(t *testing.T, locStrs []string) roachpb.Locality {
 func info(t *testing.T, nid roachpb.NodeID, sid roachpb.StoreID, locStrs []string) ReplicaInfo {
 	return ReplicaInfo{
 		ReplicaDescriptor: desc(nid, sid),
-		Locality:          locality(t, locStrs),
+		Tiers:             locality(t, locStrs).Tiers,
 	}
 }
 
@@ -192,8 +200,7 @@ func TestReplicaSliceOptimizeReplicaOrder(t *testing.T) {
 		// only identified by their node. If multiple replicas are on different
 		// stores of the same node, the node only appears once in this list (as the
 		// ordering between replicas on the same node is not deterministic).
-		expOrdered              []roachpb.NodeID
-		dontSortByLocalityFirst bool
+		expOrdered []roachpb.NodeID
 	}{
 		{
 			name:     "order by locality matching",
@@ -227,56 +234,21 @@ func TestReplicaSliceOptimizeReplicaOrder(t *testing.T) {
 			expOrdered: []roachpb.NodeID{2, 3, 1, 4},
 		},
 		{
-			name:     "order by latency only",
+			name:     "order by latency",
 			nodeID:   1,
-			locality: locality(t, []string{"country=us"}),
+			locality: locality(t, []string{"country=us", "region=west", "city=la"}),
 			latencies: map[roachpb.NodeID]time.Duration{
 				2: time.Hour,
 				3: time.Minute,
 				4: time.Second,
 			},
 			slice: ReplicaSlice{
-				info(t, 2, 2, []string{"country=us"}),
-				info(t, 4, 4, []string{"country=us"}),
-				info(t, 4, 44, []string{"country=us"}),
-				info(t, 3, 3, []string{"country=us"}),
+				info(t, 2, 2, []string{"country=us", "region=west", "city=sf"}),
+				info(t, 4, 4, []string{"country=us", "region=east", "city=ny"}),
+				info(t, 4, 44, []string{"country=us", "region=east", "city=ny"}),
+				info(t, 3, 3, []string{"country=uk", "city=london"}),
 			},
 			expOrdered: []roachpb.NodeID{4, 3, 2},
-		},
-		{
-			name:     "order by locality then latency",
-			nodeID:   1,
-			locality: locality(t, []string{"country=us", "region=west", "city=la"}),
-			latencies: map[roachpb.NodeID]time.Duration{
-				2: time.Hour,
-				3: time.Minute,
-				4: time.Second,
-			},
-			slice: ReplicaSlice{
-				info(t, 2, 2, []string{"country=us", "region=west", "city=sf"}),
-				info(t, 4, 4, []string{"country=us", "region=east", "city=ny"}),
-				info(t, 4, 44, []string{"country=us", "region=east", "city=ny"}),
-				info(t, 3, 3, []string{"country=uk", "city=london"}),
-			},
-			expOrdered: []roachpb.NodeID{2, 4, 3},
-		},
-		{
-			name:     "disable locality setting",
-			nodeID:   1,
-			locality: locality(t, []string{"country=us", "region=west", "city=la"}),
-			latencies: map[roachpb.NodeID]time.Duration{
-				2: time.Hour,
-				3: time.Minute,
-				4: time.Second,
-			},
-			slice: ReplicaSlice{
-				info(t, 2, 2, []string{"country=us", "region=west", "city=sf"}),
-				info(t, 4, 4, []string{"country=us", "region=east", "city=ny"}),
-				info(t, 4, 44, []string{"country=us", "region=east", "city=ny"}),
-				info(t, 3, 3, []string{"country=uk", "city=london"}),
-			},
-			expOrdered:              []roachpb.NodeID{4, 3, 2},
-			dontSortByLocalityFirst: true,
 		},
 		{
 			// Test that replicas on the local node sort first, regardless of factors
@@ -306,10 +278,6 @@ func TestReplicaSliceOptimizeReplicaOrder(t *testing.T) {
 			st := cluster.MakeTestingClusterSettings()
 			// TODO(baptist): Remove this if we make this the default.
 			FollowerReadsUnhealthy.Override(context.Background(), &st.SV, false)
-			if test.dontSortByLocalityFirst {
-				sortByLocalityFirst.Override(context.Background(), &st.SV, false)
-			}
-
 			var latencyFn LatencyFunc
 			if test.latencies != nil {
 				latencyFn = func(id roachpb.NodeID) (time.Duration, bool) {
@@ -340,4 +308,14 @@ func TestReplicaSliceOptimizeReplicaOrder(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestReplicaInfoLocalityValue(t *testing.T) {
+	defer leaktest.AfterTest(t)()
+
+	ri := info(t, 1, 1, []string{"country=us", "region=west", "city=la"})
+	require.Equal(t, "", ri.LocalityValue("foo"))
+	require.Equal(t, "us", ri.LocalityValue("country"))
+	require.Equal(t, "west", ri.LocalityValue("region"))
+	require.Equal(t, "la", ri.LocalityValue("city"))
 }

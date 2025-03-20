@@ -1,12 +1,7 @@
 // Copyright 2016 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package rowexec
 
@@ -21,6 +16,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/rowcontainer"
 	"github.com/cockroachdb/cockroach/pkg/sql/rowenc"
 	"github.com/cockroachdb/cockroach/pkg/sql/rowinfra"
+	"github.com/cockroachdb/cockroach/pkg/sql/types"
 	"github.com/cockroachdb/cockroach/pkg/util/cancelchecker"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/cockroach/pkg/util/mon"
@@ -59,6 +55,8 @@ type hashJoiner struct {
 	// equal. Specifically column eqCols[0][i] on the left side must match the
 	// column eqCols[1][i] on the right side.
 	eqCols [2][]uint32
+
+	leftEqColTypes []*types.T
 
 	runningState hashJoinerState
 
@@ -118,13 +116,18 @@ func newHashJoiner(
 			rightSide: spec.RightEqColumns,
 		},
 	}
+	leftTypes := leftSource.OutputTypes()
+	h.leftEqColTypes = make([]*types.T, len(spec.LeftEqColumns))
+	for i, eqCol := range spec.LeftEqColumns {
+		h.leftEqColTypes[i] = leftTypes[eqCol]
+	}
 
 	if err := h.joinerBase.init(
 		ctx,
 		h,
 		flowCtx,
 		processorID,
-		leftSource.OutputTypes(),
+		leftTypes,
 		rightSource.OutputTypes(),
 		spec.Type,
 		spec.OnExpr,
@@ -290,7 +293,7 @@ func (h *hashJoiner) readLeftSide() (
 	h.probingRowState.row = row
 	h.probingRowState.matched = false
 	if h.probingRowState.iter == nil {
-		i, err := h.hashTable.NewBucketIterator(h.Ctx(), row, h.eqCols[leftSide])
+		i, err := h.hashTable.NewBucketIterator(h.Ctx(), row, h.eqCols[leftSide], h.leftEqColTypes)
 		if err != nil {
 			h.MoveToDraining(err)
 			return hjStateUnknown, nil, h.DrainHelper()

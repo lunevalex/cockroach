@@ -1,10 +1,7 @@
 // Copyright 2020 The Cockroach Authors.
 //
-// Licensed as a CockroachDB Enterprise file under the Cockroach Community
-// License (the "License"); you may not use this file except in compliance with
-// the License. You may obtain a copy of the License at
-//
-//     https://github.com/cockroachdb/cockroach/blob/master/licenses/CCL.txt
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package backupccl
 
@@ -317,7 +314,7 @@ func doCreateBackupSchedules(
 		return err
 	}
 
-	unpauseOnSuccessID := jobspb.InvalidScheduleID
+	unpauseOnSuccessID := jobs.InvalidScheduleID
 
 	var chainProtectedTimestampRecords bool
 	// If needed, create an incremental schedule.
@@ -425,7 +422,7 @@ func setDependentSchedule(
 	storage jobs.ScheduledJobStorage,
 	scheduleExecutionArgs *backuppb.ScheduledBackupExecutionArgs,
 	schedule *jobs.ScheduledJob,
-	dependentID jobspb.ScheduleID,
+	dependentID int64,
 ) error {
 	scheduleExecutionArgs.DependentScheduleID = dependentID
 	any, err := pbtypes.MarshalAny(scheduleExecutionArgs)
@@ -480,7 +477,7 @@ func makeBackupSchedule(
 	label string,
 	recurrence *schedulebase.ScheduleRecurrence,
 	details jobspb.ScheduleDetails,
-	unpauseOnSuccess jobspb.ScheduleID,
+	unpauseOnSuccess int64,
 	updateLastMetricOnSuccess bool,
 	backupNode *tree.Backup,
 	chainProtectedTimestampRecords bool,
@@ -556,7 +553,7 @@ func emitSchedule(
 		tree.NewDString(status),
 		nextRun,
 		tree.NewDString(sj.ScheduleExpr()),
-		tree.NewDString(tree.AsString(redactedBackupNode)),
+		tree.NewDString(tree.AsStringWithFlags(redactedBackupNode, tree.FmtShowFullURIs)),
 	}
 	return nil
 }
@@ -630,7 +627,7 @@ func makeScheduledBackupSpec(
 	}
 
 	enterpriseCheckErr := utilccl.CheckEnterpriseEnabled(
-		p.ExecCfg().Settings,
+		p.ExecCfg().Settings, p.ExecCfg().NodeInfo.LogicalClusterID(),
 		"BACKUP INTO LATEST")
 	spec.isEnterpriseUser = enterpriseCheckErr == nil
 

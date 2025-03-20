@@ -1,10 +1,7 @@
 // Copyright 2022 The Cockroach Authors.
 //
-// Licensed as a CockroachDB Enterprise file under the Cockroach Community
-// License (the "License"); you may not use this file except in compliance with
-// the License. You may obtain a copy of the License at
-//
-//     https://github.com/cockroachdb/cockroach/blob/master/licenses/CCL.txt
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package backupccl
 
@@ -47,14 +44,14 @@ func loadSchedules(
 ) (scheduleDetails, error) {
 	scheduleID := spec.scheduleID
 	s := scheduleDetails{}
-	if scheduleID == jobspb.InvalidScheduleID {
+	if scheduleID == 0 {
 		return s, errors.Newf("Schedule ID expected, none found")
 	}
 
 	execCfg := p.ExecCfg()
 	env := sql.JobSchedulerEnv(execCfg.JobsKnobs())
 	schedules := jobs.ScheduledJobTxn(p.InternalSQLTxn())
-	schedule, err := schedules.Load(ctx, env, scheduleID)
+	schedule, err := schedules.Load(ctx, env, int64(scheduleID))
 	if err != nil {
 		return s, err
 	}
@@ -180,10 +177,6 @@ func doAlterBackupSchedules(
 		return err
 	}
 
-	if err := processNextRunNow(p, spec, s); err != nil {
-		return err
-	}
-
 	// Run full backup in dry-run mode.  This will do all of the sanity checks
 	// and validation we need to make in order to ensure the schedule is sane.
 	if _, err = dryRunBackup(ctx, p, s.fullStmt); err != nil {
@@ -232,15 +225,15 @@ func emitAlteredSchedule(
 ) error {
 	to := make([]string, len(stmt.To))
 	for i, dest := range stmt.To {
-		to[i] = tree.AsStringWithFlags(dest, tree.FmtBareStrings)
+		to[i] = tree.AsStringWithFlags(dest, tree.FmtBareStrings|tree.FmtShowFullURIs)
 	}
 	kmsURIs := make([]string, len(stmt.Options.EncryptionKMSURI))
 	for i, kmsURI := range stmt.Options.EncryptionKMSURI {
-		kmsURIs[i] = tree.AsStringWithFlags(kmsURI, tree.FmtBareStrings)
+		kmsURIs[i] = tree.AsStringWithFlags(kmsURI, tree.FmtBareStrings|tree.FmtShowFullURIs)
 	}
 	incDests := make([]string, len(stmt.Options.IncrementalStorage))
 	for i, incDest := range stmt.Options.IncrementalStorage {
-		incDests[i] = tree.AsStringWithFlags(incDest, tree.FmtBareStrings)
+		incDests[i] = tree.AsStringWithFlags(incDest, tree.FmtBareStrings|tree.FmtShowFullURIs)
 	}
 	if err := emitSchedule(job, stmt, to, nil, /* incrementalFrom */
 		kmsURIs, incDests, resultsCh); err != nil {
@@ -312,15 +305,9 @@ func processScheduleOptions(
 					"only users with the admin role are allowed to change %s", optUpdatesLastBackupMetric)
 			}
 
-			// If the option is specified it generally means to set it, unless it has
-			// a value and that value parses as false.
-			updatesLastBackupMetric := true
-			if v != "" {
-				var err error
-				updatesLastBackupMetric, err = strconv.ParseBool(v)
-				if err != nil {
-					return errors.Wrapf(err, "unexpected value for %s: %s", k, v)
-				}
+			updatesLastBackupMetric, err := strconv.ParseBool(v)
+			if err != nil {
+				return errors.Wrapf(err, "unexpected value for %s: %s", k, v)
 			}
 			s.fullArgs.UpdatesLastBackupMetric = updatesLastBackupMetric
 			if s.incArgs == nil {
@@ -477,7 +464,7 @@ func processFullBackupRecurrence(
 			s.fullJob.ScheduleLabel(),
 			incRecurrence,
 			*s.fullJob.ScheduleDetails(),
-			jobspb.InvalidScheduleID,
+			jobs.InvalidScheduleID,
 			s.fullArgs.UpdatesLastBackupMetric,
 			s.incStmt,
 			s.fullArgs.ChainProtectedTimestampRecords,
@@ -590,37 +577,9 @@ func processInto(p sql.PlanHookState, spec *alterBackupScheduleSpec, s scheduleD
 	return nil
 }
 
-func processNextRunNow(
-	p sql.PlanHookState, spec *alterBackupScheduleSpec, s scheduleDetails,
-) error {
-	if !spec.nextRunNow {
-		return nil
-	}
-
-	env := sql.JobSchedulerEnv(p.ExecCfg().JobsKnobs())
-
-	// Trigger the full schedule, unless there is an inc schedule and the user did
-	// not explicitly specify the full.
-	schedule := s.fullJob
-	if s.incJob != nil && !spec.fullNextRunNow {
-		schedule = s.incJob
-	}
-
-	// A paused schedule is indicated by having no next_run time. If we triggered
-	// a run of a schedule which was previously paused by setting next_run to now,
-	// we would be resuming it. This could be surprising, so instead just tell the
-	// user to use RESUME explicitly, so they're clear that they need to pause it
-	// again later if they don't want it to keep running.
-	if schedule.IsPaused() {
-		return errors.Newf("cannot execute a paused schedule; use RESUME SCHEDULE instead")
-	}
-	schedule.SetNextRun(env.Now())
-	return nil
-}
-
 type alterBackupScheduleSpec struct {
 	// Schedule specific properties that get evaluated.
-	scheduleID           jobspb.ScheduleID
+	scheduleID           uint64
 	recurrence           string
 	fullBackupRecurrence string
 	fullBackupAlways     bool
@@ -629,8 +588,6 @@ type alterBackupScheduleSpec struct {
 	into                 []string
 	backupOptions        tree.BackupOptions
 	scheduleOptions      map[string]string
-	nextRunNow           bool
-	fullNextRunNow       bool
 }
 
 // makeAlterBackupScheduleSpec construct alterBackupScheduleSpec struct to assist
@@ -641,7 +598,7 @@ func makeAlterBackupScheduleSpec(
 ) (*alterBackupScheduleSpec, error) {
 	exprEval := p.ExprEvaluator(alterBackupScheduleOp)
 	spec := &alterBackupScheduleSpec{
-		scheduleID: jobspb.ScheduleID(alterStmt.ScheduleID),
+		scheduleID: alterStmt.ScheduleID,
 	}
 	var err error
 	observed := make(map[string]interface{})
@@ -690,9 +647,6 @@ func makeAlterBackupScheduleSpec(
 			}
 		case *tree.AlterBackupScheduleSetScheduleOption:
 			scheduleOptions = append(scheduleOptions, typedCmd.Option)
-		case *tree.AlterBackupScheduleNextRun:
-			spec.nextRunNow = true
-			spec.fullNextRunNow = typedCmd.Full
 		default:
 			return nil, errors.Newf("not yet implemented: %v", tree.AsString(typedCmd))
 		}
@@ -709,7 +663,7 @@ func makeAlterBackupScheduleSpec(
 	}
 
 	enterpriseCheckErr := utilccl.CheckEnterpriseEnabled(
-		p.ExecCfg().Settings,
+		p.ExecCfg().Settings, p.ExecCfg().NodeInfo.LogicalClusterID(),
 		"BACKUP INTO LATEST")
 	spec.isEnterpriseUser = enterpriseCheckErr == nil
 
@@ -748,9 +702,6 @@ func alterBackupScheduleTypeCheck(
 
 		case *tree.AlterBackupScheduleSetScheduleOption:
 			opts = append(opts, typedCmd.Option)
-		case *tree.AlterBackupScheduleNextRun:
-			// no parameters to this cmd so nothing to do here.
-
 		}
 	}
 	if err := exprutil.TypeCheck(

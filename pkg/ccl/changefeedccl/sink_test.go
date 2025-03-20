@@ -1,10 +1,7 @@
 // Copyright 2018 The Cockroach Authors.
 //
-// Licensed as a CockroachDB Enterprise file under the Cockroach Community
-// License (the "License"); you may not use this file except in compliance with
-// the License. You may obtain a copy of the License at
-//
-//     https://github.com/cockroachdb/cockroach/blob/master/licenses/CCL.txt
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package changefeedccl
 
@@ -36,6 +33,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/syncutil"
 	"github.com/cockroachdb/errors"
 	"github.com/stretchr/testify/require"
+	"github.com/twmb/franz-go/pkg/kgo"
 )
 
 var zeroTS hlc.Timestamp
@@ -276,8 +274,7 @@ func makeTestKafkaSink(
 				return p, nil
 			},
 			OverrideClientInit: func(config *sarama.Config) (kafkaClient, error) {
-				client := &fakeKafkaClient{config}
-				return client, nil
+				return nil, nil
 			},
 		},
 	}
@@ -907,10 +904,14 @@ func TestChangefeedConsistentPartitioning(t *testing.T) {
 	referencePartitions[longString2] = 592
 
 	partitioner := newChangefeedPartitioner("topic1")
+	kgoPartitioner := newKgoChangefeedPartitioner().ForTopic("topic1")
 
 	for key, expected := range referencePartitions {
 		actual, err := partitioner.Partition(&sarama.ProducerMessage{Key: sarama.ByteEncoder(key)}, 1031)
 		require.NoError(t, err)
+		require.Equal(t, expected, actual)
+
+		actual = int32(kgoPartitioner.Partition(&kgo.Record{Key: []byte(key)}, 1031))
 		require.Equal(t, expected, actual)
 	}
 

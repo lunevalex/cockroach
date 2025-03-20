@@ -9,15 +9,14 @@ go_library(
         "//pkg/roachprod/logger",
         "//pkg/util/envutil",
         "//pkg/util/log",
+        "@com_github_cockroachdb_errors//:errors",
+        "@com_github_cockroachdb_errors//oserror",
     ],
 )
 
 go_test(
     name = "config_test",
     srcs = ["config_test.go"],
+    args = ["-test.timeout=295s"],
     embed = [":config"],
-    exec_properties = select({
-        "//build/toolchains:is_heavy": {"Pool": "heavy"},
-        "//conditions:default": {"Pool": "default"},
-    }),
 )

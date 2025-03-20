@@ -1,12 +1,7 @@
 // Copyright 2020 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package kvnemesis
 
@@ -27,9 +22,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/kvserverbase"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/kvserverpb"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
-	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
 	"github.com/cockroachdb/cockroach/pkg/storage/enginepb"
-	"github.com/cockroachdb/cockroach/pkg/testutils/datapathutils"
 	"github.com/cockroachdb/cockroach/pkg/testutils/skip"
 	"github.com/cockroachdb/cockroach/pkg/testutils/sqlutils"
 	"github.com/cockroachdb/cockroach/pkg/testutils/testcluster"
@@ -46,9 +39,7 @@ import (
 
 var defaultNumSteps = envutil.EnvOrDefaultInt("COCKROACH_KVNEMESIS_STEPS", 100)
 
-func (cfg kvnemesisTestCfg) testClusterArgs(
-	ctx context.Context, tr *SeqTracker,
-) base.TestClusterArgs {
+func (cfg kvnemesisTestCfg) testClusterArgs(tr *SeqTracker) base.TestClusterArgs {
 	storeKnobs := &kvserver.StoreTestingKnobs{
 		// Drop the clock MaxOffset to reduce commit-wait time for
 		// transactions that write to global_read ranges.
@@ -131,9 +122,10 @@ func (cfg kvnemesisTestCfg) testClusterArgs(
 			log.Infof(context.Background(), "inserting illegal lease index for %s (seen %d times)", roachpb.Key(key), seen[key])
 			// LAI 1 is always going to fail because the LAI is initialized when the lease
 			// comes into existence. (It's important that we pick one here that reliably
-			// fails because otherwise we may accidentally regress the closed timestamp[^1].
+			// fails because otherwise we may accidentally regress the closed timestamp[^1][^2].
 			//
 			// [^1]: https://github.com/cockroachdb/cockroach/issues/70894#issuecomment-1433244880
+			// [^2]: https://github.com/cockroachdb/cockroach/issues/70894#issuecomment-1881165404
 			return 1
 		}
 	}
@@ -160,10 +152,6 @@ func (cfg kvnemesisTestCfg) testClusterArgs(
 		}
 	}
 
-	settings := cluster.MakeTestingClusterSettings()
-	// TODO(mira): Remove this cluster setting once the default is set to true.
-	kvcoord.KeepRefreshSpansOnSavepointRollback.Override(ctx, &settings.SV, true)
-
 	return base.TestClusterArgs{
 		ServerArgs: base.TestServerArgs{
 			Knobs: base.TestingKnobs{
@@ -187,7 +175,6 @@ func (cfg kvnemesisTestCfg) testClusterArgs(
 					},
 				},
 			},
-			Settings: settings,
 		},
 	}
 }
@@ -222,9 +209,9 @@ type tBridge struct {
 func newTBridge(t *testing.T) *tBridge {
 	// NB: we're not using t.TempDir() because we want these to survive
 	// on failure.
-	td, err := os.MkdirTemp(datapathutils.DebuggableTempDir(), "kvnemesis")
+	td, err := os.MkdirTemp("", "kvnemesis")
 	if err != nil {
-		td = datapathutils.DebuggableTempDir()
+		td = os.TempDir()
 	}
 	t.Cleanup(func() {
 		if t.Failed() {
@@ -330,7 +317,7 @@ func testKVNemesisImpl(t *testing.T, cfg kvnemesisTestCfg) {
 	// 4 nodes so we have somewhere to move 3x replicated ranges to.
 	ctx := context.Background()
 	tr := &SeqTracker{}
-	tc := testcluster.StartTestCluster(t, cfg.numNodes, cfg.testClusterArgs(ctx, tr))
+	tc := testcluster.StartTestCluster(t, cfg.numNodes, cfg.testClusterArgs(tr))
 	defer tc.Stopper().Stop(ctx)
 	dbs, sqlDBs := make([]*kv.DB, cfg.numNodes), make([]*gosql.DB, cfg.numNodes)
 	for i := 0; i < cfg.numNodes; i++ {

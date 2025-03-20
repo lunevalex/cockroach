@@ -1,12 +1,7 @@
 // Copyright 2022 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 syntax = "proto3";
 package cockroach.cloud.cloudpb;
@@ -175,12 +170,5 @@ message ExternalStorage {
   reserved 7;
   FileTable FileTableConfig = 8 [(gogoproto.nullable) = false];
   ExternalConnectionConfig external_connection_config = 9 [(gogoproto.nullable) = false];
-
-  // URI is the string URI from which this encoded external storage config was
-  // derived, if known. May be empty in most cases unless set explicitly by the
-  // caller who created the config from a URI.
-  // TODO(dt): It would be nice if this were always set but we would need every
-  // implementation of ExternalStorage to do so in its Conf() method.
-  string URI = 10;
 }
 

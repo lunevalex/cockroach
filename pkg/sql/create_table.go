@@ -1,12 +1,7 @@
 // Copyright 2017 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package sql
 
@@ -1360,6 +1355,14 @@ func NewTableDesc(
 	); err != nil {
 		return nil, err
 	}
+
+	paramIsDelete := n.StorageParams.GetVal("ttl_delete_rate_limit") != nil
+	paramIsSelect := n.StorageParams.GetVal("ttl_select_rate_limit") != nil
+
+	if paramIsDelete || paramIsSelect {
+		printTTLRateLimitNotice(ctx, evalCtx.ClientNoticeSender)
+	}
+
 	setter.TableDesc.RowLevelTTL = setter.UpdatedRowLevelTTL
 
 	indexEncodingVersion := descpb.StrictIndexColumnIDGuaranteesVersion
@@ -1776,6 +1779,17 @@ func NewTableDesc(
 		return newColumns, nil
 	}
 
+	// Copies the index elements, and returns a closure to restore them back,
+	// so that any mutation to the AST is undone once this statement completes.
+	copyIndexElemListAndRestore := func(existingList *tree.IndexElemList) func() {
+		newList := make(tree.IndexElemList, len(*existingList))
+		copy(newList, *existingList)
+		restoreList := *existingList
+		*existingList = newList
+		return func() {
+			*existingList = restoreList
+		}
+	}
 	// Now that we have all the other columns set up, we can validate
 	// any computed columns.
 	for _, def := range n.Defs {
@@ -1814,6 +1828,11 @@ func NewTableDesc(
 			if err := validateColumnsAreAccessible(&desc, d.Columns); err != nil {
 				return nil, err
 			}
+			// We are going to modify the AST to replace any index expressions with
+			// virtual columns. If the txn ends up retrying, then this change is not
+			// syntactically valid, since the virtual column is only added in the descriptor
+			// and not in the AST.
+			defer copyIndexElemListAndRestore(&d.Columns)()
 			if err := replaceExpressionElemsWithVirtualCols(
 				ctx,
 				&desc,
@@ -1933,6 +1952,11 @@ func NewTableDesc(
 			if err := validateColumnsAreAccessible(&desc, d.Columns); err != nil {
 				return nil, err
 			}
+			// We are going to modify the AST to replace any index expressions with
+			// virtual columns. If the txn ends up retrying, then this change is not
+			// syntactically valid, since the virtual descriptor is only added in the descriptor
+			// and not in the AST.
+			defer copyIndexElemListAndRestore(&d.Columns)()
 			if err := replaceExpressionElemsWithVirtualCols(
 				ctx,
 				&desc,
@@ -2048,13 +2072,6 @@ func NewTableDesc(
 		}
 	}
 
-	// If explicit primary keys are required, error out since a primary key was not supplied.
-	if desc.GetPrimaryIndex().NumKeyColumns() == 0 && desc.IsPhysicalTable() && evalCtx != nil &&
-		evalCtx.SessionData() != nil && evalCtx.SessionData().RequireExplicitPrimaryKeys {
-		return nil, errors.Errorf(
-			"no primary key specified for table %s (require_explicit_primary_keys = true)", desc.Name)
-	}
-
 	for i := range desc.Columns {
 		if _, ok := primaryIndexColumnSet[desc.Columns[i].Name]; ok {
 			desc.Columns[i].Nullable = false
@@ -2074,6 +2091,16 @@ func NewTableDesc(
 	}
 	if err := desc.AllocateIDs(ctx, version); err != nil {
 		return nil, err
+	}
+
+	// If explicit primary keys are required, error out if a primary key was not
+	// supplied.
+	if desc.IsPhysicalTable() &&
+		evalCtx != nil && evalCtx.SessionData() != nil &&
+		evalCtx.SessionData().RequireExplicitPrimaryKeys &&
+		desc.IsPrimaryIndexDefaultRowID() {
+		return nil, errors.Errorf(
+			"no primary key specified for table %s (require_explicit_primary_keys = true)", desc.Name)
 	}
 
 	for _, idx := range desc.PublicNonPrimaryIndexes() {

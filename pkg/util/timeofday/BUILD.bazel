@@ -16,10 +16,7 @@ go_test(
     name = "timeofday_test",
     size = "small",
     srcs = ["time_of_day_test.go"],
+    args = ["-test.timeout=55s"],
     embed = [":timeofday"],
-    exec_properties = select({
-        "//build/toolchains:is_heavy": {"Pool": "heavy"},
-        "//conditions:default": {"Pool": "default"},
-    }),
     deps = ["//pkg/util/duration"],
 )

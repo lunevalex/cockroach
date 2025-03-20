@@ -1,12 +1,7 @@
 // Copyright 2022 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package colexecdisk
 
@@ -65,19 +60,6 @@ func TestExternalSortMemoryAccounting(t *testing.T) {
 		DiskMonitor: testDiskMonitor,
 	}
 	rng, _ := randutil.NewTestRand()
-
-	// Ensure that coldata-batch-size is in [MinBatchSize, 1024] range. If the
-	// batch size becomes too large, then the test will use multiple GBs of RAM
-	// which might lead to OOMs in some environments.
-	const maxBatchSize = 1024
-	if oldBatchSize := coldata.BatchSize(); oldBatchSize > maxBatchSize {
-		defer func() {
-			require.NoError(t, coldata.SetBatchSizeForTests(oldBatchSize))
-		}()
-		newBatchSize := colexectestutils.MinBatchSize + rng.Intn(maxBatchSize-colexectestutils.MinBatchSize+1)
-		require.NoError(t, coldata.SetBatchSizeForTests(newBatchSize))
-		t.Logf("coldata-batch-size overridden to %d", newBatchSize)
-	}
 
 	// Use the Bytes type because we can control the size of values with it
 	// easily.

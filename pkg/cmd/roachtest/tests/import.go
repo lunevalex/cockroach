@@ -1,12 +1,7 @@
 // Copyright 2018 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package tests
 
@@ -27,7 +22,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/jobs/jobspb"
 	"github.com/cockroachdb/cockroach/pkg/roachprod/install"
 	"github.com/cockroachdb/cockroach/pkg/roachprod/logger"
-	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/cockroach/pkg/util/retry"
 	"github.com/cockroachdb/errors"
 )
@@ -131,40 +125,48 @@ func registerImportTPCC(r registry.Registry) {
 		c.Put(ctx, t.DeprecatedWorkload(), "./workload")
 		t.Status("starting csv servers")
 		c.Start(ctx, t.L(), option.DefaultStartOpts(), install.MakeClusterSettings())
-		c.Run(ctx, option.WithNodes(c.All()), `./workload csv-server --port=8081 &> logs/workload-csv-server.log < /dev/null &`)
+		c.Run(ctx, c.All(), `./workload csv-server --port=8081 &> logs/workload-csv-server.log < /dev/null &`)
 
 		t.Status("running workload")
 		m := c.NewMonitor(ctx)
 		dul := roachtestutil.NewDiskUsageLogger(t, c)
 		m.Go(dul.Runner)
-		hc := roachtestutil.NewHealthChecker(t, c, c.All())
-		m.Go(hc.Runner)
+		var hc *roachtestutil.HealthChecker
+		if !c.Spec().Geo {
+			// We skip the health checker in the geo config since it is prone to
+			// network errors, and we don't want to fail the test if the health
+			// check fails.
+			hc = roachtestutil.NewHealthChecker(t, c, c.All())
+			m.Go(hc.Runner)
+		}
 
 		tick, perfBuf := initBulkJobPerfArtifacts(testName, timeout)
-		workloadStr := `./cockroach workload fixtures import tpcc --warehouses=%d --csv-server='http://localhost:8081' '%s'`
+		workloadStr := `./cockroach workload fixtures import tpcc --warehouses=%d --csv-server='http://localhost:8081' {pgurl:1}`
 		m.Go(func(ctx context.Context) error {
 			defer dul.Done()
-			defer hc.Done()
-			pgurl, err := roachtestutil.DefaultPGUrl(ctx, c, t.L(), c.Nodes(1))
-			if err != nil {
-				t.Fatal(err)
+			if c.Spec().Geo {
+				// Increase the retry duration in the geo config to harden the
+				// test.
+				c.Run(ctx, c.Node(1), `./cockroach sql -e "SET CLUSTER SETTING bulkio.import.retry_duration = '20m';" --url={pgurl:1}`)
+			} else {
+				defer hc.Done()
 			}
-			cmd := fmt.Sprintf(workloadStr, warehouses, pgurl)
+			cmd := fmt.Sprintf(workloadStr, warehouses)
 			// Tick once before starting the import, and once after to capture the
 			// total elapsed time. This is used by roachperf to compute and display
 			// the average MB/sec per node.
 			tick()
-			c.Run(ctx, option.WithNodes(c.Node(1)), cmd)
+			c.Run(ctx, c.Node(1), cmd)
 			tick()
 
 			// Upload the perf artifacts to any one of the nodes so that the test
 			// runner copies it into an appropriate directory path.
 			dest := filepath.Join(t.PerfArtifactsDir(), "stats.json")
-			if err := c.RunE(ctx, option.WithNodes(c.Node(1)), "mkdir -p "+filepath.Dir(dest)); err != nil {
-				log.Errorf(ctx, "failed to create perf dir: %+v", err)
+			if err := c.RunE(ctx, c.Node(1), "mkdir -p "+filepath.Dir(dest)); err != nil {
+				t.L().ErrorfCtx(ctx, "failed to create perf dir: %+v", err)
 			}
 			if err := c.PutString(ctx, perfBuf.String(), dest, 0755, c.Node(1)); err != nil {
-				log.Errorf(ctx, "failed to upload perf artifacts to node: %s", err.Error())
+				t.L().ErrorfCtx(ctx, "failed to upload perf artifacts to node: %s", err.Error())
 			}
 			return nil
 		})
@@ -191,8 +193,9 @@ func registerImportTPCC(r registry.Registry) {
 	}
 	const geoWarehouses = 4000
 	const geoZones = "europe-west2-b,europe-west4-b,asia-northeast1-b,us-west1-b"
+	testName := fmt.Sprintf("import/tpcc/warehouses=%d/geo", geoWarehouses)
 	r.Add(registry.TestSpec{
-		Name:              fmt.Sprintf("import/tpcc/warehouses=%d/geo", geoWarehouses),
+		Name:              testName,
 		Owner:             registry.OwnerSQLQueries,
 		Cluster:           r.MakeClusterSpec(8, spec.CPU(16), spec.Geo(), spec.GCEZones(geoZones)),
 		CompatibleClouds:  registry.OnlyGCE,
@@ -201,8 +204,7 @@ func registerImportTPCC(r registry.Registry) {
 		EncryptionSupport: registry.EncryptionMetamorphic,
 		Leases:            registry.MetamorphicLeases,
 		Run: func(ctx context.Context, t test.Test, c cluster.Cluster) {
-			runImportTPCC(ctx, t, c, fmt.Sprintf("import/tpcc/warehouses=%d/geo", geoWarehouses),
-				5*time.Hour, geoWarehouses)
+			runImportTPCC(ctx, t, c, testName, 5*time.Hour, geoWarehouses)
 		},
 	})
 }
@@ -328,11 +330,11 @@ func registerImportTPCH(r registry.Registry) {
 					// Upload the perf artifacts to any one of the nodes so that the test
 					// runner copies it into an appropriate directory path.
 					dest := filepath.Join(t.PerfArtifactsDir(), "stats.json")
-					if err := c.RunE(ctx, option.WithNodes(c.Node(1)), "mkdir -p "+filepath.Dir(dest)); err != nil {
-						log.Errorf(ctx, "failed to create perf dir: %+v", err)
+					if err := c.RunE(ctx, c.Node(1), "mkdir -p "+filepath.Dir(dest)); err != nil {
+						t.L().ErrorfCtx(ctx, "failed to create perf dir: %+v", err)
 					}
 					if err := c.PutString(ctx, perfBuf.String(), dest, 0755, c.Node(1)); err != nil {
-						log.Errorf(ctx, "failed to upload perf artifacts to node: %s", err.Error())
+						t.L().ErrorfCtx(ctx, "failed to upload perf artifacts to node: %s", err.Error())
 					}
 					return nil
 				})
@@ -354,27 +356,18 @@ func registerImportDecommissioned(r registry.Registry) {
 		c.Put(ctx, t.DeprecatedWorkload(), "./workload")
 		t.Status("starting csv servers")
 		c.Start(ctx, t.L(), option.DefaultStartOpts(), install.MakeClusterSettings())
-		c.Run(ctx, option.WithNodes(c.All()), `./workload csv-server --port=8081 &> logs/workload-csv-server.log < /dev/null &`)
+		c.Run(ctx, c.All(), `./workload csv-server --port=8081 &> logs/workload-csv-server.log < /dev/null &`)
 
 		// Decommission a node.
 		nodeToDecommission := 2
 		t.Status(fmt.Sprintf("decommissioning node %d", nodeToDecommission))
-		pgurl, err := roachtestutil.DefaultPGUrl(ctx, c, t.L(), c.Node(nodeToDecommission))
-		if err != nil {
-			t.Fatal(err)
-		}
-		c.Run(ctx, option.WithNodes(c.Node(nodeToDecommission)),
-			fmt.Sprintf(`./cockroach node decommission --insecure --self --wait=all --url=%s`, pgurl))
+		c.Run(ctx, c.Node(nodeToDecommission), fmt.Sprintf(`./cockroach node decommission --self --wait=all --port={pgport:%d} --certs-dir=%s`, nodeToDecommission, install.CockroachNodeCertsDir))
 
 		// Wait for a bit for node liveness leases to expire.
 		time.Sleep(10 * time.Second)
 
 		t.Status("running workload")
-		pgurl, err = roachtestutil.DefaultPGUrl(ctx, c, t.L(), c.Nodes(1))
-		if err != nil {
-			t.Fatal(err)
-		}
-		c.Run(ctx, option.WithNodes(c.Node(1)), tpccImportCmd(warehouses, pgurl))
+		c.Run(ctx, c.Node(1), tpccImportCmd(warehouses, "{pgurl:1}"))
 	}
 
 	r.Add(registry.TestSpec{

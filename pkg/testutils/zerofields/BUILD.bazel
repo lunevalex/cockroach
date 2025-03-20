@@ -13,10 +13,7 @@ go_test(
     name = "zerofields_test",
     size = "small",
     srcs = ["no_zero_field_test.go"],
+    args = ["-test.timeout=55s"],
     embed = [":zerofields"],
-    exec_properties = select({
-        "//build/toolchains:is_heavy": {"Pool": "heavy"},
-        "//conditions:default": {"Pool": "default"},
-    }),
     deps = ["@com_github_cockroachdb_errors//:errors"],
 )

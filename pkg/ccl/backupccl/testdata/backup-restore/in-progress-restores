@@ -111,7 +111,7 @@ b2 public schema <nil> incremental
 b2 me schema <nil> incremental
 b2 greeting type <nil> incremental
 b2 _greeting type <nil> incremental
-b2 baz table 0 incremental
+b2 baz table 3 incremental
 
 
 # Ensure the restored cluster contains nothing from the in-progress restoring database as of system
@@ -155,7 +155,10 @@ SELECT * FROM b2.me.baz;
 
 
 query-sql
-SELECT table_name,index_name,non_unique,seq_in_index,column_name FROM [SHOW INDEX FROM b2.me.baz] WHERE index_name = 'greeting_idx';
+SELECT table_name,index_name,non_unique,seq_in_index,column_name
+FROM [SHOW INDEX FROM b2.me.baz]
+WHERE index_name = 'greeting_idx'
+ORDER BY seq_in_index;
 ----
 baz greeting_idx true 1 y
 baz greeting_idx true 2 rowid
@@ -240,7 +243,7 @@ d public schema <nil> incremental
 d me schema <nil> incremental
 d greeting type <nil> incremental
 d _greeting type <nil> incremental
-d baz table 0 incremental
+d baz table 3 incremental
 
 
 # Ensure that restoring the database, AOST the in-progress restore, elides the restoring descriptors

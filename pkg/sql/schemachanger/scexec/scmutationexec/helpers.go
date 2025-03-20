@@ -1,12 +1,7 @@
 // Copyright 2020 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package scmutationexec
 
@@ -210,6 +205,14 @@ func MakeColumnIDMutationSelector(columnID descpb.ColumnID) MutationSelector {
 			return false
 		}
 		return mut.AsColumn().GetID() == columnID
+	}
+}
+
+// MakeMutationIDMutationSelector returns a MutationSelector which matches the
+// first mutation with this ID.
+func MakeMutationIDMutationSelector(mutationID descpb.MutationID) MutationSelector {
+	return func(mut catalog.Mutation) bool {
+		return mut.MutationID() == mutationID
 	}
 }
 

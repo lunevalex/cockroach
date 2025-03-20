@@ -1,12 +1,7 @@
 // Copyright 2018 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 import React from "react";
 import _ from "lodash";
@@ -133,6 +128,23 @@ export default function (props: GraphDashboardProps) {
         <Metric
           name="cr.node.sys.gc.pause.ns"
           title="GC Pause Time"
+          nonNegativeRate
+        />
+      </Axis>
+    </LineGraph>,
+
+    <LineGraph
+      title="GC Assist Time"
+      sources={nodeSources}
+      tenantSource={tenantSource}
+      tooltip={`Estimated total CPU time user goroutines spent performing GC tasks on processors
+        ${tooltipSelection}.`}
+      showMetricsInTooltip={true}
+    >
+      <Axis units={AxisUnits.Duration} label="gc assist time">
+        <Metric
+          name="cr.node.sys.gc.assist.ns"
+          title="GC Assist Time"
           nonNegativeRate
         />
       </Axis>

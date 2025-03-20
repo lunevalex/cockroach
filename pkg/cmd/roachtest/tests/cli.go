@@ -1,17 +1,13 @@
 // Copyright 2018 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package tests
 
 import (
 	"context"
+	"fmt"
 	"reflect"
 	"strings"
 	"time"
@@ -47,7 +43,7 @@ func runCLINodeStatus(ctx context.Context, t test.Test, c cluster.Cluster) {
 	}
 
 	nodeStatus := func() (_ string, _ []string, err error) {
-		result, err := c.RunWithDetailsSingleNode(ctx, t.L(), option.WithNodes(c.Node(1)), "./cockroach node status --insecure -p {pgport:1}")
+		result, err := c.RunWithDetailsSingleNode(ctx, t.L(), c.Node(1), fmt.Sprintf("./cockroach node status --certs-dir=%s -p {pgport:1}", install.CockroachNodeCertsDir))
 		if err != nil {
 			return "", nil, err
 		}

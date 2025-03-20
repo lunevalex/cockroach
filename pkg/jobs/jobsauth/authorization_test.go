@@ -1,12 +1,7 @@
 // Copyright 2022 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package jobsauth_test
 
@@ -94,16 +89,6 @@ func (a *testAuthAccessor) HasPrivilege(
 		return true, nil
 	}
 	return false, nil
-}
-
-func (a *testAuthAccessor) UserHasRoleOption(
-	_ context.Context, user username.SQLUsername, roleOption roleoption.Option,
-) (bool, error) {
-	if user != a.user {
-		panic(fmt.Sprintf("testAuthAccessor does not implement UserHasRoleOption for user %s", user))
-	}
-	_, ok := a.roleOptions[roleOption]
-	return ok, nil
 }
 
 func (a *testAuthAccessor) HasRoleOption(

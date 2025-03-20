@@ -1,12 +1,7 @@
 // Copyright 2020 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package gcjob_test
 
@@ -39,6 +34,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/gcjob"
 	"github.com/cockroachdb/cockroach/pkg/sql/isql"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/catid"
+	"github.com/cockroachdb/cockroach/pkg/storage"
 	"github.com/cockroachdb/cockroach/pkg/testutils"
 	"github.com/cockroachdb/cockroach/pkg/testutils/jobutils"
 	"github.com/cockroachdb/cockroach/pkg/testutils/serverutils"
@@ -86,6 +82,7 @@ func TestSchemaChangeGCJob(t *testing.T) {
 
 func doTestSchemaChangeGCJob(t *testing.T, dropItem DropItem, ttlTime TTLTime) {
 	blockGC := make(chan struct{}, 1)
+	defer close(blockGC)
 	params := base.TestServerArgs{}
 	params.ScanMaxIdleTime = time.Millisecond
 	params.Knobs.JobsTestingKnobs = jobs.NewTestingKnobsWithShortIntervals()
@@ -98,10 +95,6 @@ func doTestSchemaChangeGCJob(t *testing.T, dropItem DropItem, ttlTime TTLTime) {
 	s, db, kvDB := serverutils.StartServer(t, params)
 	ctx := context.Background()
 	defer s.Stopper().Stop(ctx)
-	// The deferred call to unblock the GC job needs to run before the deferred
-	// call to stop the TestServer. Otherwise, the quiesce step of shutting down
-	// can hang forever waiting for the GC job.
-	defer close(blockGC)
 	sqlDB := sqlutils.MakeSQLRunner(db)
 
 	sqlDB.Exec(t, `SET CLUSTER SETTING sql.gc_job.wait_for_gc.interval = '1s';`)
@@ -234,9 +227,18 @@ func doTestSchemaChangeGCJob(t *testing.T, dropItem DropItem, ttlTime TTLTime) {
 	// Check that the job started.
 	jobIDStr := strconv.Itoa(int(job.ID()))
 	testutils.SucceedsSoon(t, func() error {
-		return jobutils.VerifyRunningSystemJob(
+		if err := jobutils.VerifyRunningSystemJob(
 			t, sqlDB, 0, jobspb.TypeSchemaChangeGC, sql.RunningStatusWaitingGC, lookupJR,
-		)
+		); err != nil {
+			// Since the intervals are set very low, the GC TTL job may have already
+			// started. If so, the status will be "deleting data" since "waiting for
+			// GC TTL" will have completed already.
+			if testutils.IsError(err, "expected running status waiting for GC TTL, got deleting data") {
+				return nil
+			}
+			return err
+		}
+		return nil
 	})
 
 	if ttlTime != FUTURE {
@@ -292,6 +294,7 @@ func TestGCJobRetry(t *testing.T) {
 	failed.Store(false)
 	cs := cluster.MakeTestingClusterSettings()
 	gcjob.EmptySpanPollInterval.Override(ctx, &cs.SV, 100*time.Millisecond)
+	storage.MVCCRangeTombstonesEnabledInMixedClusters.Override(ctx, &cs.SV, true)
 	params := base.TestServerArgs{Settings: cs}
 	params.Knobs.JobsTestingKnobs = jobs.NewTestingKnobsWithShortIntervals()
 	params.Knobs.Store = &kvserver.StoreTestingKnobs{

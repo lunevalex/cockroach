@@ -1,12 +1,7 @@
 // Copyright 2017 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package row
 
@@ -37,7 +32,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
 	"github.com/cockroachdb/cockroach/pkg/sql/sessiondatapb"
 	"github.com/cockroachdb/cockroach/pkg/storage"
-	"github.com/cockroachdb/cockroach/pkg/util"
 	"github.com/cockroachdb/cockroach/pkg/util/encoding"
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
 	"github.com/cockroachdb/cockroach/pkg/util/intsets"
@@ -288,10 +282,6 @@ func (rf *Fetcher) Close(ctx context.Context) {
 	}
 }
 
-// TraceKVVerbosity is the verbosity level at which pretty printed KVs
-// are logged.
-const TraceKVVerbosity = 2
-
 // FetcherInitArgs contains arguments for Fetcher.Init.
 type FetcherInitArgs struct {
 	// StreamingKVFetcher, if non-nil, contains the KVFetcher that uses the
@@ -326,10 +316,7 @@ type FetcherInitArgs struct {
 	MemMonitor *mon.BytesMonitor
 	Spec       *fetchpb.IndexFetchSpec
 	// TraceKV indicates whether or not session tracing is enabled.
-	TraceKV bool
-	// TraceKVEvery controls how often KVs are sampled for logging with traceKV
-	// enabled.
-	TraceKVEvery               *util.EveryN
+	TraceKV                    bool
 	ForceProductionKVBatchSize bool
 	// SpansCanOverlap indicates whether the spans in a given batch can overlap
 	// with one another. If it is true, spans that correspond to the same row must
@@ -826,13 +813,17 @@ func (rf *Fetcher) processKV(
 ) (prettyKey string, prettyValue string, err error) {
 	table := &rf.table
 
-	if rf.args.TraceKV {
-		prettyKey = fmt.Sprintf(
+	mkPrettyKey := func() string {
+		return fmt.Sprintf(
 			"/%s/%s%s",
 			table.spec.TableName,
 			table.spec.IndexName,
 			rf.prettyKeyDatums(table.spec.KeyAndSuffixColumns, table.keyVals),
 		)
+	}
+
+	if rf.args.TraceKV {
+		prettyKey = mkPrettyKey()
 	}
 
 	// Either this is the first key of the fetch or the first key of a new
@@ -930,7 +921,11 @@ func (rf *Fetcher) processKV(
 					if kv.Value.GetTag() == roachpb.ValueType_UNKNOWN {
 						// Tombstone for a secondary column family, nothing needs to be done.
 					} else {
-						return "", "", errors.Errorf("single entry value with no default column id")
+						if prettyKey == "" {
+							prettyKey = mkPrettyKey()
+						}
+						return "", "",
+							errors.Errorf("single entry value with no default column id for key %s", prettyKey)
 					}
 				} else {
 					prettyKey, prettyValue, err = rf.processValueSingle(ctx, table, defaultColumnID, kv, prettyKey)
@@ -1137,12 +1132,8 @@ func (rf *Fetcher) NextRow(ctx context.Context) (row rowenc.EncDatumRow, spanID 
 		if err != nil {
 			return nil, 0, err
 		}
-		// TraceKVEvery is a util.EveryN and not a log.EveryN because
-		// log.EveryN will always print under verbosity level 2.
-		// The caller may choose to set it to avoid logging
-		// too many rows. If unset, we log every KV.
-		if rf.args.TraceKV && (rf.args.TraceKVEvery == nil || rf.args.TraceKVEvery.ShouldProcess(timeutil.Now())) {
-			log.VEventf(ctx, TraceKVVerbosity, "fetched: %s -> %s", prettyKey, prettyVal)
+		if rf.args.TraceKV {
+			log.VEventf(ctx, 2, "fetched: %s -> %s", prettyKey, prettyVal)
 		}
 
 		rowDone, spanID, err := rf.nextKey(ctx)

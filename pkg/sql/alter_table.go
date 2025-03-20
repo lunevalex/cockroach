@@ -1,12 +1,7 @@
 // Copyright 2015 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package sql
 
@@ -15,6 +10,7 @@ import (
 	"context"
 	gojson "encoding/json"
 	"fmt"
+	"slices"
 	"sort"
 	"time"
 
@@ -268,11 +264,17 @@ func (n *alterTableNode) startExec(params runParams) error {
 					return err
 				}
 
+				// We are going to modify the AST to replace any index expressions with
+				// virtual columns. If the txn ends up retrying, then this change is not
+				// syntactically valid, since the virtual column is only added in the descriptor
+				// and not in the AST.
+				columns := make(tree.IndexElemList, len(d.Columns))
+				copy(columns, d.Columns)
 				if err := replaceExpressionElemsWithVirtualCols(
 					params.ctx,
 					n.tableDesc,
 					tableName,
-					d.Columns,
+					columns,
 					false, /* isInverted */
 					false, /* isNewTable */
 					params.p.SemaCtx(),
@@ -282,7 +284,7 @@ func (n *alterTableNode) startExec(params runParams) error {
 				}
 
 				// Check if the columns exist on the table.
-				for _, column := range d.Columns {
+				for _, column := range columns {
 					if column.Expr != nil {
 						return pgerror.New(
 							pgcode.InvalidTableDefinition,
@@ -308,7 +310,7 @@ func (n *alterTableNode) startExec(params runParams) error {
 					StoreColumnNames: d.Storing.ToStrings(),
 					CreatedAtNanos:   params.EvalContext().GetTxnTimestamp(time.Microsecond).UnixNano(),
 				}
-				if err := idx.FillColumns(d.Columns); err != nil {
+				if err := idx.FillColumns(columns); err != nil {
 					return err
 				}
 
@@ -449,6 +451,11 @@ func (n *alterTableNode) startExec(params runParams) error {
 				}
 				descriptorChanged = true
 				for _, updated := range affected {
+					// Disallow schema change if the FK references a table whose schema is
+					// locked.
+					if err := checkTableSchemaUnlocked(updated); err != nil {
+						return err
+					}
 					if err := params.p.writeSchemaChange(
 						params.ctx, updated, descpb.InvalidMutationID, tree.AsStringWithFQNames(n.n, params.Ann()),
 					); err != nil {
@@ -472,9 +479,6 @@ func (n *alterTableNode) startExec(params runParams) error {
 			}
 
 		case *tree.AlterTableAlterPrimaryKey:
-			// For `ALTER PRIMARY KEY`, carry over the primary index name, like how we
-			// carried over comments associated with the old primary index.
-			t.Name = tree.Name(n.tableDesc.PrimaryIndex.Name)
 			if err := params.p.AlterPrimaryKey(
 				params.ctx,
 				n.tableDesc,
@@ -741,6 +745,13 @@ func (n *alterTableNode) startExec(params runParams) error {
 				return err
 			}
 
+			paramIsDelete := t.StorageParams.GetVal("ttl_delete_rate_limit") != nil
+			paramIsSelect := t.StorageParams.GetVal("ttl_select_rate_limit") != nil
+
+			if paramIsDelete || paramIsSelect {
+				printTTLRateLimitNotice(params.ctx, params.p)
+			}
+
 		case *tree.AlterTableResetStorageParams:
 			setter := tablestorageparam.NewSetter(n.tableDesc)
 			if err := storageparam.Reset(
@@ -940,6 +951,25 @@ func applyColumnMutation(
 		return AlterColumnType(ctx, tableDesc, col, t, params, cmds, tn)
 
 	case *tree.AlterTableSetDefault:
+		// If our column is computed, block mixing defaults in entirely.
+		// This check exists here instead of later on during validation because
+		// adding a null default to a computed column should also be blocked, but
+		// is undetectable later on since SET DEFAULT NUL means a nil default
+		// expression.
+		if col.IsComputed() {
+			// Block dropping a computed column "default" as well.
+			if t.Default == nil {
+				return pgerror.Newf(
+					pgcode.Syntax,
+					"column %q of relation %q is a computed column",
+					col.GetName(),
+					tn.ObjectName)
+			}
+			return pgerror.Newf(
+				pgcode.Syntax,
+				"computed column %q cannot also have a DEFAULT expression",
+				col.GetName())
+		}
 		if err := updateNonComputedColExpr(
 			params,
 			tableDesc,
@@ -1344,13 +1374,47 @@ func insertJSONStatistic(
 	histogram interface{},
 ) error {
 	var (
-		ctx = params.ctx
-		txn = params.p.InternalSQLTxn()
+		ctx      = params.ctx
+		txn      = params.p.InternalSQLTxn()
+		settings = params.ExecCfg().Settings
 	)
 
 	var name interface{}
 	if s.Name != "" {
 		name = s.Name
+	}
+
+	if !settings.Version.IsActive(ctx, clusterversion.V23_1AddPartialStatisticsColumns) {
+
+		if s.PartialPredicate != "" {
+			return pgerror.Newf(pgcode.ObjectNotInPrerequisiteState, "statistic for columns %v with collection time %s to insert is partial but cluster version is below 23.1", s.Columns, s.CreatedAt)
+		}
+
+		_ /* rows */, err := txn.Exec(
+			ctx,
+			"insert-stats",
+			txn.KV(),
+			`INSERT INTO system.table_statistics (
+					"tableID",
+					"name",
+					"columnIDs",
+					"createdAt",
+					"rowCount",
+					"distinctCount",
+					"nullCount",
+					"avgSize",
+					histogram
+				) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+			tableID,
+			name,
+			columnIDs,
+			s.CreatedAt,
+			s.RowCount,
+			s.DistinctCount,
+			s.NullCount,
+			s.AvgSize,
+			histogram)
+		return err
 	}
 
 	var predicateValue interface{}
@@ -1807,10 +1871,6 @@ func dropColumnImpl(
 	return droppedViews, validateDescriptor(params.ctx, params.p, tableDesc)
 }
 
-// handleTTLStorageParamChange changes TTL storage parameters. descriptorChanged
-// must be true if the descriptor was modified directly. The caller
-// (alterTableNode), has a separate check to see if any mutations were
-// enqueued.
 func handleTTLStorageParamChange(
 	params runParams, tn *tree.TableName, tableDesc *tabledesc.Mutable, after *catpb.RowLevelTTL,
 ) (descriptorChanged bool, err error) {
@@ -1930,16 +1990,15 @@ func handleTTLStorageParamChange(
 	// Adding TTL requires adding the TTL job before adding the TTL fields.
 	// Removing TTL requires removing the TTL job before removing the TTL fields.
 	var direction descpb.DescriptorMutation_Direction
-	directlyModifiesDescriptor := false
 	switch {
 	case before == nil && after != nil:
 		direction = descpb.DescriptorMutation_ADD
 	case before != nil && after == nil:
 		direction = descpb.DescriptorMutation_DROP
 	default:
-		directlyModifiesDescriptor = true
+		descriptorChanged = true
 	}
-	if !directlyModifiesDescriptor {
+	if !descriptorChanged {
 		// Add TTL mutation so that job is scheduled in SchemaChanger.
 		tableDesc.AddModifyRowLevelTTLMutation(
 			&descpb.ModifyRowLevelTTL{RowLevelTTL: after},
@@ -1958,11 +2017,11 @@ func handleTTLStorageParamChange(
 	}
 
 	// Modify the TTL fields here because it will not be done in a mutation.
-	if directlyModifiesDescriptor {
+	if descriptorChanged {
 		tableDesc.RowLevelTTL = after
 	}
 
-	return directlyModifiesDescriptor, nil
+	return descriptorChanged, nil
 }
 
 // tryRemoveFKBackReferences determines whether the provided unique constraint
@@ -2042,7 +2101,7 @@ func isSetOrResetSchemaLocked(n *tree.AlterTable) bool {
 				return true
 			}
 		case *tree.AlterTableResetStorageParams:
-			if cmd.Params.Contains("schema_locked") {
+			if slices.Contains(cmd.Params, "schema_locked") {
 				return true
 			}
 		}

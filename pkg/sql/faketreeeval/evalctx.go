@@ -1,12 +1,7 @@
 // Copyright 2016 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 // Package faketreeeval provides fake implementations of tree eval interfaces.
 package faketreeeval
@@ -663,6 +658,11 @@ func (c *DummyTenantOperator) LookupTenantID(
 func (c *DummyTenantOperator) DropTenantByID(
 	ctx context.Context, tenantID uint64, synchronous, ignoreServiceMode bool,
 ) error {
+	return errors.WithStack(errEvalTenant)
+}
+
+// GCTenant is part of the tree.TenantOperator interface.
+func (c *DummyTenantOperator) GCTenant(_ context.Context, _ uint64) error {
 	return errors.WithStack(errEvalTenant)
 }
 

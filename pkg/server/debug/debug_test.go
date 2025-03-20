@@ -1,12 +1,7 @@
 // Copyright 2023 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package debug_test
 
@@ -108,8 +103,8 @@ func TestAdminDebugPprof(t *testing.T) {
 	}
 }
 
-// TestAdminDebugTrace verifies that the net/trace endpoints are available via
-// /debug/requests.
+// TestAdminDebugTrace verifies that the net/trace endpoints are available
+// via /debug/{requests,events}.
 func TestAdminDebugTrace(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
@@ -126,6 +121,7 @@ func TestAdminDebugTrace(t *testing.T) {
 		segment, search string
 	}{
 		{"requests", "<title>/debug/requests</title>"},
+		{"events", "<title>events</title>"},
 	}
 
 	for _, c := range tc {

@@ -1,12 +1,7 @@
 // Copyright 2023 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package kvflowcontroller
 
@@ -172,15 +167,7 @@ func (c *Controller) Admit(
 		b := c.getBucket(connection.Stream())
 		waitEndState, waited = b.wait(ctx, class, connection.Disconnected())
 	}
-	var waitDuration time.Duration
-	if waited {
-		waitDuration = c.clock.PhysicalTime().Sub(tstart)
-	}
-	// Else, did not wait (common case), so waitDuration stays 0.
-	// Unconditionally computing the waitDuration as the elapsed time pollutes
-	// the wait duration metrics with CPU scheduling artifacts, causing
-	// confusion.
-
+	waitDuration := c.clock.PhysicalTime().Sub(tstart)
 	if waitEndState == waitSuccess {
 		const formatStr = "admitted request (pri=%s stream=%s wait-duration=%s mode=%s)"
 		if waited {

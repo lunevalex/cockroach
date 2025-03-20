@@ -1,10 +1,7 @@
 // Copyright 2022 The Cockroach Authors.
 //
-// Licensed as a CockroachDB Enterprise file under the Cockroach Community
-// License (the "License"); you may not use this file except in compliance with
-// the License. You may obtain a copy of the License at
-//
-//     https://github.com/cockroachdb/cockroach/blob/master/licenses/CCL.txt
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package backupccl
 
@@ -84,6 +81,7 @@ func (s *fileSSTSink) Close() error {
 	if s.out != nil {
 		return s.out.Close()
 	}
+	s.sst.Close()
 	return nil
 }
 
@@ -175,8 +173,7 @@ func (s *fileSSTSink) open(ctx context.Context) error {
 		}
 		s.out = e
 	}
-	// TODO(dt): make ExternalStorage.Writer return objstorage.Writable.
-	s.sst = storage.MakeIngestionSSTWriter(ctx, s.dest.Settings(), storage.NoopFinishAbortWritable(s.out))
+	s.sst = storage.MakeBackupSSTWriter(ctx, s.dest.Settings(), s.out)
 
 	return nil
 }
@@ -234,7 +231,6 @@ func (s *fileSSTSink) write(ctx context.Context, resp exportedSpan) error {
 		s.flushedFiles[l].StartTime.EqOrdering(resp.metadata.StartTime) {
 		s.flushedFiles[l].Span.EndKey = span.EndKey
 		s.flushedFiles[l].EntryCounts.Add(resp.metadata.EntryCounts)
-		s.flushedFiles[l].ApproximatePhysicalSize += resp.metadata.ApproximatePhysicalSize
 		s.stats.spanGrows++
 	} else {
 		f := resp.metadata

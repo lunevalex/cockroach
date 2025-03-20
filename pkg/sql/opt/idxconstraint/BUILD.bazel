@@ -23,11 +23,8 @@ go_test(
     name = "idxconstraint_test",
     size = "small",
     srcs = ["index_constraints_test.go"],
+    args = ["-test.timeout=55s"],
     data = glob(["testdata/**"]),
-    exec_properties = select({
-        "//build/toolchains:is_heavy": {"Pool": "heavy"},
-        "//conditions:default": {"Pool": "default"},
-    }),
     deps = [
         ":idxconstraint",
         "//pkg/settings/cluster",

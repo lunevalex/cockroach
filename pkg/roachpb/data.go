@@ -1,12 +1,7 @@
 // Copyright 2014 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package roachpb
 
@@ -270,13 +265,6 @@ const (
 	headerSize            = tagPos + 1
 )
 
-var _ redact.SafeFormatter = ValueType(0)
-
-// Safeformat implements the redact.SafeFormatter interface.
-func (t ValueType) SafeFormat(w redact.SafePrinter, _ rune) {
-	w.SafeString(redact.SafeString(t.String()))
-}
-
 func (v Value) checksum() uint32 {
 	if len(v.RawBytes) < checksumSize {
 		return 0
@@ -325,7 +313,7 @@ func (v Value) Verify(key []byte) error {
 	}
 	if sum := v.checksum(); sum != 0 {
 		if computedSum := v.computeChecksum(key); computedSum != sum {
-			return errors.Errorf("%s: invalid checksum (%x) value [% x]",
+			return fmt.Errorf("%s: invalid checksum (%x) value [% x]",
 				Key(key), computedSum, v.RawBytes)
 		}
 	}
@@ -579,7 +567,7 @@ func (v *Value) SetTuple(data []byte) {
 // BYTES an error will be returned.
 func (v Value) GetBytes() ([]byte, error) {
 	if tag := v.GetTag(); tag != ValueType_BYTES {
-		return nil, errors.Errorf("value type is not %s: %s", ValueType_BYTES, tag)
+		return nil, fmt.Errorf("value type is not %s: %s", ValueType_BYTES, tag)
 	}
 	return v.dataBytes(), nil
 }
@@ -589,11 +577,11 @@ func (v Value) GetBytes() ([]byte, error) {
 // will be returned.
 func (v Value) GetFloat() (float64, error) {
 	if tag := v.GetTag(); tag != ValueType_FLOAT {
-		return 0, errors.Errorf("value type is not %s: %s", ValueType_FLOAT, tag)
+		return 0, fmt.Errorf("value type is not %s: %s", ValueType_FLOAT, tag)
 	}
 	dataBytes := v.dataBytes()
 	if len(dataBytes) != 8 {
-		return 0, errors.Errorf("float64 value should be exactly 8 bytes: %d", len(dataBytes))
+		return 0, fmt.Errorf("float64 value should be exactly 8 bytes: %d", len(dataBytes))
 	}
 	_, u, err := encoding.DecodeUint64Ascending(dataBytes)
 	if err != nil {
@@ -606,7 +594,7 @@ func (v Value) GetFloat() (float64, error) {
 // tag is not GEO an error will be returned.
 func (v Value) GetGeo() (geopb.SpatialObject, error) {
 	if tag := v.GetTag(); tag != ValueType_GEO {
-		return geopb.SpatialObject{}, errors.Errorf("value type is not %s: %s", ValueType_GEO, tag)
+		return geopb.SpatialObject{}, fmt.Errorf("value type is not %s: %s", ValueType_GEO, tag)
 	}
 	var ret geopb.SpatialObject
 	err := protoutil.Unmarshal(v.dataBytes(), &ret)
@@ -618,11 +606,11 @@ func (v Value) GetGeo() (geopb.SpatialObject, error) {
 func (v Value) GetBox2D() (geopb.BoundingBox, error) {
 	box := geopb.BoundingBox{}
 	if tag := v.GetTag(); tag != ValueType_BOX2D {
-		return box, errors.Errorf("value type is not %s: %s", ValueType_BOX2D, tag)
+		return box, fmt.Errorf("value type is not %s: %s", ValueType_BOX2D, tag)
 	}
 	dataBytes := v.dataBytes()
 	if len(dataBytes) != 32 {
-		return box, errors.Errorf("float64 value should be exactly 32 bytes: %d", len(dataBytes))
+		return box, fmt.Errorf("float64 value should be exactly 32 bytes: %d", len(dataBytes))
 	}
 	var err error
 	var val uint64
@@ -655,14 +643,14 @@ func (v Value) GetBox2D() (geopb.BoundingBox, error) {
 // an error will be returned.
 func (v Value) GetBool() (bool, error) {
 	if tag := v.GetTag(); tag != ValueType_INT {
-		return false, errors.Errorf("value type is not %s: %s", ValueType_INT, tag)
+		return false, fmt.Errorf("value type is not %s: %s", ValueType_INT, tag)
 	}
 	i, n := binary.Varint(v.dataBytes())
 	if n <= 0 {
-		return false, errors.Errorf("int64 varint decoding failed: %d", n)
+		return false, fmt.Errorf("int64 varint decoding failed: %d", n)
 	}
 	if i > 1 || i < 0 {
-		return false, errors.Errorf("invalid bool: %d", i)
+		return false, fmt.Errorf("invalid bool: %d", i)
 	}
 	return i != 0, nil
 }
@@ -671,11 +659,11 @@ func (v Value) GetBool() (bool, error) {
 // tag is not INT or the value cannot be decoded an error will be returned.
 func (v Value) GetInt() (int64, error) {
 	if tag := v.GetTag(); tag != ValueType_INT {
-		return 0, errors.Errorf("value type is not %s: %s", ValueType_INT, tag)
+		return 0, fmt.Errorf("value type is not %s: %s", ValueType_INT, tag)
 	}
 	i, n := binary.Varint(v.dataBytes())
 	if n <= 0 {
-		return 0, errors.Errorf("int64 varint decoding failed: %d", n)
+		return 0, fmt.Errorf("int64 varint decoding failed: %d", n)
 	}
 	return i, nil
 }
@@ -692,7 +680,7 @@ func (v Value) GetProto(msg protoutil.Message) error {
 	}
 
 	if tag := v.GetTag(); tag != expectedTag {
-		return errors.Errorf("value type is not %s: %s", expectedTag, tag)
+		return fmt.Errorf("value type is not %s: %s", expectedTag, tag)
 	}
 	return protoutil.Unmarshal(v.dataBytes(), msg)
 }
@@ -701,7 +689,7 @@ func (v Value) GetProto(msg protoutil.Message) error {
 // tag is not TIME an error will be returned.
 func (v Value) GetTime() (time.Time, error) {
 	if tag := v.GetTag(); tag != ValueType_TIME {
-		return time.Time{}, errors.Errorf("value type is not %s: %s", ValueType_TIME, tag)
+		return time.Time{}, fmt.Errorf("value type is not %s: %s", ValueType_TIME, tag)
 	}
 	_, t, err := encoding.DecodeTimeAscending(v.dataBytes())
 	return t, err
@@ -711,7 +699,7 @@ func (v Value) GetTime() (time.Time, error) {
 // tag is not TIMETZ an error will be returned.
 func (v Value) GetTimeTZ() (timetz.TimeTZ, error) {
 	if tag := v.GetTag(); tag != ValueType_TIMETZ {
-		return timetz.TimeTZ{}, errors.Errorf("value type is not %s: %s", ValueType_TIMETZ, tag)
+		return timetz.TimeTZ{}, fmt.Errorf("value type is not %s: %s", ValueType_TIMETZ, tag)
 	}
 	_, t, err := encoding.DecodeTimeTZAscending(v.dataBytes())
 	return t, err
@@ -721,7 +709,7 @@ func (v Value) GetTimeTZ() (timetz.TimeTZ, error) {
 // the tag is not DURATION an error will be returned.
 func (v Value) GetDuration() (duration.Duration, error) {
 	if tag := v.GetTag(); tag != ValueType_DURATION {
-		return duration.Duration{}, errors.Errorf("value type is not %s: %s", ValueType_DURATION, tag)
+		return duration.Duration{}, fmt.Errorf("value type is not %s: %s", ValueType_DURATION, tag)
 	}
 	_, t, err := encoding.DecodeDurationAscending(v.dataBytes())
 	return t, err
@@ -731,7 +719,7 @@ func (v Value) GetDuration() (duration.Duration, error) {
 // the tag is not BITARRAY an error will be returned.
 func (v Value) GetBitArray() (bitarray.BitArray, error) {
 	if tag := v.GetTag(); tag != ValueType_BITARRAY {
-		return bitarray.BitArray{}, errors.Errorf("value type is not %s: %s", ValueType_BITARRAY, tag)
+		return bitarray.BitArray{}, fmt.Errorf("value type is not %s: %s", ValueType_BITARRAY, tag)
 	}
 	_, t, err := encoding.DecodeUntaggedBitArrayValue(v.dataBytes())
 	return t, err
@@ -741,7 +729,7 @@ func (v Value) GetBitArray() (bitarray.BitArray, error) {
 // tag is not DECIMAL an error will be returned.
 func (v Value) GetDecimal() (apd.Decimal, error) {
 	if tag := v.GetTag(); tag != ValueType_DECIMAL {
-		return apd.Decimal{}, errors.Errorf("value type is not %s: %s", ValueType_DECIMAL, tag)
+		return apd.Decimal{}, fmt.Errorf("value type is not %s: %s", ValueType_DECIMAL, tag)
 	}
 	return encoding.DecodeNonsortingDecimal(v.dataBytes(), nil)
 }
@@ -751,7 +739,7 @@ func (v Value) GetDecimal() (apd.Decimal, error) {
 // tag is not DECIMAL an error will be returned.
 func (v Value) GetDecimalInto(d *apd.Decimal) error {
 	if tag := v.GetTag(); tag != ValueType_DECIMAL {
-		return errors.Errorf("value type is not %s: %s", ValueType_DECIMAL, tag)
+		return fmt.Errorf("value type is not %s: %s", ValueType_DECIMAL, tag)
 	}
 	return encoding.DecodeIntoNonsortingDecimal(d, v.dataBytes(), nil)
 }
@@ -773,7 +761,7 @@ func (v Value) GetTimeseries() (InternalTimeSeriesData, error) {
 // error will be returned.
 func (v Value) GetTuple() ([]byte, error) {
 	if tag := v.GetTag(); tag != ValueType_TUPLE {
-		return nil, errors.Errorf("value type is not %s: %s", ValueType_TUPLE, tag)
+		return nil, fmt.Errorf("value type is not %s: %s", ValueType_TUPLE, tag)
 	}
 	return v.dataBytes(), nil
 }
@@ -966,6 +954,9 @@ func MakeTransaction(
 	omitInRangefeeds bool,
 ) Transaction {
 	u := uuid.FastMakeV4()
+	// TODO(nvanbenschoten): technically, gul should be a synthetic timestamp.
+	// Make this change in v21.2 when all nodes in a cluster are guaranteed to
+	// be aware of synthetic timestamps by addressing the TODO in Timestamp.Add.
 	gul := now.Add(maxOffsetNs, 0)
 
 	return Transaction{
@@ -994,10 +985,13 @@ func MakeTransaction(
 }
 
 // LastActive returns the last timestamp at which client activity definitely
-// occurred, i.e. the maximum of MinTimestamp and LastHeartbeat.
+// occurred, i.e. the maximum of ReadTimestamp and LastHeartbeat.
 func (t Transaction) LastActive() hlc.Timestamp {
-	ts := t.MinTimestamp
-	ts.Forward(t.LastHeartbeat)
+	ts := t.LastHeartbeat
+	// TODO(nvanbenschoten): remove this when we remove synthetic timestamps.
+	if !t.ReadTimestamp.Synthetic {
+		ts.Forward(t.ReadTimestamp)
+	}
 	return ts
 }
 
@@ -1348,12 +1342,24 @@ func (t *Transaction) Update(o *Transaction) {
 
 	// Ratchet the transaction priority.
 	t.UpgradePriority(o.Priority)
-	// Defensive, since AdmissionPriority does not change. We have already
-	// handled the case of t being uninitialized at the beginning of this
-	// function.
-	t.AdmissionPriority = o.AdmissionPriority
-	// OmitInRangefeeds doesn't change.
-	t.OmitInRangefeeds = o.OmitInRangefeeds
+
+	// The following fields are not present in TransactionRecord, so we need to be
+	// careful when updating them since Transaction o might be coming from a
+	// TransactionRecord. If the fields were previously set, do not overwrite them
+	// with the default values. Conversely, if the fields were previously unset,
+	// allow updating them to handle the case when a Transaction proto updates a
+	// TransactionRecord proto.
+
+	// AdmissionPriority doesn't change after the transaction is created, so we
+	// don't ever expect to change it from a non-zero value to 0.
+	if o.AdmissionPriority != 0 {
+		t.AdmissionPriority = o.AdmissionPriority
+	}
+	// OmitInRangefeeds doesn't change after the transaction is created, so we
+	// don't ever expect to change it from true to false.
+	if o.OmitInRangefeeds {
+		t.OmitInRangefeeds = o.OmitInRangefeeds
+	}
 }
 
 // UpgradePriority sets transaction priority to the maximum of current
@@ -1805,6 +1811,9 @@ type LeaseSequence uint64
 // SafeValue implements the redact.SafeValue interface.
 func (s LeaseSequence) SafeValue() {}
 
+// SafeValue implements the redact.SafeValue interface.
+func (LeaseAcquisitionType) SafeValue() {}
+
 var _ fmt.Stringer = &Lease{}
 
 func (l Lease) String() string {
@@ -1875,19 +1884,10 @@ func (l Lease) Speculative() bool {
 // based leases, the start time of the lease is sufficient to
 // avoid using an older lease with same epoch.
 //
-// expToEpochEquiv indicates whether an expiration-based lease
-// can be considered equivalent to an epoch-based lease during
-// a promotion from expiration-based to epoch-based. It is used
-// for mixed-version compatibility.
-//
 // NB: Lease.Equivalent is NOT symmetric. For expiration-based
 // leases, a lease is equivalent to another with an equal or
-// later expiration, but not an earlier expiration. Similarly,
-// an expiration-based lease is equivalent to an epoch-based
-// lease with the same replica and start time (representing a
-// promotion from expiration-based to epoch-based), but the
-// reverse is not true.
-func (l Lease) Equivalent(newL Lease, expToEpochEquiv bool) bool {
+// later expiration, but not an earlier expiration.
+func (l Lease) Equivalent(newL Lease) bool {
 	// Ignore proposed timestamp & deprecated start stasis.
 	l.ProposedTS, newL.ProposedTS = nil, nil
 	l.DeprecatedStartStasis, newL.DeprecatedStartStasis = nil, nil
@@ -1916,37 +1916,15 @@ func (l Lease) Equivalent(newL Lease, expToEpochEquiv bool) bool {
 			l.Epoch, newL.Epoch = 0, 0
 		}
 	case LeaseExpiration:
-		switch newL.Type() {
-		case LeaseEpoch:
-			// An expiration-based lease being promoted to an epoch-based lease. This
-			// transition occurs after a successful lease transfer if the setting
-			// kv.transfer_expiration_leases_first.enabled is enabled.
-			//
-			// Expiration-based leases carry a local expiration timestamp. Epoch-based
-			// leases store their expiration indirectly in NodeLiveness. We assume that
-			// this promotion is only proposed if the liveness expiration is later than
-			// previous expiration carried by the expiration-based lease. This is a
-			// case where Equivalent is not commutative, as the reverse transition
-			// (from epoch-based to expiration-based) requires a sequence increment.
-			//
-			// Ignore epoch and expiration. The remaining fields which are compared
-			// are Replica and Start.
-			if expToEpochEquiv {
-				l.Epoch, newL.Epoch = 0, 0
-				l.Expiration, newL.Expiration = nil, nil
-			}
+		// See the comment above, though this field's nullability wasn't
+		// changed. We nil it out for completeness only.
+		l.Epoch, newL.Epoch = 0, 0
 
-		case LeaseExpiration:
-			// See the comment above, though this field's nullability wasn't
-			// changed. We nil it out for completeness only.
-			l.Epoch, newL.Epoch = 0, 0
-
-			// For expiration-based leases, extensions are considered equivalent.
-			// This is one case where Equivalent is not commutative and, as such,
-			// requires special handling beneath Raft (see checkForcedErr).
-			if l.GetExpiration().LessEq(newL.GetExpiration()) {
-				l.Expiration, newL.Expiration = nil, nil
-			}
+		// For expiration-based leases, extensions are considered equivalent.
+		// This is the one case where Equivalent is not commutative and, as
+		// such, requires special handling beneath Raft (see checkForcedErr).
+		if l.GetExpiration().LessEq(newL.GetExpiration()) {
+			l.Expiration, newL.Expiration = nil, nil
 		}
 	}
 	return l == newL

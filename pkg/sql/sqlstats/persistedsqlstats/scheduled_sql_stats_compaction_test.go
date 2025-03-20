@@ -1,12 +1,7 @@
 // Copyright 2021 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package persistedsqlstats_test
 
@@ -20,7 +15,6 @@ import (
 
 	"github.com/cockroachdb/cockroach/pkg/base"
 	"github.com/cockroachdb/cockroach/pkg/jobs"
-	"github.com/cockroachdb/cockroach/pkg/jobs/jobspb"
 	"github.com/cockroachdb/cockroach/pkg/jobs/jobstest"
 	"github.com/cockroachdb/cockroach/pkg/scheduledjobs"
 	"github.com/cockroachdb/cockroach/pkg/sql"
@@ -109,12 +103,12 @@ func verifySQLStatsCompactionScheduleCreatedOnStartup(t *testing.T, helper *test
 }
 
 func getSQLStatsCompactionSchedule(t *testing.T, helper *testHelper) *jobs.ScheduledJob {
-	var scheduleID jobspb.ScheduleID
+	var jobID int64
 	helper.sqlDB.
 		QueryRow(t, `SELECT schedule_id FROM system.scheduled_jobs WHERE schedule_name = 'sql-stats-compaction'`).
-		Scan(&scheduleID)
+		Scan(&jobID)
 	schedules := jobs.ScheduledJobDB(helper.server.InternalDB().(isql.DB))
-	sj, err := schedules.Load(context.Background(), helper.env, scheduleID)
+	sj, err := schedules.Load(context.Background(), helper.env, jobID)
 	require.NoError(t, err)
 	require.NotNil(t, sj)
 	return sj

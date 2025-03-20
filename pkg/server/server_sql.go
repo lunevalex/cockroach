@@ -1,12 +1,7 @@
 // Copyright 2020 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package server
 
@@ -47,7 +42,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/multitenant"
 	"github.com/cockroachdb/cockroach/pkg/multitenant/mtinfopb"
 	"github.com/cockroachdb/cockroach/pkg/multitenant/tenantcapabilities"
-	"github.com/cockroachdb/cockroach/pkg/obs"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/rpc"
 	"github.com/cockroachdb/cockroach/pkg/rpc/nodedialer"
@@ -57,6 +51,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/security/username"
 	"github.com/cockroachdb/cockroach/pkg/server/autoconfig"
 	"github.com/cockroachdb/cockroach/pkg/server/diagnostics"
+	"github.com/cockroachdb/cockroach/pkg/server/license"
 	"github.com/cockroachdb/cockroach/pkg/server/pgurl"
 	"github.com/cockroachdb/cockroach/pkg/server/serverctl"
 	"github.com/cockroachdb/cockroach/pkg/server/serverpb"
@@ -401,9 +396,6 @@ type sqlServerArgs struct {
 	// grpc is the RPC service.
 	grpc *grpcServer
 
-	// eventsExporter communicates with the Observability Service.
-	eventsExporter obs.EventsExporterInterface
-
 	// externalStorageBuilder is the constructor for accesses to external
 	// storage.
 	externalStorageBuilder *externalStorageBuilder
@@ -515,12 +507,11 @@ func (r *refreshInstanceSessionListener) OnSessionDeleted(
 			}
 			if _, err := r.cfg.sqlInstanceStorage.CreateNodeInstance(
 				ctx,
-				s.ID(),
-				s.Expiration(),
+				s,
 				r.cfg.AdvertiseAddr,
 				r.cfg.SQLAdvertiseAddr,
 				r.cfg.Locality,
-				r.cfg.Settings.Version.LatestVersion(),
+				r.cfg.Settings.Version.BinaryVersion(),
 				nodeID,
 			); err != nil {
 				log.Warningf(ctx, "failed to update instance with new session ID: %v", err)
@@ -626,12 +617,12 @@ func newSQLServer(ctx context.Context, cfg sqlServerArgs) (*SQLServer, error) {
 	} else {
 		// In a multi-tenant environment, use the sqlInstanceReader to resolve
 		// SQL pod addresses.
-		addressResolver := func(nodeID roachpb.NodeID) (net.Addr, error) {
+		addressResolver := func(nodeID roachpb.NodeID) (net.Addr, roachpb.Locality, error) {
 			info, err := cfg.sqlInstanceReader.GetInstance(cfg.rpcContext.MasterCtx, base.SQLInstanceID(nodeID))
 			if err != nil {
-				return nil, errors.Wrapf(err, "unable to look up descriptor for n%d", nodeID)
+				return nil, roachpb.Locality{}, errors.Wrapf(err, "unable to look up descriptor for n%d", nodeID)
 			}
-			return &util.UnresolvedAddr{AddressField: info.InstanceRPCAddr}, nil
+			return &util.UnresolvedAddr{AddressField: info.InstanceRPCAddr}, info.Locality, nil
 		}
 		cfg.sqlInstanceDialer = nodedialer.New(cfg.rpcContext, addressResolver)
 	}
@@ -662,6 +653,7 @@ func newSQLServer(ctx context.Context, cfg sqlServerArgs) (*SQLServer, error) {
 			},
 			jobAdoptionStopFile,
 			jobsKnobs,
+			cfg.CidrLookup,
 		)
 	}
 	cfg.registry.AddMetricStruct(jobRegistry.MetricsStruct())
@@ -679,7 +671,6 @@ func newSQLServer(ctx context.Context, cfg sqlServerArgs) (*SQLServer, error) {
 		cfg.clock,
 		cfg.Settings,
 		settingsWatcher,
-		cfg.sqlLivenessProvider,
 		codec,
 		lmKnobs,
 		cfg.stopper,
@@ -1033,10 +1024,11 @@ func newSQLServer(ctx context.Context, cfg sqlServerArgs) (*SQLServer, error) {
 		RangeProber:                rangeprober.NewRangeProber(cfg.db),
 		DescIDGenerator:            descidgen.NewGenerator(cfg.Settings, codec, cfg.db),
 		RangeStatsFetcher:          rangeStatsFetcher,
-		EventsExporter:             cfg.eventsExporter,
 		NodeDescs:                  cfg.nodeDescs,
 		TenantCapabilitiesReader:   cfg.tenantCapabilitiesReader,
 		AutoConfigProvider:         cfg.AutoConfigProvider,
+		LicenseEnforcer:            cfg.SQLConfig.LicenseEnforcer,
+		CidrLookup:                 cfg.BaseConfig.CidrLookup,
 	}
 
 	if codec.ForSystemTenant() {
@@ -1124,12 +1116,17 @@ func newSQLServer(ctx context.Context, cfg sqlServerArgs) (*SQLServer, error) {
 		}
 	}
 
+	var tableStatsTestingKnobs *stats.TableStatsTestingKnobs
+	if tableStatsKnobs := cfg.TestingKnobs.TableStatsKnobs; tableStatsKnobs != nil {
+		tableStatsTestingKnobs = tableStatsKnobs.(*stats.TableStatsTestingKnobs)
+	}
 	statsRefresher := stats.MakeRefresher(
 		cfg.AmbientCtx,
 		cfg.Settings,
 		cfg.circularInternalExecutor,
 		execCfg.TableStatsCache,
 		stats.DefaultAsOfTime,
+		tableStatsTestingKnobs,
 	)
 	execCfg.StatsRefresher = statsRefresher
 
@@ -1146,7 +1143,6 @@ func newSQLServer(ctx context.Context, cfg sqlServerArgs) (*SQLServer, error) {
 		sqlMemMetrics,
 		rootSQLMemoryMonitor,
 		cfg.HistogramWindowInterval(),
-		cfg.eventsExporter,
 		execCfg,
 	)
 
@@ -1337,21 +1333,21 @@ func newSQLServer(ctx context.Context, cfg sqlServerArgs) (*SQLServer, error) {
 		waitForInstanceReaderStarted,
 	)
 
-	reporter := &diagnostics.Reporter{
-		StartTime:        timeutil.Now(),
-		AmbientCtx:       &cfg.AmbientCtx,
-		Config:           cfg.BaseConfig.Config,
-		Settings:         cfg.Settings,
-		StorageClusterID: cfg.rpcContext.StorageClusterID.Get,
-		LogicalClusterID: clusterIDForSQL.Get,
-		TenantID:         cfg.rpcContext.TenantID,
-		SQLInstanceID:    cfg.nodeIDContainer.SQLInstanceID,
-		SQLServer:        pgServer.SQLServer,
-		InternalExec:     cfg.circularInternalExecutor,
-		DB:               cfg.db,
-		Recorder:         cfg.recorder,
-		Locality:         cfg.Locality,
-	}
+	reporter := diagnostics.NewDiagnosticReporter(
+		timeutil.Now(),
+		&cfg.AmbientCtx,
+		cfg.BaseConfig.Config,
+		cfg.Settings,
+		cfg.rpcContext.StorageClusterID.Get,
+		clusterIDForSQL.Get,
+		cfg.rpcContext.TenantID,
+		cfg.nodeIDContainer.SQLInstanceID,
+		pgServer.SQLServer,
+		cfg.circularInternalExecutor,
+		cfg.db,
+		cfg.recorder,
+		cfg.Locality,
+	)
 
 	if cfg.TestingKnobs.Server != nil {
 		reporter.TestingKnobs = &cfg.TestingKnobs.Server.(*TestingKnobs).DiagnosticsTestingKnobs
@@ -1449,6 +1445,24 @@ func (s *SQLServer) preStart(
 		}
 	}
 
+	// Initialize the version cluster setting from storage.
+	//
+	// NB: In the context of the system tenant, we may not have
+	// the version setting in SQL yet even though the in memory
+	// setting has been initialized in.
+	currentVersion := s.execCfg.Settings.Version.ActiveVersionOrEmpty(ctx).Version
+	if currentVersion.Equal(roachpb.Version{}) {
+		if err := s.execCfg.DB.Txn(ctx, func(ctx context.Context, txn *kv.Txn) (err error) {
+			v, err := s.settingsWatcher.GetClusterVersionFromStorage(ctx, txn)
+			if err != nil {
+				return err
+			}
+			return clusterversion.Initialize(ctx, v.Version, &s.execCfg.Settings.SV)
+		}); err != nil {
+			return errors.Wrap(err, "initializing cluster version")
+		}
+	}
+
 	// Initialize the settings watcher early in sql server startup. Settings
 	// values are meaningless before the watcher is initialized and most sub
 	// systems depend on system settings.
@@ -1490,7 +1504,7 @@ func (s *SQLServer) preStart(
 
 	// Start instance ID reclaim loop.
 	if err := s.sqlInstanceStorage.RunInstanceIDReclaimLoop(
-		ctx, stopper, timeutil.DefaultTimeSource{}, s.internalDB, session.Expiration,
+		ctx, stopper, timeutil.DefaultTimeSource{}, s.internalDB, session,
 	); err != nil {
 		return err
 	}
@@ -1507,23 +1521,21 @@ func (s *SQLServer) preStart(
 				// Write/acquire our instance row.
 				return s.sqlInstanceStorage.CreateNodeInstance(
 					ctx,
-					session.ID(),
-					session.Expiration(),
+					session,
 					s.cfg.AdvertiseAddr,
 					s.cfg.SQLAdvertiseAddr,
 					s.distSQLServer.Locality,
-					s.execCfg.Settings.Version.LatestVersion(),
+					s.execCfg.Settings.Version.BinaryVersion(),
 					nodeID,
 				)
 			}
 			return s.sqlInstanceStorage.CreateInstance(
 				ctx,
-				session.ID(),
-				session.Expiration(),
+				session,
 				s.cfg.AdvertiseAddr,
 				s.cfg.SQLAdvertiseAddr,
 				s.distSQLServer.Locality,
-				s.execCfg.Settings.Version.LatestVersion(),
+				s.execCfg.Settings.Version.BinaryVersion(),
 			)
 		})
 	if err != nil {
@@ -1563,14 +1575,20 @@ func (s *SQLServer) preStart(
 	s.temporaryObjectCleaner.Start(ctx, stopper)
 	s.distSQLServer.Start()
 	s.pgServer.Start(ctx, stopper)
-
-	// NB: While the pgServer is started at this point, the
-	// permanent migrations have not run. We should take extreme
-	// care about what uses the SQL server before those migrations
-	// run.
+	if err := s.statsRefresher.Start(ctx, stopper, stats.DefaultRefreshInterval); err != nil {
+		return err
+	}
+	s.stmtDiagnosticsRegistry.Start(ctx, stopper)
+	if err := s.execCfg.TableStatsCache.Start(ctx, s.execCfg.Codec, s.execCfg.RangeFeedFactory); err != nil {
+		return err
+	}
 
 	s.leaseMgr.RefreshLeases(ctx, stopper, s.execCfg.DB)
 	s.leaseMgr.PeriodicallyRefreshSomeLeases(ctx)
+
+	ieMon := sql.MakeInternalExecutorMemMonitor(sql.MemoryMetrics{}, s.execCfg.Settings)
+	ieMon.StartNoReserved(ctx, s.pgServer.SQLServer.GetBytesMonitor())
+	s.stopper.AddCloser(stop.CloserFn(func() { ieMon.Stop(ctx) }))
 
 	if err := s.jobRegistry.Start(ctx, stopper); err != nil {
 		return err
@@ -1655,20 +1673,20 @@ func (s *SQLServer) preStart(
 		}); err != nil {
 		return err
 	}
-	if s.execCfg.Settings.Version.LatestVersion().Less(tenantActiveVersion.Version) {
+	if s.execCfg.Settings.Version.BinaryVersion().Less(tenantActiveVersion.Version) {
 		return errors.WithHintf(errors.Newf("preventing SQL server from starting because its binary version "+
 			"is too low for the tenant active version: server binary version = %v, tenant active version = %v",
-			s.execCfg.Settings.Version.LatestVersion(), tenantActiveVersion.Version),
+			s.execCfg.Settings.Version.BinaryVersion(), tenantActiveVersion.Version),
 			"use a tenant binary whose version is at least %v", tenantActiveVersion.Version)
 	}
 
 	// Prevent the server from starting if its minimum supported binary version is too high
 	// for the tenant cluster version.
-	if tenantActiveVersion.Version.Less(s.execCfg.Settings.Version.MinSupportedVersion()) {
+	if tenantActiveVersion.Version.Less(s.execCfg.Settings.Version.BinaryMinSupportedVersion()) {
 		return errors.WithHintf(errors.Newf("preventing SQL server from starting because its executable "+
 			"version is too new to run the current active logical version of the virtual cluster"),
 			"finalize the virtual cluster version to at least %v or downgrade the"+
-				"executable version to at most %v", s.execCfg.Settings.Version.MinSupportedVersion(), tenantActiveVersion.Version,
+				"executable version to at most %v", s.execCfg.Settings.Version.BinaryMinSupportedVersion(), tenantActiveVersion.Version,
 		)
 	}
 
@@ -1676,19 +1694,13 @@ func (s *SQLServer) preStart(
 	// node. This also uses SQL.
 	s.leaseMgr.DeleteOrphanedLeases(ctx, orphanedLeasesTimeThresholdNanos)
 
-	if err := s.statsRefresher.Start(ctx, stopper, stats.DefaultRefreshInterval); err != nil {
-		return err
-	}
-	s.stmtDiagnosticsRegistry.Start(ctx, stopper)
-	if err := s.execCfg.TableStatsCache.Start(ctx, s.execCfg.Codec, s.execCfg.RangeFeedFactory); err != nil {
-		return err
-	}
-
 	scheduledlogging.Start(
 		ctx, stopper, s.execCfg.InternalDB, s.execCfg.Settings,
 		s.execCfg.CaptureIndexUsageStatsKnobs,
 	)
 	s.execCfg.SyntheticPrivilegeCache.Start(ctx)
+
+	s.startLicenseEnforcer(ctx, knobs)
 
 	// Report a warning if the server is being shut down via the stopper
 	// before it was gracefully drained. This warning may be innocuous
@@ -1885,6 +1897,37 @@ func (s *SQLServer) StartDiagnostics(ctx context.Context) {
 	s.diagnosticsReporter.PeriodicallyReportDiagnostics(ctx, s.stopper)
 }
 
+func (s *SQLServer) startLicenseEnforcer(ctx context.Context, knobs base.TestingKnobs) {
+	// Start the license enforcer. This is only started for the system tenant since
+	// it requires access to the system keyspace. For secondary tenants, this struct
+	// is shared to provide access to the values cached from the KV read.
+	licenseEnforcer := s.execCfg.LicenseEnforcer
+	opts := []license.Option{
+		license.WithDB(s.internalDB),
+		license.WithSystemTenant(s.execCfg.Codec.ForSystemTenant()),
+		license.WithTelemetryStatusReporter(s.diagnosticsReporter),
+	}
+	if s.tenantConnect != nil {
+		opts = append(opts, license.WithMetadataAccessor(s.tenantConnect))
+	}
+	if knobs.LicenseTestingKnobs != nil {
+		opts = append(opts, license.WithTestingKnobs(knobs.LicenseTestingKnobs.(*license.TestingKnobs)))
+	}
+	err := startup.RunIdempotentWithRetry(ctx, s.stopper.ShouldQuiesce(), "license enforcer start",
+		func(ctx context.Context) error {
+			return licenseEnforcer.Start(ctx, s.cfg.Settings, opts...)
+		})
+	// This is not a critical component. If it fails to start, we log a warning
+	// rather than prevent the entire server from starting.
+	if err != nil {
+		log.Warningf(ctx, "failed to start the license enforcer: %v", err)
+	}
+}
+
+func (s *SQLServer) disableLicenseEnforcement(ctx context.Context) {
+	s.execCfg.LicenseEnforcer.Disable(ctx)
+}
+
 // AnnotateCtx annotates the given context with the server tracer and tags.
 func (s *SQLServer) AnnotateCtx(ctx context.Context) context.Context {
 	return s.ambientCtx.AnnotateCtx(ctx)
@@ -1898,13 +1941,12 @@ func startServeSQL(
 	pgPreServer *pgwire.PreServeConnHandler,
 	serveConn func(ctx context.Context, conn net.Conn, preServeStatus pgwire.PreServeStatus) error,
 	pgL net.Listener,
-	st *cluster.Settings,
 	socketFileCfg *string,
 ) error {
 	log.Ops.Info(ctx, "serving sql connections")
 	// Start servicing SQL connections.
 
-	tcpKeepAlive := makeTCPKeepAliveManager(st)
+	tcpKeepAlive := makeTCPKeepAliveManager()
 
 	// The connManager is responsible for tearing down the net.Conn
 	// objects when the stopper tells us to shut down.
@@ -1922,6 +1964,7 @@ func startServeSQL(
 					log.Ops.Errorf(connCtx, "serving SQL client conn: %v", err)
 					return
 				}
+				defer status.ReleaseMemory(ctx)
 
 				if err := serveConn(connCtx, conn, status); err != nil {
 					log.Ops.Errorf(connCtx, "serving SQL client conn: %v", err)
@@ -1979,6 +2022,7 @@ func startServeSQL(
 						log.Ops.Errorf(connCtx, "serving SQL client conn: %v", err)
 						return
 					}
+					defer status.ReleaseMemory(ctx)
 
 					if err := serveConn(connCtx, conn, status); err != nil {
 						log.Ops.Errorf(connCtx, "serving SQL client conn: %v", err)
@@ -2087,4 +2131,13 @@ func (s *SQLServer) ExecutorConfig() *sql.ExecutorConfig {
 // InternalExecutor returns an executor for internal SQL queries.
 func (s *SQLServer) InternalExecutor() isql.Executor {
 	return s.internalExecutor
+}
+
+func (s *SQLServer) PGServer() *pgwire.Server {
+	return s.pgServer
+}
+
+// MetricsRegistry returns the application-level metrics registry.
+func (s *SQLServer) MetricsRegistry() *metric.Registry {
+	return s.metricsRegistry
 }

@@ -1,12 +1,7 @@
 // Copyright 2017 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package idxconstraint
 
@@ -299,9 +294,8 @@ func (c *indexConstraintCtx) makeSpansForSingleColumnDatum(
 					// If pattern is simply prefix + .* the span is tight. Also pattern
 					// will have regexp special chars escaped and so prefix needs to be
 					// escaped too.
-					if prefixEscape, err := eval.LikeEscape(prefix); err == nil {
-						return strings.HasSuffix(pattern, ".*") && strings.TrimSuffix(pattern, ".*") == prefixEscape
-					}
+					prefixEscape := regexp.QuoteMeta(prefix)
+					return strings.HasSuffix(pattern, ".*") && strings.TrimSuffix(pattern, ".*") == prefixEscape
 				}
 			}
 		}
@@ -646,22 +640,22 @@ func (c *indexConstraintCtx) makeSpansForExpr(
 				// Attempt to convert the constraint into a disjunction of ANDed IS
 				// predicates, with additional derived IS conjuncts on computed
 				// columns based on columns in the constraint spans.
-				// TODO(msirek/mgartner): Modify CombineComputedColFilters to build a
-				// `Constraint` or `constraint.Set` directly instead of building a
-				// filter and calling `makeSpansForExpr`.
-				computedColumnFilters := norm.CombineComputedColFilters(
+				// TODO(mgartner): Modify CombineComputedColFilters to build a
+				// `Constraint` or `constraint.Set` directly instead of building
+				// a filter and calling `makeSpansForExpr`.
+				disjunctions := norm.CombineComputedColFilters(
 					c.computedCols,
 					c.keyCols,
 					c.colsInComputedColsExpressions,
 					constraints.Constraint(0),
 					c.factory,
 				)
-				if len(computedColumnFilters) == 1 {
-					// All predicates in `computedColumnFilters[0].Condition` fully
-					// represent the original condition plus derived predicates, so we
-					// only have to make spans on the new condition.
+				if len(disjunctions) > 0 {
+					// All disjunctions fully represent the original condition
+					// plus derived predicates, so we only have to make spans on
+					// the list of disjunctions.
 					c.skipComputedColPredDerivation = true
-					localTight := c.makeSpansForExpr(offset, computedColumnFilters[0].Condition, out)
+					localTight := c.binaryMergeSpansForOr(offset, disjunctions, out)
 					c.skipComputedColPredDerivation = false
 					return localTight
 				}
@@ -704,12 +698,6 @@ func (c *indexConstraintCtx) makeSpansForExpr(
 
 	case *memo.RangeExpr:
 		return c.makeSpansForExpr(offset, t.And, out)
-	}
-
-	// Support e as (c = TRUE) if c is an indexed, boolean, computed expression
-	// equivalent to e. This is similar to the VariableExpr case above.
-	if c.colType(offset).Family() == types.BoolFamily && c.isExpressionIndexColumn(e, offset) {
-		return c.makeSpansForSingleColumnDatum(offset, opt.EqOp, tree.DBoolTrue, out)
 	}
 
 	if e.ChildCount() < 2 {
@@ -1286,15 +1274,6 @@ func (c *indexConstraintCtx) isIndexColumn(e opt.Expr, offset int) bool {
 	if v, ok := e.(*memo.VariableExpr); ok && v.Col == c.columns[offset].ID() {
 		return true
 	}
-	if c.isExpressionIndexColumn(e, offset) {
-		return true
-	}
-	return false
-}
-
-// isExpressionIndexColumn returns true if e is computed column expression that
-// corresponds to index column <offset>.
-func (c *indexConstraintCtx) isExpressionIndexColumn(e opt.Expr, offset int) bool {
 	if c.computedCols != nil && e == c.computedCols[c.columns[offset].ID()] {
 		return true
 	}

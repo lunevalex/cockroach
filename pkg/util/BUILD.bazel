@@ -55,11 +55,8 @@ go_test(
         "topk_test.go",
         "unresolved_addr_test.go",
     ],
+    args = ["-test.timeout=55s"],
     embed = [":util"],
-    exec_properties = select({
-        "//build/toolchains:is_heavy": {"Pool": "heavy"},
-        "//conditions:default": {"Pool": "default"},
-    }),
     deps = [
         "//pkg/util/randutil",
         "//pkg/util/timeutil",

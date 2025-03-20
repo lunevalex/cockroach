@@ -1,12 +1,7 @@
 // Copyright 2017 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package security_test
 
@@ -292,8 +287,8 @@ func TestNamingScheme(t *testing.T) {
 				{"client.root.key", 0700, []byte{}},
 			},
 			certs: []security.CertInfo{
-				{FileUsage: security.ClientPem, Filename: "client.root.crt", Name: "root",
-					Error: errors.New(`client certificate has principals \["notroot"\], expected "root"`)},
+				{FileUsage: security.ClientPem, Filename: "client.root.crt", KeyFilename: "client.root.key",
+					Name: "root", FileContents: notRootCert, KeyFileContents: []byte{}},
 				{FileUsage: security.NodePem, Filename: "node.crt", KeyFilename: "node.key",
 					FileContents: badUserNodeCert, KeyFileContents: []byte("node.key")},
 			},

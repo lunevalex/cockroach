@@ -1,12 +1,7 @@
 // Copyright 2020 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package cli
 
@@ -138,17 +133,19 @@ func streamMap(out io.Writer, in io.Reader, fn func(string) (bool, string, error
 // - Go (or C) quoted string
 func interpretString(s string) ([]byte, bool) {
 	// Try hex.
-	if bytes, err := gohex.DecodeString(s); err == nil {
+	bytes, err := gohex.DecodeString(s)
+	if err == nil {
 		return bytes, true
 	}
 	// Support PG \xDEADBEEF format (ie bytea_output default).
 	if strings.HasPrefix(s, "\\x") {
-		if bytes, err := gohex.DecodeString(s[2:]); err == nil {
+		if bytes, err = gohex.DecodeString(s[2:]); err == nil {
 			return bytes, true
 		}
 	}
 	// Try base64.
-	if bytes, err := base64.StdEncoding.DecodeString(s); err == nil {
+	bytes, err = base64.StdEncoding.DecodeString(s)
+	if err == nil {
 		return bytes, true
 	}
 	// Try quoted string.

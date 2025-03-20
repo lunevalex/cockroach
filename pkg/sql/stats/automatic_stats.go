@@ -1,12 +1,7 @@
 // Copyright 2018 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package stats
 
@@ -18,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/cockroachdb/cockroach/pkg/base"
 	"github.com/cockroachdb/cockroach/pkg/jobs/jobspb"
 	"github.com/cockroachdb/cockroach/pkg/keys"
 	"github.com/cockroachdb/cockroach/pkg/settings"
@@ -222,6 +218,7 @@ type Refresher struct {
 	ex      isql.Executor
 	cache   *TableStatisticsCache
 	randGen autoStatsRand
+	knobs   *TableStatsTestingKnobs
 
 	// mutations is the buffered channel used to pass messages containing
 	// metadata about SQL mutations to the background Refresher thread.
@@ -280,6 +277,17 @@ type settingOverride struct {
 	settings catpb.AutoStatsSettings
 }
 
+// TableStatsTestingKnobs contains testing knobs for table statistics.
+type TableStatsTestingKnobs struct {
+	// DisableInitialTableCollection, if set, indicates that the "initial table
+	// collection" performed by the Refresher should be skipped.
+	DisableInitialTableCollection bool
+}
+
+var _ base.ModuleTestingKnobs = &TableStatsTestingKnobs{}
+
+func (k *TableStatsTestingKnobs) ModuleTestingKnobs() {}
+
 // MakeRefresher creates a new Refresher.
 func MakeRefresher(
 	ambientCtx log.AmbientContext,
@@ -287,6 +295,7 @@ func MakeRefresher(
 	ex isql.Executor,
 	cache *TableStatisticsCache,
 	asOfTime time.Duration,
+	knobs *TableStatsTestingKnobs,
 ) *Refresher {
 	randSource := rand.NewSource(rand.Int63())
 
@@ -296,6 +305,7 @@ func MakeRefresher(
 		ex:               ex,
 		cache:            cache,
 		randGen:          makeAutoStatsRand(randSource),
+		knobs:            knobs,
 		mutations:        make(chan mutation, refreshChanBufferLen),
 		settings:         make(chan settingOverride, refreshChanBufferLen),
 		asOfTime:         asOfTime,
@@ -406,8 +416,7 @@ func (r *Refresher) SetDraining() {
 func (r *Refresher) Start(
 	ctx context.Context, stopper *stop.Stopper, refreshInterval time.Duration,
 ) error {
-	stoppingCtx, _ := stopper.WithCancelOnQuiesce(context.Background())
-	bgCtx := r.AnnotateCtx(stoppingCtx)
+	bgCtx := r.AnnotateCtx(context.Background())
 	r.startedTasksWG.Add(1)
 	if err := stopper.RunAsyncTask(bgCtx, "refresher", func(ctx context.Context) {
 		defer r.startedTasksWG.Done()
@@ -431,6 +440,9 @@ func (r *Refresher) Start(
 		for {
 			select {
 			case <-initialTableCollection:
+				if r.knobs != nil && r.knobs.DisableInitialTableCollection {
+					continue
+				}
 				r.ensureAllTables(ctx, &r.st.SV, initialTableCollectionDelay)
 				if len(r.mutationCounts) > 0 {
 					ensuringAllTables = true
@@ -473,7 +485,7 @@ func (r *Refresher) Start(
 							break
 						case <-r.drainAutoStats:
 							return
-						case <-ctx.Done():
+						case <-stopper.ShouldQuiesce():
 							return
 						}
 
@@ -518,7 +530,9 @@ func (r *Refresher) Start(
 							r.maybeRefreshStats(ctx, stopper, tableID, explicitSettings, rowsAffected, r.asOfTime)
 
 							select {
-							case <-ctx.Done():
+							case <-stopper.ShouldQuiesce():
+								// Don't bother trying to refresh the remaining tables if we
+								// are shutting down.
 								return
 							case <-r.drainAutoStats:
 								// Ditto.
@@ -553,7 +567,8 @@ func (r *Refresher) Start(
 			case <-r.drainAutoStats:
 				log.Infof(ctx, "draining auto stats refresher")
 				return
-			case <-ctx.Done():
+			case <-stopper.ShouldQuiesce():
+				log.Info(ctx, "quiescing auto stats refresher")
 				return
 			}
 		}
@@ -621,37 +636,38 @@ func (r *Refresher) Start(
 
 const (
 	getAllTablesTemplateSQL = `
-SELECT
-	tbl.table_id
-FROM
-	crdb_internal.tables AS tbl
-	INNER JOIN system.descriptor AS d ON d.id = tbl.table_id
-		AS OF SYSTEM TIME '-%s'
+WITH descs AS (
+  SELECT
+    d.id AS id,
+    crdb_internal.pb_to_json('desc', d.descriptor, false) AS descriptor_json,
+    (n."parentID" = 1) AS is_system_table
+  FROM system.descriptor AS d
+  INNER JOIN system.namespace AS n ON d.id = n.id
+	WHERE n."parentSchemaID" != 0
+)
+SELECT descs.id
+FROM descs
+AS OF SYSTEM TIME '-%s'
 WHERE
-	tbl.database_name IS NOT NULL
-	AND tbl.table_id NOT IN (%d, %d, %d)  -- excluded system tables
-	AND tbl.drop_time IS NULL
-	AND (
-			crdb_internal.pb_to_json('cockroach.sql.sqlbase.Descriptor', d.descriptor, false)->'table'->>'viewQuery'
-		) IS NULL
+	id NOT IN (%d, %d, %d)  -- excluded system tables
+  AND descriptor_json ? 'table'
+	AND NOT descriptor_json->'table' ? 'viewQuery'
+	AND NOT descriptor_json->'table' ? 'dropTime'
 	%s
 	%s`
 
 	explicitlyEnabledTablesPredicate = `AND
-	(crdb_internal.pb_to_json('cockroach.sql.sqlbase.Descriptor',
-		d.descriptor, false)->'table'->'autoStatsSettings' ->> 'enabled' = 'true'
-	)`
+	(descriptor_json->'table'->'autoStatsSettings' ->> 'enabled' = 'true')`
 
 	autoStatsEnabledOrNotSpecifiedPredicate = `AND
-	(crdb_internal.pb_to_json('cockroach.sql.sqlbase.Descriptor',
-		d.descriptor, false)->'table'->'autoStatsSettings'->'enabled' IS NULL
-	 OR crdb_internal.pb_to_json('cockroach.sql.sqlbase.Descriptor',
-		d.descriptor, false)->'table'->'autoStatsSettings' ->> 'enabled' = 'true'
+	(
+    descriptor_json->'table'->'autoStatsSettings'->'enabled' IS NULL
+	  OR descriptor_json->'table'->'autoStatsSettings' ->> 'enabled' = 'true'
 	)`
 
 	autoStatsOnSystemTablesEnabledPredicate = `AND TRUE`
 
-	autoStatsOnSystemTablesDisabledPredicate = `AND tbl.database_name != 'system'`
+	autoStatsOnSystemTablesDisabledPredicate = `AND NOT is_system_table`
 )
 
 func (r *Refresher) getApplicableTables(
@@ -789,7 +805,7 @@ func (r *Refresher) maybeRefreshStats(
 	rowsAffected int64,
 	asOf time.Duration,
 ) {
-	tableStats, err := r.cache.getTableStatsFromCache(ctx, tableID, nil /* forecast */)
+	tableStats, err := r.cache.getTableStatsFromCache(ctx, tableID, nil /* forecast */, nil /* udtCols */)
 	if err != nil {
 		log.Errorf(ctx, "failed to get table statistics: %v", err)
 		return

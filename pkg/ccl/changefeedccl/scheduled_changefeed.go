@@ -1,10 +1,7 @@
 // Copyright 2022 The Cockroach Authors.
 //
-// Licensed as a CockroachDB Enterprise file under the Cockroach Community
-// License (the "License"); you may not use this file except in compliance with
-// the License. You may obtain a copy of the License at
-//
-//     https://github.com/cockroachdb/cockroach/blob/master/licenses/CCL.txt
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package changefeedccl
 
@@ -218,7 +215,7 @@ func extractChangefeedStatement(sj *jobs.ScheduledJob) (*annotatedChangefeedStat
 			CreateChangefeed: stmt,
 			CreatedByInfo: &jobs.CreatedByInfo{
 				Name: jobs.CreatedByScheduledJobs,
-				ID:   int64(sj.ScheduleID()),
+				ID:   sj.ScheduleID(),
 			},
 		}, nil
 	}
@@ -322,7 +319,7 @@ func makeScheduledChangefeedSpec(
 	}
 
 	enterpriseCheckErr := utilccl.CheckEnterpriseEnabled(
-		p.ExecCfg().Settings,
+		p.ExecCfg().Settings, p.ExecCfg().NodeInfo.LogicalClusterID(),
 		opName)
 
 	if !(enterpriseCheckErr == nil) {
@@ -393,7 +390,7 @@ func makeChangefeedSchedule(
 func dryRunCreateChangefeed(
 	ctx context.Context,
 	p sql.PlanHookState,
-	scheduleID jobspb.ScheduleID,
+	scheduleID int64,
 	createChangefeedNode *tree.CreateChangefeed,
 ) error {
 	sp, err := p.ExtendedEvalContext().Txn.CreateSavepoint(ctx)
@@ -406,7 +403,7 @@ func dryRunCreateChangefeed(
 			CreateChangefeed: createChangefeedNode,
 			CreatedByInfo: &jobs.CreatedByInfo{
 				Name: jobs.CreatedByScheduledJobs,
-				ID:   int64(scheduleID),
+				ID:   scheduleID,
 			},
 		}
 		changefeedFn, err := planCreateChangefeed(ctx, p, annotated)
@@ -492,7 +489,7 @@ func emitSchedule(
 	resultsCh chan<- tree.Datums,
 ) error {
 	opts := changefeedbase.MakeStatementOptions(createChangefeedOpts)
-	redactedChangefeedNode, err := changefeedJobDescription(ctx, createChangefeedNode, sinkURI, opts)
+	redactedChangefeedNode, err := makeChangefeedDescription(ctx, createChangefeedNode, sinkURI, opts)
 	if err != nil {
 		return err
 	}
@@ -684,6 +681,15 @@ func createChangefeedScheduleTypeCheck(
 	schedule, ok := stmt.(*tree.ScheduledChangefeed)
 	if !ok {
 		return false, nil, nil
+	}
+
+	if !p.ExecCfg().Settings.Version.IsActive(ctx, clusterversion.V23_1ScheduledChangefeeds) {
+		return false, nil,
+			pgerror.Newf(
+				pgcode.FeatureNotSupported,
+				"cannot use scheduled changefeeds until cluster is upgraded to %s",
+				clusterversion.V23_1ScheduledChangefeeds.String,
+			)
 	}
 
 	changefeedStmt := schedule.CreateChangefeed

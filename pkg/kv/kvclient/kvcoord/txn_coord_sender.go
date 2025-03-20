@@ -1,12 +1,7 @@
 // Copyright 2014 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package kvcoord
 
@@ -25,7 +20,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/cockroach/pkg/util/syncutil"
-	"github.com/cockroachdb/cockroach/pkg/util/timeutil"
 	"github.com/cockroachdb/cockroach/pkg/util/uuid"
 	"github.com/cockroachdb/errors"
 	"github.com/cockroachdb/logtags"
@@ -259,9 +253,9 @@ func newRootTxnCoordSender(
 		mu:      &tcs.mu.Mutex,
 	}
 	tcs.interceptorAlloc.txnMetricRecorder = txnMetricRecorder{
-		metrics:    &tcs.metrics,
-		timeSource: timeutil.DefaultTimeSource{},
-		txn:        &tcs.mu.txn,
+		metrics: &tcs.metrics,
+		clock:   tcs.clock,
+		txn:     &tcs.mu.txn,
 	}
 	tcs.initCommonInterceptors(tcf, txn, kv.RootTxn)
 
@@ -458,7 +452,6 @@ func (tc *TxnCoordSender) finalizeNonLockingTxnLocked(
 		// the closure passed to db.Txn()), db.Txn() doesn't attempt to commit again.
 		// Also so that the correct metric gets incremented.
 		tc.mu.txn.Status = roachpb.COMMITTED
-		tc.interceptorAlloc.txnMetricRecorder.setReadOnlyCommit()
 	} else {
 		tc.mu.txn.Status = roachpb.ABORTED
 	}

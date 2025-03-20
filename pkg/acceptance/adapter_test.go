@@ -1,12 +1,7 @@
 // Copyright 2017 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package acceptance
 
@@ -90,7 +85,8 @@ func TestDockerNodeJS(t *testing.T) {
 	export SHOULD_FAIL=%v
 	# Get access to globally installed node modules.
 	export NODE_PATH=$NODE_PATH:/usr/lib/node
-	/usr/lib/node/.bin/mocha .
+	# Have a 10 second timeout on promises, in case the server is slow.
+	/usr/lib/node/.bin/mocha -t 10000 . 
 	`
 
 	ctx := context.Background()

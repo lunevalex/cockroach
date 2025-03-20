@@ -1,12 +1,7 @@
 // Copyright 2019 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package rowcontainer
 
@@ -356,7 +351,7 @@ func TestHashDiskBackedRowContainerPreservesMatchesAndMarks(t *testing.T) {
 	const numCols = 2
 	rows := randgen.MakeRepeatedIntRows(numRowsInBucket, numRows, numCols)
 	storedEqColumns := columns{0}
-	types := []*types.T{types.Int, types.Int}
+	typs := []*types.T{types.Int, types.Int}
 	ordering := colinfo.ColumnOrdering{{ColIdx: 0, Direction: encoding.Ascending}}
 
 	getRowContainer := func() *HashDiskBackedRowContainer {
@@ -364,7 +359,7 @@ func TestHashDiskBackedRowContainerPreservesMatchesAndMarks(t *testing.T) {
 		err = rc.Init(
 			ctx,
 			true, /* shouldMark */
-			types,
+			typs,
 			storedEqColumns,
 			true, /*encodeNull */
 		)
@@ -456,7 +451,7 @@ func TestHashDiskBackedRowContainerPreservesMatchesAndMarks(t *testing.T) {
 			t.Fatal(err)
 		}
 		func() {
-			i, err := rc.NewBucketIterator(ctx, rows[0], storedEqColumns)
+			i, err := rc.NewBucketIterator(ctx, rows[0], storedEqColumns, types.OneIntCol)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -479,7 +474,7 @@ func TestHashDiskBackedRowContainerPreservesMatchesAndMarks(t *testing.T) {
 			t.Fatal("unexpectedly using memory")
 		}
 		func() {
-			i, err := rc.NewBucketIterator(ctx, rows[0], storedEqColumns)
+			i, err := rc.NewBucketIterator(ctx, rows[0], storedEqColumns, types.OneIntCol)
 			if err != nil {
 				t.Fatal(err)
 			}

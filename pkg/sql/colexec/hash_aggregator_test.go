@@ -1,12 +1,7 @@
 // Copyright 2020 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package colexec
 
@@ -528,9 +523,7 @@ func BenchmarkHashAggregatorInputTuplesTracking(b *testing.B) {
 			} {
 				benchmarkAggregateFunction(
 					b, agg, aggFn, []*types.T{types.Int}, 1 /* numGroupCol */, groupSize,
-					0 /* distinctProb */, numInputRows, 0, /* chunkSize */
-					0 /* limit */, 0, /* numSameAggs */
-				)
+					0 /* distinctProb */, numInputRows, 0 /* chunkSize */, 0 /* limit */)
 			}
 		}
 	}
@@ -619,10 +612,7 @@ func BenchmarkHashAggregatorPartialOrder(b *testing.B) {
 							// so we can skip all but one case.
 							continue
 						}
-						benchmarkAggregateFunction(
-							b, agg, aggFn, []*types.T{types.Int}, 2 /* numGroupCol */, groupSize,
-							0 /* distinctProb */, numInputRows, chunkSize, limit, 0, /* numSameAggs */
-						)
+						benchmarkAggregateFunction(b, agg, aggFn, []*types.T{types.Int}, 2, groupSize, 0, numInputRows, chunkSize, limit)
 					}
 				}
 			}

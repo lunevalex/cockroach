@@ -1,10 +1,7 @@
 // Copyright 2022 The Cockroach Authors.
 //
-// Licensed as a CockroachDB Enterprise file under the Cockroach Community
-// License (the "License"); you may not use this file except in compliance with
-// the License. You may obtain a copy of the License at
-//
-//     https://github.com/cockroachdb/cockroach/blob/master/licenses/CCL.txt
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package cdceval
 
@@ -70,13 +67,9 @@ type familyEvaluator struct {
 	rowCh      chan tree.Datums
 	projection cdcevent.Projection
 
-	statementTS hlc.Timestamp
-	withDiff    bool
-
 	// rowEvalCtx contains state necessary to evaluate expressions.
 	// updated for each row.
-	// Initialized during preparePlan().
-	rowEvalCtx *rowEvalContext
+	rowEvalCtx rowEvalContext
 }
 
 // NewEvaluator constructs new evaluator for changefeed expression.
@@ -117,10 +110,10 @@ func newFamilyEvaluator(
 		norm: &NormalizedSelectClause{
 			SelectClause: sc,
 		},
-		rowCh:       make(chan tree.Datums, 1),
-		statementTS: statementTS,
-		withDiff:    withDiff,
+		rowCh: make(chan tree.Datums, 1),
 	}
+	e.rowEvalCtx.startTime = statementTS
+	e.rowEvalCtx.withDiff = withDiff
 
 	// Arrange to be notified when event does not match predicate.
 	predicateAsProjection(e.norm)
@@ -286,12 +279,18 @@ func (e *familyEvaluator) preparePlan(
 		e.cleanup = nil
 	}
 
-	err = withPlanner(ctx, e.execCfg, e.statementTS, e.user, e.currDesc.SchemaTS, e.sessionData,
+	err = withPlanner(
+		ctx, e.execCfg, e.user, e.currDesc.SchemaTS, e.sessionData,
 		func(ctx context.Context, execCtx sql.JobExecContext, cleanup func()) error {
 			e.cleanup = cleanup
-			e.rowEvalCtx = rowEvalContextFromEvalContext(&execCtx.ExtendedEvalContext().Context)
-			e.rowEvalCtx.withDiff = e.withDiff
-			e.rowEvalCtx.creationTime = e.statementTS
+			semaCtx := execCtx.SemaCtx()
+			semaCtx.FunctionResolver = newCDCFunctionResolver(semaCtx.FunctionResolver)
+			semaCtx.Properties.Require("cdc", rejectInvalidCDCExprs)
+			semaCtx.Annotations = tree.MakeAnnotations(cdcAnnotationAddr)
+
+			evalCtx := execCtx.ExtendedEvalContext().Context
+			evalCtx.Annotations = &semaCtx.Annotations
+			evalCtx.Annotations.Set(cdcAnnotationAddr, &e.rowEvalCtx)
 
 			e.norm.desc = e.currDesc
 			requiresPrev := e.prevDesc != nil
@@ -308,7 +307,8 @@ func (e *familyEvaluator) preparePlan(
 
 			plan, err = sql.PlanCDCExpression(ctx, execCtx, e.norm.SelectStatementForFamily(), opts...)
 			return err
-		})
+		},
+	)
 	if err != nil {
 		return sql.CDCExpressionPlan{}, nil, err
 	}
@@ -503,11 +503,11 @@ func (e *familyEvaluator) closeErr() error {
 
 // rowEvalContext represents the context needed to evaluate row expressions.
 type rowEvalContext struct {
-	ctx          context.Context
-	creationTime hlc.Timestamp
-	withDiff     bool
-	updatedRow   cdcevent.Row
-	op           tree.Datum
+	ctx        context.Context
+	startTime  hlc.Timestamp
+	withDiff   bool
+	updatedRow cdcevent.Row
+	op         tree.Datum
 }
 
 // cdcAnnotationAddr is the address used to store relevant information
@@ -525,12 +525,10 @@ const rejectInvalidCDCExprs = tree.RejectAggregates | tree.RejectGenerators |
 
 // configSemaForCDC configures existing semaCtx to be used for CDC expression
 // evaluation; returns cleanup function which restores previous configuration.
-func configSemaForCDC(semaCtx *tree.SemaContext, statementTS hlc.Timestamp) func() {
+func configSemaForCDC(semaCtx *tree.SemaContext) func() {
 	origProps, origResolver := semaCtx.Properties, semaCtx.FunctionResolver
 	semaCtx.FunctionResolver = newCDCFunctionResolver(semaCtx.FunctionResolver)
 	semaCtx.Properties.Require("cdc", rejectInvalidCDCExprs)
-	semaCtx.Annotations = tree.MakeAnnotations(cdcAnnotationAddr)
-	semaCtx.Annotations.Set(cdcAnnotationAddr, &rowEvalContext{creationTime: statementTS})
 
 	return func() {
 		semaCtx.Properties.Restore(origProps)

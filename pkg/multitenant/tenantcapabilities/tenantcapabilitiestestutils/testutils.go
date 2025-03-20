@@ -1,12 +1,7 @@
 // Copyright 2023 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package tenantcapabilitiestestutils
 
@@ -90,11 +85,8 @@ func ParseTenantInfo(
 // capability key and sets it on top of the default tenant capabilities.
 func ParseTenantCapabilityUpsert(
 	t *testing.T, d *datadriven.TestData,
-) (tenantcapabilities.Entry, error) {
-	entry := tenantcapabilities.Entry{
-		TenantID:    GetTenantID(t, d),
-		ServiceMode: GetServiceState(t, d),
-	}
+) (roachpb.TenantID, *tenantcapabilitiespb.TenantCapabilities, error) {
+	tID := GetTenantID(t, d)
 	caps := tenantcapabilitiespb.TenantCapabilities{}
 	for _, arg := range d.CmdArgs {
 		capability, ok := tenantcapabilities.FromName(arg.Key)
@@ -105,18 +97,18 @@ func ParseTenantCapabilityUpsert(
 		case tenantcapabilities.BoolCapability:
 			b, err := strconv.ParseBool(arg.Vals[0])
 			if err != nil {
-				return entry, err
+				return roachpb.TenantID{}, nil, err
 			}
 			c.Value(&caps).Set(b)
 
 		case tenantcapabilities.SpanConfigBoundsCapability:
 			jsonD, err := json.ParseJSON(arg.Vals[0])
 			if err != nil {
-				return entry, err
+				return roachpb.TenantID{}, nil, err
 			}
 			var v tenantcapabilitiespb.SpanConfigBounds
 			if _, err := protoreflect.JSONBMarshalToMessage(jsonD, &v); err != nil {
-				return entry, err
+				return roachpb.TenantID{}, nil, err
 			}
 			c.Value(&caps).Set(spanconfigbounds.New(&v))
 
@@ -124,8 +116,7 @@ func ParseTenantCapabilityUpsert(
 			t.Fatalf("unknown capability type %T for capability %s", c, arg.Key)
 		}
 	}
-	entry.TenantCapabilities = &caps
-	return entry, nil
+	return tID, &caps, nil
 }
 
 func ParseTenantCapabilityDelete(t *testing.T, d *datadriven.TestData) *tenantcapabilities.Update {
@@ -150,19 +141,6 @@ func GetTenantID(t *testing.T, d *datadriven.TestData) roachpb.TenantID {
 	tID, err := roachpb.TenantIDFromString(tenantID)
 	require.NoError(t, err)
 	return tID
-}
-
-func GetServiceState(t *testing.T, d *datadriven.TestData) mtinfopb.TenantServiceMode {
-	if d.HasArg("service") {
-		var state string
-		d.ScanArgs(t, "service", &state)
-		serviceState, ok := mtinfopb.TenantServiceModeValues[state]
-		if !ok {
-			t.Fatalf("invalid service state: %s", state)
-		}
-		return serviceState
-	}
-	return mtinfopb.ServiceModeShared
 }
 
 // AlteredCapabilitiesString pretty-prints all altered capability

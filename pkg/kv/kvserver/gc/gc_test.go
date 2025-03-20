@@ -1,12 +1,7 @@
 // Copyright 2020 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package gc
 
@@ -1175,7 +1170,7 @@ func requireEqualReaders(
 ) {
 	// First compare only points. We assert points and ranges separately for
 	// simplicity.
-	itExp, err := exected.NewMVCCIterator(context.Background(), storage.MVCCKeyIterKind, storage.IterOptions{
+	itExp, err := exected.NewMVCCIterator(storage.MVCCKeyIterKind, storage.IterOptions{
 		LowerBound:           desc.StartKey.AsRawKey(),
 		UpperBound:           desc.EndKey.AsRawKey(),
 		KeyTypes:             storage.IterKeyTypePointsOnly,
@@ -1185,7 +1180,7 @@ func requireEqualReaders(
 	defer itExp.Close()
 	itExp.SeekGE(storage.MVCCKey{Key: desc.StartKey.AsRawKey()})
 
-	itActual, err := actual.NewMVCCIterator(context.Background(), storage.MVCCKeyIterKind, storage.IterOptions{
+	itActual, err := actual.NewMVCCIterator(storage.MVCCKeyIterKind, storage.IterOptions{
 		LowerBound:           desc.StartKey.AsRawKey(),
 		UpperBound:           desc.EndKey.AsRawKey(),
 		KeyTypes:             storage.IterKeyTypePointsOnly,
@@ -1225,7 +1220,7 @@ func requireEqualReaders(
 	}
 
 	// Compare only ranges.
-	itExpRanges, err := exected.NewMVCCIterator(context.Background(), storage.MVCCKeyIterKind, storage.IterOptions{
+	itExpRanges, err := exected.NewMVCCIterator(storage.MVCCKeyIterKind, storage.IterOptions{
 		LowerBound:           desc.StartKey.AsRawKey(),
 		UpperBound:           desc.EndKey.AsRawKey(),
 		KeyTypes:             storage.IterKeyTypeRangesOnly,
@@ -1235,7 +1230,7 @@ func requireEqualReaders(
 	defer itExpRanges.Close()
 	itExpRanges.SeekGE(storage.MVCCKey{Key: desc.StartKey.AsRawKey()})
 
-	itActualRanges, err := actual.NewMVCCIterator(context.Background(), storage.MVCCKeyIterKind, storage.IterOptions{
+	itActualRanges, err := actual.NewMVCCIterator(storage.MVCCKeyIterKind, storage.IterOptions{
 		LowerBound:           desc.StartKey.AsRawKey(),
 		UpperBound:           desc.EndKey.AsRawKey(),
 		KeyTypes:             storage.IterKeyTypeRangesOnly,
@@ -1467,7 +1462,7 @@ func (d tableData) liveDistribution() dataDistribution {
 func engineData(t *testing.T, r storage.Reader, desc roachpb.RangeDescriptor) []tableCell {
 	var result []tableCell
 
-	rangeIt, err := r.NewMVCCIterator(context.Background(), storage.MVCCKeyIterKind, storage.IterOptions{
+	rangeIt, err := r.NewMVCCIterator(storage.MVCCKeyIterKind, storage.IterOptions{
 		LowerBound:           desc.StartKey.AsRawKey(),
 		UpperBound:           desc.EndKey.AsRawKey(),
 		KeyTypes:             storage.IterKeyTypeRangesOnly,
@@ -1543,7 +1538,7 @@ func engineData(t *testing.T, r storage.Reader, desc roachpb.RangeDescriptor) []
 	}
 	result = append(result, makeRangeCells(partialRangeKeys)...)
 
-	it, err := r.NewMVCCIterator(context.Background(), storage.MVCCKeyAndIntentsIterKind, storage.IterOptions{
+	it, err := r.NewMVCCIterator(storage.MVCCKeyAndIntentsIterKind, storage.IterOptions{
 		LowerBound:           desc.StartKey.AsRawKey(),
 		UpperBound:           desc.EndKey.AsRawKey(),
 		KeyTypes:             storage.IterKeyTypePointsOnly,

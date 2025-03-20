@@ -1,8 +1,14 @@
 #!/usr/bin/env bash
 
+# Copyright 2023 The Cockroach Authors.
+#
+# Use of this software is governed by the CockroachDB Software License
+# included in the /LICENSE file.
+
+
 set -euo pipefail
 
-source "$(dirname $0)/roachtest_arch_util.sh"
+source $root/build/teamcity/util/roachtest_arch_util.sh
 
 if [ "$#" -eq 0 ]; then
   echo "Builds components necessary for roachtests and stages them in bin/ and/or lib/."
@@ -92,6 +98,11 @@ case "$component" in
     bazel_args=(//pkg/cmd/roachtest --crdb_test)
     artifacts=("pkg/cmd/roachtest/roachtest_/roachtest:bin/roachtest.$os-$arch")
     ;;
+  roachprod)
+      # Roachprod binary.
+      bazel_args=(//pkg/cmd/roachprod --crdb_test)
+      artifacts=("pkg/cmd/roachprod/roachprod_/roachprod:bin/roachprod.$os-$arch")
+      ;;
   *)
     echo "Unknown component '$component'"
     exit 1

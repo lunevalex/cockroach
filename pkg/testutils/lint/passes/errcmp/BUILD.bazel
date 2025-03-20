@@ -16,13 +16,10 @@ go_library(
 go_test(
     name = "errcmp_test",
     srcs = ["errcmp_test.go"],
+    args = ["-test.timeout=295s"],
     data = glob(["testdata/**"]) + [
         "@go_sdk//:files",
     ],
-    exec_properties = select({
-        "//build/toolchains:is_heavy": {"Pool": "heavy"},
-        "//conditions:default": {"Pool": "default"},
-    }),
     deps = [
         ":errcmp",
         "//pkg/build/bazel",

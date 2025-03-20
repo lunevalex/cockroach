@@ -1,12 +1,7 @@
 // Copyright 2022 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package optbuilder
 
@@ -94,7 +89,7 @@ func (b *Builder) buildCreateFunction(cf *tree.CreateRoutine, inScope *scope) (o
 		panic(unimplemented.New("CREATE FUNCTION sql_body", "CREATE FUNCTION...sql_body unimplemented"))
 	}
 
-	if err := tree.ValidateRoutineOptions(cf.Options, cf.IsProcedure); err != nil {
+	if err := tree.ValidateRoutineOptions(cf.Options); err != nil {
 		panic(err)
 	}
 
@@ -129,7 +124,7 @@ func (b *Builder) buildCreateFunction(cf *tree.CreateRoutine, inScope *scope) (o
 		if !activeVersion.IsActive(clusterversion.V23_2) {
 			panic(unimplemented.New("PLpgSQL", "PLpgSQL is not supported until version 23.2"))
 		}
-		if err := plpgsql.CheckClusterSupportsPLpgSQL(b.evalCtx.Settings); err != nil {
+		if err := plpgsql.CheckClusterSupportsPLpgSQL(b.evalCtx.Settings, b.evalCtx.ClusterID); err != nil {
 			panic(err)
 		}
 	}
@@ -156,15 +151,16 @@ func (b *Builder) buildCreateFunction(cf *tree.CreateRoutine, inScope *scope) (o
 	// be resolved.
 	bodyScope := b.allocScope()
 	var paramTypes tree.ParamTypes
-	var outParamTypes []*types.T
 	for i := range cf.Params {
 		param := &cf.Params[i]
 		typ, err := tree.ResolveType(b.ctx, param.Type, b.semaCtx.TypeResolver)
 		if err != nil {
 			panic(err)
 		}
-		if param.IsOutParam() {
-			outParamTypes = append(outParamTypes, typ)
+		if param.Class == tree.RoutineParamIn || param.Class == tree.RoutineParamInOut {
+			if typ.Family() == types.VoidFamily {
+				panic(pgerror.Newf(pgcode.InvalidFunctionDefinition, "SQL functions cannot have arguments of type VOID"))
+			}
 		}
 		// The parameter type must be supported by the current cluster version.
 		checkUnsupportedType(b.ctx, b.semaCtx, typ)
@@ -199,52 +195,10 @@ func (b *Builder) buildCreateFunction(cf *tree.CreateRoutine, inScope *scope) (o
 		}
 	}
 
-	// Determine OUT parameter based return type.
-	var outParamType *types.T
-	if len(outParamTypes) == 1 {
-		outParamType = outParamTypes[0]
-	} else if len(outParamTypes) > 1 {
-		outParamType = types.MakeTuple(outParamTypes)
-	}
-
 	// Collect the user defined type dependency of the return type.
-	var funcReturnType *types.T
-	var err error
-	if cf.ReturnType != nil {
-		funcReturnType, err = tree.ResolveType(b.ctx, cf.ReturnType.Type, b.semaCtx.TypeResolver)
-		if err != nil {
-			panic(err)
-		}
-	}
-	if outParamType != nil {
-		if funcReturnType != nil && !funcReturnType.Equivalent(outParamType) {
-			panic(pgerror.Newf(pgcode.InvalidFunctionDefinition, "function result type must be %s because of OUT parameters", outParamType.Name()))
-		}
-		// Override the return types so that we do return type validation and SHOW
-		// CREATE correctly.
-		funcReturnType = outParamType
-		cf.ReturnType = &tree.RoutineReturnType{
-			Type: outParamType,
-		}
-	} else if funcReturnType == nil {
-		if cf.IsProcedure {
-			// A procedure doesn't need a return type. Use a VOID return type to avoid
-			// errors in shared logic later.
-			funcReturnType = types.Void
-			cf.ReturnType = &tree.RoutineReturnType{
-				Type: types.Void,
-			}
-		} else {
-			panic(pgerror.New(pgcode.InvalidFunctionDefinition, "function result type must be specified"))
-		}
-	}
-	// We disallow creating functions that return UNKNOWN, for consistency with postgres.
-	if funcReturnType.Family() == types.UnknownFamily {
-		if language == tree.RoutineLangSQL {
-			panic(pgerror.New(pgcode.InvalidFunctionDefinition, "SQL functions cannot return type unknown"))
-		} else if language == tree.RoutineLangPLpgSQL {
-			panic(pgerror.New(pgcode.InvalidFunctionDefinition, "PL/pgSQL functions cannot return type unknown"))
-		}
+	funcReturnType, err := tree.ResolveType(b.ctx, cf.ReturnType.Type, b.semaCtx.TypeResolver)
+	if err != nil {
+		panic(err)
 	}
 	typedesc.GetTypeDescriptorClosure(funcReturnType).ForEach(func(id descpb.ID) {
 		typeDeps.Add(int(id))
@@ -282,11 +236,11 @@ func (b *Builder) buildCreateFunction(cf *tree.CreateRoutine, inScope *scope) (o
 			checkStmtVolatility(targetVolatility, stmtScope, stmt.AST)
 
 			// Format the statements with qualified datasource names.
-			formatFuncBodyStmt(fmtCtx, stmt.AST, language, i > 0 /* newLine */)
+			formatFuncBodyStmt(fmtCtx, stmt.AST, i > 0 /* newLine */)
 			afterBuildStmt()
 		}
 	case tree.RoutineLangPLpgSQL:
-		if cf.ReturnType != nil && cf.ReturnType.SetOf {
+		if cf.ReturnType.SetOf {
 			panic(unimplemented.NewWithIssueDetail(105240,
 				"set-returning PL/pgSQL functions",
 				"set-returning PL/pgSQL functions are not yet supported",
@@ -310,7 +264,7 @@ func (b *Builder) buildCreateFunction(cf *tree.CreateRoutine, inScope *scope) (o
 		checkStmtVolatility(targetVolatility, stmtScope, stmt)
 
 		// Format the statements with qualified datasource names.
-		formatFuncBodyStmt(fmtCtx, stmt.AST, language, false /* newLine */)
+		formatFuncBodyStmt(fmtCtx, stmt.AST, false /* newLine */)
 		afterBuildStmt()
 	default:
 		panic(errors.AssertionFailedf("unexpected language: %v", language))
@@ -357,17 +311,12 @@ func (b *Builder) buildCreateFunction(cf *tree.CreateRoutine, inScope *scope) (o
 	return outScope
 }
 
-func formatFuncBodyStmt(
-	fmtCtx *tree.FmtCtx, ast tree.NodeFormatter, lang tree.RoutineLanguage, newLine bool,
-) {
+func formatFuncBodyStmt(fmtCtx *tree.FmtCtx, ast tree.NodeFormatter, newLine bool) {
 	if newLine {
 		fmtCtx.WriteString("\n")
 	}
 	fmtCtx.FormatNode(ast)
-	if lang != tree.RoutineLangPLpgSQL {
-		// PL/pgSQL body statements handle semicolons.
-		fmtCtx.WriteString(";")
-	}
+	fmtCtx.WriteString(";")
 }
 
 func validateReturnType(
@@ -394,9 +343,8 @@ func validateReturnType(
 		)
 	}
 
-	// If return type is RECORD and the tuple content types unspecified by OUT
-	// parameters, any column types are valid.
-	if types.IsRecordType(expected) && types.IsWildcardTupleType(expected) {
+	// If return type is RECORD, any column types are valid.
+	if types.IsRecordType(expected) {
 		return nil
 	}
 

@@ -7,7 +7,6 @@ go_library(
     visibility = ["//visibility:public"],
     deps = [
         "//pkg/geo/geoindex",
-        "//pkg/geo/geopb",
         "//pkg/sql/catalog",
         "//pkg/sql/catalog/catpb",
         "//pkg/sql/catalog/descpb",
@@ -22,11 +21,8 @@ go_test(
     name = "catformat_test",
     size = "small",
     srcs = ["index_test.go"],
+    args = ["-test.timeout=55s"],
     embed = [":catformat"],
-    exec_properties = select({
-        "//build/toolchains:is_heavy": {"Pool": "heavy"},
-        "//conditions:default": {"Pool": "default"},
-    }),
     deps = [
         "//pkg/sql/catalog/catenumpb",
         "//pkg/sql/catalog/catpb",

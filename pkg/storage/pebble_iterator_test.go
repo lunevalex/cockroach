@@ -1,12 +1,7 @@
 // Copyright 2022 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package storage
 
@@ -78,7 +73,7 @@ func TestPebbleIterator_Corruption(t *testing.T) {
 		LowerBound: []byte("a"),
 		UpperBound: []byte("z"),
 	}
-	iter, err := newPebbleIterator(context.Background(), p.db, iterOpts, StandardDurability, p)
+	iter, err := newPebbleIterator(p.db, iterOpts, StandardDurability, p)
 	require.NoError(t, err)
 
 	// Seeking into the table catches the corruption.
@@ -129,7 +124,7 @@ func TestPebbleIterator_ExternalCorruption(t *testing.T) {
 	b[rng.Intn(len(b))]++
 
 	it, err := NewSSTIterator([][]sstable.ReadableFile{{vfs.NewMemFile(b)}},
-		IterOptions{UpperBound: roachpb.KeyMax})
+		IterOptions{UpperBound: roachpb.KeyMax}, false)
 
 	// We may error early, while opening the iterator.
 	if err != nil {
@@ -165,7 +160,7 @@ func TestPebbleIterator_SkipPointIfOutsideTimeBounds(t *testing.T) {
 		max, err := hlc.ParseTimestamp(maxStr)
 		require.NoError(t, err)
 
-		iter.setOptions(context.Background(), IterOptions{
+		iter.setOptions(IterOptions{
 			LowerBound:   []byte{0x00}, // so setOptions doesn't complain
 			MinTimestamp: min,
 			MaxTimestamp: max,

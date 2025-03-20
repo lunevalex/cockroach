@@ -1,12 +1,7 @@
 // Copyright 2022 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 import React, { useEffect, useState, useCallback } from "react";
 import classNames from "classnames/bind";
@@ -65,19 +60,18 @@ const cx = classNames.bind(styles);
 const sortableTableCx = classNames.bind(sortableTableStyles);
 
 export type StatementInsightsViewStateProps = {
-  useObsService: boolean;
-  filters: WorkloadInsightEventFilters;
-  insightTypes: string[];
   isDataValid: boolean;
   lastUpdated: moment.Moment;
-  selectedColumnNames: string[];
-  sortSetting: SortSetting;
   statements: StmtInsightEvent[];
   statementsError: Error | null;
-  dropDownSelect?: React.ReactElement;
+  insightTypes: string[];
+  filters: WorkloadInsightEventFilters;
+  sortSetting: SortSetting;
+  selectedColumnNames: string[];
   isLoading?: boolean;
-  maxSizeApiReached?: boolean;
+  dropDownSelect?: React.ReactElement;
   timeScale?: TimeScale;
+  maxSizeApiReached?: boolean;
 };
 
 export type StatementInsightsViewDispatchProps = {
@@ -112,7 +106,6 @@ export const StatementInsightsView: React.FC<StatementInsightsViewProps> = ({
   selectedColumnNames,
   dropDownSelect,
   maxSizeApiReached,
-  useObsService,
 }: StatementInsightsViewProps) => {
   const [pagination, setPagination] = useState<ISortedTablePagination>({
     current: 1,
@@ -124,14 +117,9 @@ export const StatementInsightsView: React.FC<StatementInsightsViewProps> = ({
   );
 
   const refresh = useCallback(() => {
-    const ts = timeScaleRangeToObj(timeScale);
-    const req = {
-      start: ts.start,
-      end: ts.end,
-      useObsService: useObsService,
-    };
+    const req = timeScaleRangeToObj(timeScale);
     refreshStatementInsights(req);
-  }, [refreshStatementInsights, timeScale, useObsService]);
+  }, [refreshStatementInsights, timeScale]);
 
   const shouldPoll = timeScale.key !== "Custom";
   const [refetch, clearPolling] = useScheduleFunction(

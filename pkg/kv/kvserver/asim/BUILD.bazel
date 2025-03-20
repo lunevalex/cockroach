@@ -23,10 +23,7 @@ go_library(
 go_test(
     name = "asim_test",
     srcs = ["asim_test.go"],
-    exec_properties = select({
-        "//build/toolchains:is_heavy": {"Pool": "heavy"},
-        "//conditions:default": {"Pool": "default"},
-    }),
+    args = ["-test.timeout=295s"],
     deps = [
         ":asim",
         "//pkg/kv/kvserver/asim/config",

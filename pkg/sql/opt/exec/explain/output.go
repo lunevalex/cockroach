@@ -1,12 +1,7 @@
 // Copyright 2020 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package explain
 
@@ -307,6 +302,19 @@ func (ob *OutputBuilder) AddVectorized(value bool) {
 	ob.AddFlakyTopLevelField(DeflakeVectorized, "vectorized", fmt.Sprintf("%t", value))
 }
 
+// AddGeneric adds a top-level generic field, if value is true. Cannot be called
+// while inside a node.
+func (ob *OutputBuilder) AddPlanType(generic, optimized bool) {
+	switch {
+	case generic && optimized:
+		ob.AddTopLevelField("plan type", "generic, re-optimized")
+	case generic && !optimized:
+		ob.AddTopLevelField("plan type", "generic, reused")
+	default:
+		ob.AddTopLevelField("plan type", "custom")
+	}
+}
+
 // AddPlanningTime adds a top-level planning time field. Cannot be called
 // while inside a node.
 func (ob *OutputBuilder) AddPlanningTime(delta time.Duration) {
@@ -323,15 +331,6 @@ func (ob *OutputBuilder) AddExecutionTime(delta time.Duration) {
 		delta = 100 * time.Microsecond
 	}
 	ob.AddTopLevelField("execution time", string(humanizeutil.Duration(delta)))
-}
-
-// AddClientTime adds a top-level client-level protocol time field. Cannot be
-// called while inside a node.
-func (ob *OutputBuilder) AddClientTime(delta time.Duration) {
-	if ob.flags.Deflake.Has(DeflakeVolatile) {
-		delta = time.Microsecond
-	}
-	ob.AddTopLevelField("client time", string(humanizeutil.Duration(delta)))
 }
 
 // AddKVReadStats adds a top-level field for the bytes/rows/KV pairs read from
@@ -405,11 +404,11 @@ func (ob *OutputBuilder) AddCPUTime(cpuTime time.Duration) {
 
 // AddRUEstimate adds a top-level field for the estimated number of RUs consumed
 // by the query.
-func (ob *OutputBuilder) AddRUEstimate(ru float64) {
+func (ob *OutputBuilder) AddRUEstimate(ru int64) {
 	ob.AddFlakyTopLevelField(
 		DeflakeVolatile,
 		"estimated RUs consumed",
-		string(humanizeutil.Countf(ru)),
+		string(humanizeutil.Count(uint64(ru))),
 	)
 }
 

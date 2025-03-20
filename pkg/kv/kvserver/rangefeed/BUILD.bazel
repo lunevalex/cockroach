@@ -13,11 +13,11 @@ go_library(
         "scheduled_processor.go",
         "scheduler.go",
         "task.go",
+        "testutil.go",
     ],
     importpath = "github.com/cockroachdb/cockroach/pkg/kv/kvserver/rangefeed",
     visibility = ["//visibility:public"],
     deps = [
-        "//pkg/clusterversion",
         "//pkg/keys",
         "//pkg/kv/kvpb",
         "//pkg/kv/kvserver/concurrency/isolation",
@@ -62,11 +62,8 @@ go_test(
         "scheduler_test.go",
         "task_test.go",
     ],
+    args = ["-test.timeout=895s"],
     embed = [":rangefeed"],
-    exec_properties = select({
-        "//build/toolchains:is_heavy": {"Pool": "heavy"},
-        "//conditions:default": {"Pool": "default"},
-    }),
     deps = [
         "//pkg/base",
         "//pkg/clusterversion",

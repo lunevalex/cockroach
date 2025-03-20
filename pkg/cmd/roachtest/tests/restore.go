@@ -1,12 +1,7 @@
 // Copyright 2018 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package tests
 
@@ -33,12 +28,10 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/roachprod/install"
 	"github.com/cockroachdb/cockroach/pkg/roachprod/logger"
-	"github.com/cockroachdb/cockroach/pkg/roachprod/vm"
 	"github.com/cockroachdb/cockroach/pkg/testutils"
 	"github.com/cockroachdb/cockroach/pkg/testutils/sqlutils"
 	"github.com/cockroachdb/cockroach/pkg/ts/tspb"
 	"github.com/cockroachdb/cockroach/pkg/util/httputil"
-	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/cockroach/pkg/util/timeutil"
 	"github.com/cockroachdb/cockroach/pkg/workload/histogram"
 	"github.com/cockroachdb/errors"
@@ -68,43 +61,49 @@ func registerRestoreNodeShutdown(r registry.Registry) {
 	}
 
 	r.Add(registry.TestSpec{
-		Name:             "restore/nodeShutdown/worker",
-		Owner:            registry.OwnerDisasterRecovery,
-		Cluster:          sp.hardware.makeClusterSpecs(r, sp.backup.cloud),
-		CompatibleClouds: registry.Clouds(sp.backup.cloud),
-		Suites:           registry.Suites(registry.Nightly),
-		Leases:           registry.MetamorphicLeases,
-		Timeout:          sp.timeout,
+		Name:                      "restore/nodeShutdown/worker",
+		Owner:                     registry.OwnerDisasterRecovery,
+		Cluster:                   sp.hardware.makeClusterSpecs(r, sp.backup.cloud),
+		CompatibleClouds:          registry.Clouds(sp.backup.cloud),
+		Suites:                    registry.Suites(registry.Nightly),
+		TestSelectionOptOutSuites: registry.Suites(registry.Nightly),
+		Leases:                    registry.MetamorphicLeases,
+		Timeout:                   sp.timeout,
 		Run: func(ctx context.Context, t test.Test, c cluster.Cluster) {
 			gatewayNode := 2
 			nodeToShutdown := 3
 
 			rd := makeRestoreDriver(t, c, sp)
 			rd.prepareCluster(ctx)
-			jobSurvivesNodeShutdown(ctx, t, c, nodeToShutdown, makeRestoreStarter(ctx, t, c,
-				gatewayNode, rd))
+			cfg := defaultNodeShutdownConfig(c, nodeToShutdown)
+			cfg.restartSettings = rd.defaultClusterSettings()
+			require.NoError(t,
+				executeNodeShutdown(ctx, t, c, cfg,
+					makeRestoreStarter(ctx, t, c, gatewayNode, rd)))
 			rd.checkFingerprint(ctx)
 		},
 	})
 
 	r.Add(registry.TestSpec{
-		Name:             "restore/nodeShutdown/coordinator",
-		Owner:            registry.OwnerDisasterRecovery,
-		Cluster:          sp.hardware.makeClusterSpecs(r, sp.backup.cloud),
-		CompatibleClouds: registry.Clouds(sp.backup.cloud),
-		Suites:           registry.Suites(registry.Nightly),
-		Leases:           registry.MetamorphicLeases,
-		Timeout:          sp.timeout,
+		Name:                      "restore/nodeShutdown/coordinator",
+		Owner:                     registry.OwnerDisasterRecovery,
+		Cluster:                   sp.hardware.makeClusterSpecs(r, sp.backup.cloud),
+		CompatibleClouds:          registry.Clouds(sp.backup.cloud),
+		Suites:                    registry.Suites(registry.Nightly),
+		TestSelectionOptOutSuites: registry.Suites(registry.Nightly),
+		Leases:                    registry.MetamorphicLeases,
+		Timeout:                   sp.timeout,
 		Run: func(ctx context.Context, t test.Test, c cluster.Cluster) {
-
 			gatewayNode := 2
 			nodeToShutdown := 2
 
 			rd := makeRestoreDriver(t, c, sp)
 			rd.prepareCluster(ctx)
-
-			jobSurvivesNodeShutdown(ctx, t, c, nodeToShutdown, makeRestoreStarter(ctx, t, c,
-				gatewayNode, rd))
+			cfg := defaultNodeShutdownConfig(c, nodeToShutdown)
+			cfg.restartSettings = rd.defaultClusterSettings()
+			require.NoError(t,
+				executeNodeShutdown(ctx, t, c, cfg,
+					makeRestoreStarter(ctx, t, c, gatewayNode, rd)))
 			rd.checkFingerprint(ctx)
 		},
 	})
@@ -128,13 +127,14 @@ func registerRestore(r registry.Registry) {
 	withPauseSpecs.initTestName()
 
 	r.Add(registry.TestSpec{
-		Name:             withPauseSpecs.testName,
-		Owner:            registry.OwnerDisasterRecovery,
-		Benchmark:        true,
-		Cluster:          withPauseSpecs.hardware.makeClusterSpecs(r, withPauseSpecs.backup.cloud),
-		Timeout:          withPauseSpecs.timeout,
-		CompatibleClouds: registry.Clouds(withPauseSpecs.backup.cloud),
-		Suites:           registry.Suites(registry.Nightly),
+		Name:                      withPauseSpecs.testName,
+		Owner:                     registry.OwnerDisasterRecovery,
+		Benchmark:                 true,
+		Cluster:                   withPauseSpecs.hardware.makeClusterSpecs(r, withPauseSpecs.backup.cloud),
+		Timeout:                   withPauseSpecs.timeout,
+		CompatibleClouds:          registry.Clouds(withPauseSpecs.backup.cloud),
+		Suites:                    registry.Suites(registry.Nightly),
+		TestSelectionOptOutSuites: registry.Suites(registry.Nightly),
 		Run: func(ctx context.Context, t test.Test, c cluster.Cluster) {
 
 			rd := makeRestoreDriver(t, c, withPauseSpecs)
@@ -365,11 +365,9 @@ func registerRestore(r registry.Registry) {
 			// The weekly 32TB, 400 incremental layer Restore test on AWS.
 			//
 			// NB: Prior to 23.1, restore would OOM on backups that had many
-			// incremental layers and many import spans. This test disables span
-			// target size so restore can process the maximum number of import
-			// spans. Together with having a 400 incremental chain, this
-			// regression tests against the OOMs that we've seen in previous
-			// versions.
+			// incremental layers and many import spans. Together with having a 400
+			// incremental chain, this regression tests against the OOMs that we've
+			// seen in previous versions.
 			hardware: makeHardwareSpecs(hardwareSpecs{nodes: 15, cpus: 16, volumeSize: 5000,
 				ebsThroughput: 250 /* MB/s */}),
 			backup: makeRestoringBackupSpecs(backupSpecs{
@@ -380,7 +378,7 @@ func registerRestore(r registry.Registry) {
 			timeout: 30 * time.Hour,
 			suites:  registry.Suites(registry.Weekly),
 			setUpStmts: []string{
-				`SET CLUSTER SETTING backup.restore_span.target_size = '0'`,
+				`SET CLUSTER SETTING backup.restore_span.max_file_count = 800`,
 			},
 			restoreUptoIncremental: 400,
 		},
@@ -399,7 +397,6 @@ func registerRestore(r registry.Registry) {
 				`SET CLUSTER SETTING backup.restore_span.target_size = '0'`,
 			},
 			restoreUptoIncremental: 400,
-			skip:                   "a recent gcp pricing policy makes this test very expensive. unskip after #111371 is addressed",
 		},
 		{
 			// A teeny weeny 15GB restore that could be used to bisect scale agnostic perf regressions.
@@ -428,10 +425,10 @@ func registerRestore(r registry.Registry) {
 			Timeout:   sp.timeout,
 			// These tests measure performance. To ensure consistent perf,
 			// disable metamorphic encryption.
-			EncryptionSupport: registry.EncryptionAlwaysDisabled,
-			CompatibleClouds:  registry.Clouds(sp.backup.cloud),
-			Suites:            sp.suites,
-			Skip:              sp.skip,
+			EncryptionSupport:         registry.EncryptionAlwaysDisabled,
+			CompatibleClouds:          registry.Clouds(sp.backup.cloud),
+			Suites:                    sp.suites,
+			TestSelectionOptOutSuites: sp.suites,
 			Run: func(ctx context.Context, t test.Test, c cluster.Cluster) {
 
 				rd := makeRestoreDriver(t, c, sp)
@@ -467,7 +464,11 @@ func registerRestore(r registry.Registry) {
 					t.Status(`running restore`)
 					metricCollector := rd.initRestorePerfMetrics(ctx, durationGauge)
 					if err := rd.run(ctx, ""); err != nil {
-						return err
+						var jobID int
+						if jobIDErr := db.QueryRow(`SELECT job_id FROM [SHOW JOBS] WHERE job_type = 'RESTORE'`).Scan(&jobID); jobIDErr != nil {
+							return errors.CombineErrors(err, jobIDErr)
+						}
+						return errors.CombineErrors(err, skipIfNetworkFlake(ctx, t, c, jobID))
 					}
 					metricCollector()
 					rd.checkFingerprint(ctx)
@@ -477,6 +478,35 @@ func registerRestore(r registry.Registry) {
 			},
 		})
 	}
+}
+
+// skipIfNetworkFlake skips the test if the job error contains a network flake.
+// This function should only get called after a job terminates unexpectedly.
+func skipIfNetworkFlake(ctx context.Context, t test.Test, c cluster.Cluster, jobId int) error {
+	db, err := c.ConnE(ctx, t.L(), c.Node(1)[0])
+	if err != nil {
+		return err
+	}
+	defer db.Close()
+	var jobError string
+	// Using crdb_internal.jobs because it aggregates errors from paused and
+	// failed jobs neatly into the error column.
+	if err := db.QueryRow(`SELECT error FROM crdb_internal.jobs WHERE id = $1`, jobId).Scan(&jobError); err != nil {
+		return errors.Wrapf(err, "failed to get job error")
+	}
+
+	networkFlakes := []string{
+		"http2: client connection force closed via ClientConn.Close",
+		"HTTP response code 416",
+		"tls: bad record MAC",
+	}
+
+	for _, flake := range networkFlakes {
+		if strings.Contains(jobError, flake) {
+			t.Skipf("skipping test because of network flake %s", jobError)
+		}
+	}
+	return nil
 }
 
 var defaultHardware = hardwareSpecs{
@@ -539,18 +569,6 @@ func (hw hardwareSpecs) makeClusterSpecs(r registry.Registry, backupCloud string
 	}
 	s := r.MakeClusterSpec(hw.nodes+addWorkloadNode, clusterOpts...)
 
-	if backupCloud == spec.AWS && s.VolumeSize != 0 {
-		// Work around an issue that RAID0s local NVMe and GP3 storage together:
-		// https://github.com/cockroachdb/cockroach/issues/98783.
-		//
-		// TODO(srosenberg): Remove this workaround when 98783 is addressed.
-		// TODO(miral): This now returns an error instead of panicking, so even though
-		// we haven't panicked here before, we should handle the error. Moot if this is
-		// removed as per TODO above.
-		s.AWS.MachineType, _, _ = spec.SelectAWSMachineType(s.CPUs, s.Mem, false /* shouldSupportLocalSSD */, vm.ArchAMD64)
-		s.AWS.MachineType = strings.Replace(s.AWS.MachineType, "d.", ".", 1)
-		s.Arch = vm.ArchAMD64
-	}
 	return s
 }
 
@@ -635,14 +653,6 @@ type backupSpecs struct {
 
 	// workload defines the backed up workload.
 	workload backupWorkload
-
-	// nonRevisionHistory is true if the backup is not a revision history backup
-	// (note that the default backup in the restore roachtests contains revision
-	// history).
-	//
-	// TODO(msbutler): if another fixture requires a different backup option,
-	// create a new backupOpts struct.
-	nonRevisionHistory bool
 }
 
 func (bs backupSpecs) storagePrefix() string {
@@ -655,17 +665,13 @@ func (bs backupSpecs) storagePrefix() string {
 func (bs backupSpecs) backupCollection() string {
 	// N.B. AWS buckets are _regional_ whereas GCS buckets are _multi-regional_. Thus, in order to avoid egress (cost),
 	// we use us-east-2 for AWS, which is the default region for all roachprod clusters. (See roachprod/vm/aws/aws.go)
-	properties := ""
-	if bs.nonRevisionHistory {
-		properties = "/rev-history=false"
-	}
 	switch bs.storagePrefix() {
 	case "s3":
-		return fmt.Sprintf(`'s3://cockroach-fixtures-us-east-2/backups/%s/%s/inc-count=%d%s?AUTH=implicit'`,
-			bs.workload.fixtureDir(), bs.version, bs.numBackupsInChain, properties)
+		return fmt.Sprintf(`'s3://cockroach-fixtures-us-east-2/backups/%s/%s/inc-count=%d?AUTH=implicit'`,
+			bs.workload.fixtureDir(), bs.version, bs.numBackupsInChain)
 	case "gs":
-		return fmt.Sprintf(`'gs://cockroach-fixtures-us-east1/backups/%s/%s/inc-count=%d%s?AUTH=implicit'`,
-			bs.workload.fixtureDir(), bs.version, bs.numBackupsInChain, properties)
+		return fmt.Sprintf(`'gs://cockroach-fixtures-us-east1/backups/%s/%s/inc-count=%d?AUTH=implicit'`,
+			bs.workload.fixtureDir(), bs.version, bs.numBackupsInChain)
 	default:
 		panic(fmt.Sprintf("unknown storage prefix: %s", bs.storagePrefix()))
 	}
@@ -695,10 +701,6 @@ func makeBackupSpecs(override backupSpecs, specs backupSpecs) backupSpecs {
 
 	if override.numBackupsInChain != 0 {
 		specs.numBackupsInChain = override.numBackupsInChain
-	}
-
-	if override.nonRevisionHistory != specs.nonRevisionHistory {
-		specs.nonRevisionHistory = override.nonRevisionHistory
 	}
 
 	if override.workload != nil {
@@ -820,13 +822,8 @@ type restoreSpecs struct {
 	// restored user space tables.
 	fingerprint int
 
+	testName   string
 	setUpStmts []string
-
-	// skip, if non-empty, skips the test with the given reason.
-	skip string
-
-	// testname is set automatically.
-	testName string
 }
 
 func (sp *restoreSpecs) initTestName() {
@@ -884,8 +881,14 @@ func makeRestoreDriver(t test.Test, c cluster.Cluster, sp restoreSpecs) restoreD
 	}
 }
 
+func (rd *restoreDriver) defaultClusterSettings() []install.ClusterSettingOption {
+	return []install.ClusterSettingOption{
+		install.SecureOption(false),
+	}
+}
+
 func (rd *restoreDriver) prepareCluster(ctx context.Context) {
-	rd.c.Start(ctx, rd.t.L(), option.DefaultStartOptsNoBackups(), install.MakeClusterSettings(), rd.sp.hardware.getCRDBNodes())
+	rd.c.Start(ctx, rd.t.L(), option.NewStartOpts(option.NoBackupSchedule), install.MakeClusterSettings(install.SecureOption(false)))
 	rd.getAOST(ctx)
 }
 
@@ -895,7 +898,7 @@ func (rd *restoreDriver) getAOST(ctx context.Context) {
 	conn := rd.c.Conn(ctx, rd.t.L(), 1)
 	defer conn.Close()
 	err := conn.QueryRowContext(ctx, rd.sp.getAostCmd()).Scan(&aost)
-	require.NoError(rd.t, err, fmt.Sprintf("aost cmd failed: %s", rd.sp.getAostCmd()))
+	require.NoError(rd.t, err)
 	rd.aost = aost
 }
 
@@ -1023,11 +1026,11 @@ func exportToRoachperf(
 	// Upload the perf artifacts to any one of the nodes so that the test
 	// runner copies it into an appropriate directory path.
 	dest := filepath.Join(t.PerfArtifactsDir(), "stats.json")
-	if err := c.RunE(ctx, option.WithNodes(c.Node(1)), "mkdir -p "+filepath.Dir(dest)); err != nil {
-		log.Errorf(ctx, "failed to create perf dir: %+v", err)
+	if err := c.RunE(ctx, c.Node(1), "mkdir -p "+filepath.Dir(dest)); err != nil {
+		t.L().ErrorfCtx(ctx, "failed to create perf dir: %+v", err)
 	}
 	if err := c.PutString(ctx, bytesBuf.String(), dest, 0755, c.Node(1)); err != nil {
-		log.Errorf(ctx, "failed to upload perf artifacts to node: %s", err.Error())
+		t.L().ErrorfCtx(ctx, "failed to upload perf artifacts to node: %s", err.Error())
 	}
 }
 
@@ -1045,7 +1048,7 @@ func verifyMetrics(
 	if err != nil {
 		return err
 	}
-	url := "http://" + adminUIAddrs[0] + "/ts/query"
+	url := "https://" + adminUIAddrs[0] + "/ts/query"
 
 	request := tspb.TimeSeriesQueryRequest{
 		// Ask for one minute intervals. We can't just ask for the whole hour

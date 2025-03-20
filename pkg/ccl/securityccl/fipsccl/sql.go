@@ -1,10 +1,7 @@
 // Copyright 2023 The Cockroach Authors.
 //
-// Licensed as a CockroachDB Enterprise file under the Cockroach Community
-// License (the "License"); you may not use this file except in compliance with
-// the License. You may obtain a copy of the License at
-//
-//     https://github.com/cockroachdb/cockroach/blob/master/licenses/CCL.txt
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package fipsccl
 
@@ -27,7 +24,7 @@ func init() {
 		ReturnType: tree.FixedReturnType(types.Bool),
 		Fn: func(ctx context.Context, evalCtx *eval.Context, args tree.Datums) (tree.Datum, error) {
 			if err := utilccl.CheckEnterpriseEnabled(
-				evalCtx.Settings, "fips_ready",
+				evalCtx.Settings, evalCtx.ClusterID, "fips_ready",
 			); err != nil {
 				return nil, err
 			}

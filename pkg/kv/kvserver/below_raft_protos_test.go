@@ -1,12 +1,7 @@
 // Copyright 2016 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package kvserver_test
 
@@ -43,6 +38,10 @@ func TestBelowRaftProtosDontChange(t *testing.T) {
 		func(r *rand.Rand) protoutil.Message {
 			m := enginepb.NewPopulatedMVCCMetadata(r, false)
 			m.Txn = nil                 // never populated below Raft
+			m.Timestamp.Synthetic = nil // never populated below Raft
+			if m.MergeTimestamp != nil {
+				m.MergeTimestamp.Synthetic = nil // never populated below Raft
+			}
 			m.TxnDidNotUpdateMeta = nil // never populated below Raft
 			return m
 		},
@@ -81,7 +80,11 @@ func TestBelowRaftProtosDontChange(t *testing.T) {
 			return roachpb.NewPopulatedInternalTimeSeriesData(r, false)
 		},
 		func(r *rand.Rand) protoutil.Message {
-			return enginepb.NewPopulatedMVCCMetadataSubsetForMergeSerialization(r, false)
+			m := enginepb.NewPopulatedMVCCMetadataSubsetForMergeSerialization(r, false)
+			if m.MergeTimestamp != nil {
+				m.MergeTimestamp.Synthetic = nil // never populated below Raft
+			}
+			return m
 		},
 		func(r *rand.Rand) protoutil.Message {
 			return kvserverpb.NewPopulatedRaftReplicaID(r, false)

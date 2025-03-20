@@ -1,12 +1,7 @@
 // Copyright 2021 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package server
 
@@ -130,6 +125,7 @@ func getLocalFiles(
 	req *serverpb.GetFilesRequest,
 	heapProfileDirName string,
 	goroutineDumpDirName string,
+	cpuProfileDirName string,
 	statFileFn func(string) (os.FileInfo, error),
 	readFileFn func(string) ([]byte, error),
 ) (*serverpb.GetFilesResponse, error) {
@@ -141,6 +137,8 @@ func getLocalFiles(
 		dir = heapProfileDirName
 	case serverpb.FileType_GOROUTINES: // Requesting for saved Goroutine dumps.
 		dir = goroutineDumpDirName
+	case serverpb.FileType_CPU: // Requesting for saved CPU Profiles.
+		dir = cpuProfileDirName
 	default:
 		return nil, status.Errorf(codes.InvalidArgument, "unknown file type: %s", req.Type)
 	}

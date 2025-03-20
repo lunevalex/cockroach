@@ -27,12 +27,9 @@ go_test(
         "histogram_test.go",
         "scheduler_latency_test.go",
     ],
+    args = ["-test.timeout=295s"],
     data = glob(["testdata/**"]),
     embed = [":schedulerlatency"],
-    exec_properties = select({
-        "//build/toolchains:is_heavy": {"Pool": "heavy"},
-        "//conditions:default": {"Pool": "default"},
-    }),
     deps = [
         "//pkg/settings/cluster",
         "//pkg/testutils",

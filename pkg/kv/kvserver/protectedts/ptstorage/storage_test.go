@@ -1,12 +1,7 @@
 // Copyright 2019 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package ptstorage_test
 
@@ -296,6 +291,35 @@ var testCases = []testCase{
 					return tCtx.pts.WithTxn(txn).UpdateTimestamp(ctx, randomID(tCtx), hlc.Timestamp{WallTime: 1})
 				})
 				require.EqualError(t, err, protectedts.ErrNotExists.Error())
+			}),
+		},
+	},
+	{
+		name: "Protect using synthetic timestamp",
+		ops: []op{
+			funcOp(func(ctx context.Context, t *testing.T, tCtx *testContext) {
+				rec := newRecord(tCtx, tCtx.tc.Server(0).Clock().Now().WithSynthetic(true), "", nil, tableTarget(42),
+					tableSpan(42))
+				err := tCtx.db.Txn(ctx, func(ctx context.Context, txn isql.Txn) error {
+					return tCtx.pts.WithTxn(txn).Protect(ctx, &rec)
+				})
+				require.NoError(t, err)
+				// Synthetic should be reset when writing timestamps to make it
+				// compatible with underlying sql schema.
+				rec.Timestamp.Synthetic = false
+				tCtx.state.Records = append(tCtx.state.Records, rec)
+				tCtx.state.Version++
+				tCtx.state.NumRecords++
+				tCtx.state.NumSpans += uint64(len(rec.DeprecatedSpans))
+				var encoded []byte
+				if tCtx.runWithDeprecatedSpans {
+					encoded, err = protoutil.Marshal(&ptstorage.Spans{Spans: rec.DeprecatedSpans})
+					require.NoError(t, err)
+				} else {
+					encoded, err = protoutil.Marshal(&ptpb.Target{Union: rec.Target.GetUnion()})
+					require.NoError(t, err)
+				}
+				tCtx.state.TotalBytes += uint64(len(encoded))
 			}),
 		},
 	},

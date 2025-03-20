@@ -1,12 +1,7 @@
 // Copyright 2017 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 syntax = "proto3";
 package cockroach.sql.jobs.jobspb;
@@ -96,7 +91,9 @@ message StreamIngestionDetails {
     (gogoproto.nullable) = false,
     (gogoproto.customtype) = "github.com/cockroachdb/cockroach/pkg/roachpb.TenantName"];
 
-  reserved 9;
+  string destination_tenant_name = 9 [
+    (gogoproto.nullable) = false,
+    (gogoproto.customtype) = "github.com/cockroachdb/cockroach/pkg/roachpb.TenantName"];
 
   // ID of the protected timestamp record that protects the destination tenant's
   // keyspan from GC while it is being replicated into.
@@ -191,10 +188,6 @@ message StreamIngestionProgress {
   // the source tenant.
   bool initial_split_complete = 9;
 
-  // InitialRevertRequiredd is true if the stream requires an initial revert to
-  // the start time before it can continue (e.g. when reusing a tenant's data).
-  bool initial_revert_required = 10;
-
   // Next Id: 10
 }
 
@@ -211,10 +204,6 @@ message StreamReplicationDetails {
 
   // TenantID is the ID of the source tenant being streamed.
   roachpb.TenantID tenant_id = 3 [(gogoproto.nullable) = false, (gogoproto.customname) = "TenantID"];
-
-  // ExpirationWindow specifies the length of time a producer job will stay
-  // alive without a heartbeat from the consumer job.
-  int64 expiration_window = 4 [(gogoproto.casttype) = "time.Duration"];
 }
 
 message StreamReplicationProgress {
@@ -295,7 +284,7 @@ message BackupDetails {
   // to its path.
   string collection_URI = 8 [(gogoproto.customname) = "CollectionURI"];
 
-  int64 schedule_id = 12 [(gogoproto.customname) = "ScheduleID", (gogoproto.casttype) = "ScheduleID"];
+  int64 schedule_id = 12 [(gogoproto.customname) = "ScheduleID"];
 
   // SchedulePTSChainingRecord is used by scheduled backups to chain protected
   // timestamp records. For more details about the chaining scheme refer to the
@@ -447,7 +436,17 @@ message RestoreDetails {
   ];
   BackupEncryptionOptions encryption = 12;
 
-  reserved 18;
+  message RevalidateIndex {
+    uint32 id = 1 [
+      (gogoproto.customname) = "TableID",
+      (gogoproto.casttype) = "github.com/cockroachdb/cockroach/pkg/sql/catalog/descpb.ID"
+    ];
+    uint32 parent_id = 2 [
+      (gogoproto.customname) = "IndexID",
+      (gogoproto.casttype) = "github.com/cockroachdb/cockroach/pkg/sql/catalog/descpb.IndexID"
+    ];
+  }
+  repeated RevalidateIndex revalidate_indexes = 18 [(gogoproto.nullable) = false];
 
   message DatabaseModifier {
     // ExtraTypeDescs enumerates additional type descriptors to add as part of

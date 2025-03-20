@@ -2119,8 +2119,6 @@ Session represents one SQL session.
 | num_txns_executed | [int32](#cockroach.server.serverpb.ListSessionsResponse-int32) |  | Count of the number of transactions that have been opened on this session. This count includes transactions that are in progress. | [reserved](#support-status) |
 | txn_fingerprint_ids | [uint64](#cockroach.server.serverpb.ListSessionsResponse-uint64) | repeated | List of transaction fingerprint IDs in this session. | [reserved](#support-status) |
 | total_active_time | [google.protobuf.Duration](#cockroach.server.serverpb.ListSessionsResponse-google.protobuf.Duration) |  | The session's total active time. | [reserved](#support-status) |
-| pg_backend_pid | [uint32](#cockroach.server.serverpb.ListSessionsResponse-uint32) |  | The numerical ID attached to the session which is used to mimic a Postgres backend PID for compatibility with the query cancellation protocol. Unlike in Postgres, this value does not correspond to a real process ID. | [reserved](#support-status) |
-| trace_id | [uint64](#cockroach.server.serverpb.ListSessionsResponse-uint64) |  | The ID of the session's active trace. It will be 0 if tracing is off. | [reserved](#support-status) |
 
 
 
@@ -2267,8 +2265,6 @@ Session represents one SQL session.
 | num_txns_executed | [int32](#cockroach.server.serverpb.ListSessionsResponse-int32) |  | Count of the number of transactions that have been opened on this session. This count includes transactions that are in progress. | [reserved](#support-status) |
 | txn_fingerprint_ids | [uint64](#cockroach.server.serverpb.ListSessionsResponse-uint64) | repeated | List of transaction fingerprint IDs in this session. | [reserved](#support-status) |
 | total_active_time | [google.protobuf.Duration](#cockroach.server.serverpb.ListSessionsResponse-google.protobuf.Duration) |  | The session's total active time. | [reserved](#support-status) |
-| pg_backend_pid | [uint32](#cockroach.server.serverpb.ListSessionsResponse-uint32) |  | The numerical ID attached to the session which is used to mimic a Postgres backend PID for compatibility with the query cancellation protocol. Unlike in Postgres, this value does not correspond to a real process ID. | [reserved](#support-status) |
-| trace_id | [uint64](#cockroach.server.serverpb.ListSessionsResponse-uint64) |  | The ID of the session's active trace. It will be 0 if tracing is off. | [reserved](#support-status) |
 
 
 
@@ -3271,7 +3267,6 @@ Support status: [reserved](#support-status)
 | Field | Type | Label | Description | Support status |
 | ----- | ---- | ----- | ----------- | -------------- |
 | entries | [cockroach.util.log.Entry](#cockroach.server.serverpb.LogEntriesResponse-cockroach.util.log.Entry) | repeated |  | [reserved](#support-status) |
-| parse_errors | [string](#cockroach.server.serverpb.LogEntriesResponse-string) | repeated | parse_errors contains list of errors that occurred during retrieving individual log entries that don't prevent to return at least partial response. | [reserved](#support-status) |
 
 
 
@@ -3322,7 +3317,6 @@ Support status: [reserved](#support-status)
 | Field | Type | Label | Description | Support status |
 | ----- | ---- | ----- | ----------- | -------------- |
 | entries | [cockroach.util.log.Entry](#cockroach.server.serverpb.LogEntriesResponse-cockroach.util.log.Entry) | repeated |  | [reserved](#support-status) |
-| parse_errors | [string](#cockroach.server.serverpb.LogEntriesResponse-string) | repeated | parse_errors contains list of errors that occurred during retrieving individual log entries that don't prevent to return at least partial response. | [reserved](#support-status) |
 
 
 
@@ -3406,65 +3400,6 @@ Support status: [reserved](#support-status)
 | raft_log_too_large_range_ids | [int64](#cockroach.server.serverpb.ProblemRangesResponse-int64) | repeated |  | [reserved](#support-status) |
 | circuit_breaker_error_range_ids | [int64](#cockroach.server.serverpb.ProblemRangesResponse-int64) | repeated |  | [reserved](#support-status) |
 | paused_replica_ids | [int64](#cockroach.server.serverpb.ProblemRangesResponse-int64) | repeated |  | [reserved](#support-status) |
-
-
-
-
-
-
-## DownloadSpan
-
-`GET /_status/downloadspans`
-
-
-
-Support status: [reserved](#support-status)
-
-#### Request Parameters
-
-
-
-
-
-
-
-| Field | Type | Label | Description | Support status |
-| ----- | ---- | ----- | ----------- | -------------- |
-| node_id | [string](#cockroach.server.serverpb.DownloadSpanRequest-string) |  |  | [reserved](#support-status) |
-| spans | [cockroach.roachpb.Span](#cockroach.server.serverpb.DownloadSpanRequest-cockroach.roachpb.Span) | repeated |  | [reserved](#support-status) |
-
-
-
-
-
-
-
-#### Response Parameters
-
-
-
-
-
-
-
-| Field | Type | Label | Description | Support status |
-| ----- | ---- | ----- | ----------- | -------------- |
-| errors_by_node_id | [DownloadSpanResponse.ErrorsByNodeIdEntry](#cockroach.server.serverpb.DownloadSpanResponse-cockroach.server.serverpb.DownloadSpanResponse.ErrorsByNodeIdEntry) | repeated | ErrorsByNodeID contains any errors that occurred during fan-out calls to other nodes. | [reserved](#support-status) |
-
-
-
-
-
-
-<a name="cockroach.server.serverpb.DownloadSpanResponse-cockroach.server.serverpb.DownloadSpanResponse.ErrorsByNodeIdEntry"></a>
-#### DownloadSpanResponse.ErrorsByNodeIdEntry
-
-
-
-| Field | Type | Label | Description | Support status |
-| ----- | ---- | ----- | ----------- | -------------- |
-| key | [int32](#cockroach.server.serverpb.DownloadSpanResponse-int32) |  |  |  |
-| value | [string](#cockroach.server.serverpb.DownloadSpanResponse-string) |  |  |  |
 
 
 
@@ -5391,6 +5326,148 @@ Support status: [reserved](#support-status)
 | Field | Type | Label | Description | Support status |
 | ----- | ---- | ----- | ----------- | -------------- |
 | files | [string](#cockroach.server.serverpb.ListJobProfilerExecutionDetailsResponse-string) | repeated |  | [reserved](#support-status) |
+
+
+
+
+
+
+
+## GetThrottlingMetadata
+
+`GET /_status/throttling`
+
+GetThrottlingMetadata is used by the DB Console to retrieve
+information regarding current or upcoming throttling the cluster
+may experience.
+
+Support status: [reserved](#support-status)
+
+#### Request Parameters
+
+
+
+
+
+
+
+| Field | Type | Label | Description | Support status |
+| ----- | ---- | ----- | ----------- | -------------- |
+| node_id | [string](#cockroach.server.serverpb.GetThrottlingMetadataRequest-string) |  |  | [reserved](#support-status) |
+
+
+
+
+
+
+
+#### Response Parameters
+
+
+
+
+GetThrottlingMetadataResponse contains all information necessary to
+show throttling warnings and alerts in DB Console.
+
+
+| Field | Type | Label | Description | Support status |
+| ----- | ---- | ----- | ----------- | -------------- |
+| throttled | [bool](#cockroach.server.serverpb.GetThrottlingMetadataResponse-bool) |  | throttled is true if at least one node in the cluster is actively being throttled. | [reserved](#support-status) |
+| throttleExplanation | [string](#cockroach.server.serverpb.GetThrottlingMetadataResponse-string) |  | if throttled is true, this will contain a string explaning why, generated from the SQL enforcer. | [reserved](#support-status) |
+| hasGracePeriod | [bool](#cockroach.server.serverpb.GetThrottlingMetadataResponse-bool) |  | hasGracePeriod is true if the cluster has an active grace period before throttling kicks in after license expiry. Enterprise licenses do not have grace periods when they expire. | [reserved](#support-status) |
+| gracePeriodEndSeconds | [int64](#cockroach.server.serverpb.GetThrottlingMetadataResponse-int64) |  | gracePeriodEndSeconds is the unix timestamp when the grace period ends. | [reserved](#support-status) |
+| hasTelemetryDeadline | [bool](#cockroach.server.serverpb.GetThrottlingMetadataResponse-bool) |  | hasTelemetryDeadline is true if this cluster requires telemetry to be delivered. | [reserved](#support-status) |
+| telemetryDeadlineSeconds | [int64](#cockroach.server.serverpb.GetThrottlingMetadataResponse-int64) |  | telemetryDeadlineSeconds is the unix timestamp when the telemetry deadline must be met. After this the cluster will be throttled. | [reserved](#support-status) |
+| lastTelemetryReceivedSeconds | [int64](#cockroach.server.serverpb.GetThrottlingMetadataResponse-int64) |  | lastTelemetryReceivedSeconds is the unix timestamp when we last delivered telemetry. | [reserved](#support-status) |
+| nodeIdsWithTelemetryProblems | [string](#cockroach.server.serverpb.GetThrottlingMetadataResponse-string) | repeated | nodeIdsWithTelemetryProblems collects a list of nodes that are delinquent with telemetry. This is useful for reporting because the cluster could have partial telemetry delivery failure and it's helpful to surface this in DB Console. | [reserved](#support-status) |
+
+
+
+
+
+
+
+## RequestCA
+
+`GET /_join/v1/ca`
+
+
+
+Support status: [reserved](#support-status)
+
+#### Request Parameters
+
+
+
+
+CARequest requests the CA cert anchoring this service.
+
+
+
+
+
+
+
+
+#### Response Parameters
+
+
+
+
+CAResponse contains a PEM encoded copy of the CA cert for this service.
+
+
+| Field | Type | Label | Description | Support status |
+| ----- | ---- | ----- | ----------- | -------------- |
+| ca_cert | [bytes](#cockroach.server.serverpb.CAResponse-bytes) |  |  | [reserved](#support-status) |
+
+
+
+
+
+
+
+## RequestCertBundle
+
+`GET /_join/v1/requestbundle`
+
+
+
+Support status: [reserved](#support-status)
+
+#### Request Parameters
+
+
+
+
+CertBundleRequest requests the bundle of initialization CAs for a new node.
+It provides authentication in the form of a joinToken containing a
+sharedSecret.
+
+
+| Field | Type | Label | Description | Support status |
+| ----- | ---- | ----- | ----------- | -------------- |
+| token_id | [string](#cockroach.server.serverpb.CertBundleRequest-string) |  |  | [reserved](#support-status) |
+| shared_secret | [bytes](#cockroach.server.serverpb.CertBundleRequest-bytes) |  |  | [reserved](#support-status) |
+
+
+
+
+
+
+
+#### Response Parameters
+
+
+
+
+CertBundleResponse contains a copy of all CAs needed to initialize TLS for
+a new node.
+
+
+| Field | Type | Label | Description | Support status |
+| ----- | ---- | ----- | ----------- | -------------- |
+| bundle | [bytes](#cockroach.server.serverpb.CertBundleResponse-bytes) |  |  | [reserved](#support-status) |
 
 
 
@@ -7701,6 +7778,10 @@ Support status: [reserved](#support-status)
 
 
 
+| Field | Type | Label | Description | Support status |
+| ----- | ---- | ----- | ----------- | -------------- |
+| max_concurrency | [int32](#cockroach.server.serverpb.RecoveryCollectReplicaInfoRequest-int32) |  | MaxConcurrency is the maximum parallelism that will be used when fanning out RPCs to nodes in the cluster while servicing this request. A value of 0 disables concurrency. A negative value configures no limit for concurrency. | [reserved](#support-status) |
+
 
 
 
@@ -7811,6 +7892,7 @@ Support status: [reserved](#support-status)
 | all_nodes | [bool](#cockroach.server.serverpb.RecoveryStagePlanRequest-bool) |  | If all nodes is true, then receiver should act as a coordinator and perform a fan-out to stage plan on all nodes of the cluster. | [reserved](#support-status) |
 | force_plan | [bool](#cockroach.server.serverpb.RecoveryStagePlanRequest-bool) |  | ForcePlan tells receiver to ignore any plan already staged on the node if it is present and replace it with new plan (including empty one). | [reserved](#support-status) |
 | force_local_internal_version | [bool](#cockroach.server.serverpb.RecoveryStagePlanRequest-bool) |  | ForceLocalInternalVersion tells server to update internal component of plan version to the one of active cluster version. This option needs to be set if target cluster is stuck in recovery where only part of nodes were successfully migrated. | [reserved](#support-status) |
+| max_concurrency | [int32](#cockroach.server.serverpb.RecoveryStagePlanRequest-int32) |  | MaxConcurrency is the maximum parallelism that will be used when fanning out RPCs to nodes in the cluster while servicing this request. A value of 0 disables concurrency. A negative value configures no limit for concurrency. | [reserved](#support-status) |
 
 
 
@@ -7900,6 +7982,7 @@ Support status: [reserved](#support-status)
 | plan_id | [bytes](#cockroach.server.serverpb.RecoveryVerifyRequest-bytes) |  | PlanID is ID of the plan to verify. | [reserved](#support-status) |
 | decommissioned_node_ids | [int32](#cockroach.server.serverpb.RecoveryVerifyRequest-int32) | repeated | DecommissionedNodeIDs is a set of nodes that should be marked as decommissioned in the cluster when loss of quorum recovery successfully applies. | [reserved](#support-status) |
 | max_reported_ranges | [int32](#cockroach.server.serverpb.RecoveryVerifyRequest-int32) |  | MaxReportedRanges is the maximum number of failed ranges to report. If more unhealthy ranges are found, error will be returned alongside range to indicate that ranges were cut short. | [reserved](#support-status) |
+| max_concurrency | [int32](#cockroach.server.serverpb.RecoveryVerifyRequest-int32) |  | MaxConcurrency is the maximum parallelism that will be used when fanning out RPCs to nodes in the cluster while servicing this request. A value of 0 disables concurrency. A negative value configures no limit for concurrency. | [reserved](#support-status) |
 
 
 

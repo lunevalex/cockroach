@@ -1,12 +1,7 @@
 // Copyright 2017 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package rowcontainer
 
@@ -79,8 +74,9 @@ type HashRowContainer interface {
 	// did not match.
 	// 	- probeEqCols are the equality columns of the given row that are used to
 	// 	  get the bucket of matching rows.
+	//  - probeEqColTypes are the types of the equality columns.
 	NewBucketIterator(
-		ctx context.Context, row rowenc.EncDatumRow, probeEqCols columns,
+		ctx context.Context, row rowenc.EncDatumRow, probeEqCols columns, probeEqColTypes []*types.T,
 	) (RowMarkerIterator, error)
 
 	// NewUnmarkedIterator returns a RowIterator that iterates over unmarked
@@ -115,6 +111,7 @@ func (e *columnEncoder) init(typs []*types.T, keyCols columns, encodeNull bool) 
 // If the row contains any NULLs and encodeNull is false, hasNull is true and
 // no encoding is returned. If encodeNull is true, hasNull is never set.
 func encodeColumnsOfRow(
+	ctx context.Context,
 	da *tree.DatumAlloc,
 	appendTo []byte,
 	row rowenc.EncDatumRow,
@@ -126,12 +123,25 @@ func encodeColumnsOfRow(
 		if row[colIdx].IsNull() && !encodeNull {
 			return nil, true, nil
 		}
-		// Note: we cannot compare VALUE encodings because they contain column IDs
-		// which can vary.
-		// TODO(radu): we should figure out what encoding is readily available and
-		// use that (though it needs to be consistent across all rows). We could add
-		// functionality to compare VALUE encodings ignoring the column ID.
-		appendTo, err = row[colIdx].Encode(colTypes[i], da, catenumpb.DatumEncoding_ASCENDING_KEY, appendTo)
+		ed := row[colIdx]
+		if t := colTypes[i]; t.Family() == types.JsonFamily {
+			// JSON type is special because for historical reasons it uses value
+			// encoding in Fingerprint, yet we do have key encoding available
+			// (and this is what will be used by the disk row container if we
+			// happen to spill to disk).
+			appendTo, err = row[colIdx].Encode(t, da, catenumpb.DatumEncoding_ASCENDING_KEY, appendTo)
+		} else {
+			// Fingerprint internally might decode the EncDatum and will attempt
+			// to update the memory account accordingly. We don't have a
+			// suitable memory account in scope, so we will ensure to lose the
+			// reference to the decoded datum if it wasn't already present, and
+			// then we can pass nil acc argument.
+			hadDecodedDatum := ed.Datum != nil
+			appendTo, err = ed.Fingerprint(ctx, t, da, appendTo, nil /* acc */)
+			if !hadDecodedDatum {
+				ed.Datum = nil
+			}
+		}
 		if err != nil {
 			return appendTo, false, err
 		}
@@ -143,10 +153,10 @@ func encodeColumnsOfRow(
 // row. The returned byte slice is only valid until the next call to
 // encodeEqualityColumns().
 func (e *columnEncoder) encodeEqualityCols(
-	ctx context.Context, row rowenc.EncDatumRow, eqCols columns,
+	ctx context.Context, row rowenc.EncDatumRow, eqCols columns, eqColTypes []*types.T,
 ) ([]byte, error) {
 	encoded, hasNull, err := encodeColumnsOfRow(
-		&e.datumAlloc, e.scratch, row, eqCols, e.keyTypes, e.encodeNull,
+		ctx, &e.datumAlloc, e.scratch, row, eqCols, eqColTypes, e.encodeNull,
 	)
 	if err != nil {
 		return nil, err
@@ -158,6 +168,8 @@ func (e *columnEncoder) encodeEqualityCols(
 	return encoded, nil
 }
 
+var hashKeyEncodingDirection = encoding.Ascending
+
 // storedEqColsToOrdering returns an ordering based on storedEqCols to be used
 // by the row containers (this will result in rows with the same equality
 // columns occurring contiguously in the keyspace).
@@ -166,7 +178,7 @@ func storedEqColsToOrdering(storedEqCols columns) colinfo.ColumnOrdering {
 	for i := range ordering {
 		ordering[i] = colinfo.ColumnOrderInfo{
 			ColIdx:    int(storedEqCols[i]),
-			Direction: encoding.Ascending,
+			Direction: hashKeyEncodingDirection,
 		}
 	}
 	return ordering
@@ -268,7 +280,7 @@ func (h *HashMemRowContainer) Close(ctx context.Context) {
 func (h *HashMemRowContainer) addRowToBucket(
 	ctx context.Context, row rowenc.EncDatumRow, rowIdx int,
 ) error {
-	encoded, err := h.encodeEqualityCols(ctx, row, h.storedEqCols)
+	encoded, err := h.encodeEqualityCols(ctx, row, h.storedEqCols, h.keyTypes)
 	if err != nil {
 		return err
 	}
@@ -305,9 +317,10 @@ func (h *HashMemRowContainer) ReserveMarkMemoryMaybe(ctx context.Context) error 
 
 // hashMemRowBucketIterator iterates over the rows in a bucket.
 type hashMemRowBucketIterator struct {
-	container     *HashMemRowContainer
-	scratchEncRow rowenc.EncDatumRow
-	probeEqCols   columns
+	container       *HashMemRowContainer
+	scratchEncRow   rowenc.EncDatumRow
+	probeEqCols     columns
+	probeEqColTypes []*types.T
 	// rowIdxs are the indices of rows in the bucket.
 	rowIdxs []int
 	curIdx  int
@@ -317,12 +330,13 @@ var _ RowMarkerIterator = &hashMemRowBucketIterator{}
 
 // NewBucketIterator implements the HashRowContainer interface.
 func (h *HashMemRowContainer) NewBucketIterator(
-	ctx context.Context, row rowenc.EncDatumRow, probeEqCols columns,
+	ctx context.Context, row rowenc.EncDatumRow, probeEqCols columns, probeEqColTypes []*types.T,
 ) (RowMarkerIterator, error) {
 	ret := &hashMemRowBucketIterator{
-		container:     h,
-		scratchEncRow: make(rowenc.EncDatumRow, len(h.types)),
-		probeEqCols:   probeEqCols,
+		container:       h,
+		scratchEncRow:   make(rowenc.EncDatumRow, len(h.types)),
+		probeEqCols:     probeEqCols,
+		probeEqColTypes: probeEqColTypes,
 	}
 
 	if err := ret.Reset(ctx, row); err != nil {
@@ -386,7 +400,7 @@ func (i *hashMemRowBucketIterator) Mark(ctx context.Context) error {
 }
 
 func (i *hashMemRowBucketIterator) Reset(ctx context.Context, row rowenc.EncDatumRow) error {
-	encoded, err := i.container.encodeEqualityCols(ctx, row, i.probeEqCols)
+	encoded, err := i.container.encodeEqualityCols(ctx, row, i.probeEqCols, i.probeEqColTypes)
 	if err != nil {
 		return err
 	}
@@ -459,7 +473,7 @@ func (i *hashMemRowIterator) computeKey() error {
 		i.curKey, err = i.scratchEncRow[col].Encode(
 			i.container.types[col],
 			&i.container.columnEncoder.datumAlloc,
-			catenumpb.DatumEncoding_ASCENDING_KEY,
+			rowenc.EncodingDirToDatumEncoding(hashKeyEncodingDirection),
 			i.curKey,
 		)
 		if err != nil {
@@ -528,7 +542,7 @@ func MakeHashDiskRowContainer(
 
 // Init implements the HashRowContainer interface.
 func (h *HashDiskRowContainer) Init(
-	_ context.Context, shouldMark bool, typs []*types.T, storedEqCols columns, encodeNull bool,
+	ctx context.Context, shouldMark bool, typs []*types.T, storedEqCols columns, encodeNull bool,
 ) error {
 	h.columnEncoder.init(typs, storedEqCols, encodeNull)
 	h.shouldMark = shouldMark
@@ -548,8 +562,9 @@ func (h *HashDiskRowContainer) Init(
 		)
 	}
 
-	h.DiskRowContainer = MakeDiskRowContainer(h.diskMonitor, storedTypes, storedEqColsToOrdering(storedEqCols), h.engine)
-	return nil
+	var err error
+	h.DiskRowContainer, err = MakeDiskRowContainer(ctx, h.diskMonitor, storedTypes, storedEqColsToOrdering(storedEqCols), h.engine)
+	return err
 }
 
 // AddRow adds a row to the HashDiskRowContainer. This row is unmarked by
@@ -575,8 +590,9 @@ func (h *HashDiskRowContainer) IsEmpty() bool {
 // hashDiskRowBucketIterator iterates over the rows in a bucket.
 type hashDiskRowBucketIterator struct {
 	*diskRowIterator
-	container   *HashDiskRowContainer
-	probeEqCols columns
+	container       *HashDiskRowContainer
+	probeEqCols     columns
+	probeEqColTypes []*types.T
 	// haveMarkedRows returns true if we've marked rows since the last time we
 	// recreated our underlying diskRowIterator.
 	haveMarkedRows bool
@@ -591,11 +607,12 @@ var _ RowMarkerIterator = &hashDiskRowBucketIterator{}
 
 // NewBucketIterator implements the HashRowContainer interface.
 func (h *HashDiskRowContainer) NewBucketIterator(
-	ctx context.Context, row rowenc.EncDatumRow, probeEqCols columns,
+	ctx context.Context, row rowenc.EncDatumRow, probeEqCols columns, probeEqColTypes []*types.T,
 ) (RowMarkerIterator, error) {
 	ret := &hashDiskRowBucketIterator{
 		container:       h,
 		probeEqCols:     probeEqCols,
+		probeEqColTypes: probeEqColTypes,
 		diskRowIterator: h.NewIterator(ctx).(*diskRowIterator),
 	}
 	if err := ret.Reset(ctx, row); err != nil {
@@ -650,7 +667,7 @@ func (i *hashDiskRowBucketIterator) Row() (tree.Datums, error) {
 }
 
 func (i *hashDiskRowBucketIterator) Reset(ctx context.Context, row rowenc.EncDatumRow) error {
-	encoded, err := i.container.encodeEqualityCols(ctx, row, i.probeEqCols)
+	encoded, err := i.container.encodeEqualityCols(ctx, row, i.probeEqCols, i.probeEqColTypes)
 	if err != nil {
 		return err
 	}
@@ -986,9 +1003,9 @@ func (h *HashDiskBackedRowContainer) SpillToDisk(ctx context.Context) error {
 
 // NewBucketIterator implements the hashRowContainer interface.
 func (h *HashDiskBackedRowContainer) NewBucketIterator(
-	ctx context.Context, row rowenc.EncDatumRow, probeEqCols columns,
+	ctx context.Context, row rowenc.EncDatumRow, probeEqCols columns, probeEqColTypes []*types.T,
 ) (RowMarkerIterator, error) {
-	return h.src.NewBucketIterator(ctx, row, probeEqCols)
+	return h.src.NewBucketIterator(ctx, row, probeEqCols, probeEqColTypes)
 }
 
 // NewUnmarkedIterator implements the hashRowContainer interface.

@@ -1,12 +1,7 @@
 // Copyright 2014 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package rpc
 
@@ -55,7 +50,7 @@ func TestHeartbeatReply(t *testing.T) {
 
 	request := &PingRequest{
 		Ping:          "testPing",
-		ServerVersion: st.Version.LatestVersion(),
+		ServerVersion: st.Version.BinaryVersion(),
 	}
 	response, err := heartbeat.Ping(context.Background(), request)
 	if err != nil {
@@ -139,7 +134,7 @@ func TestManualHeartbeat(t *testing.T) {
 
 	request := &PingRequest{
 		Ping:          "testManual",
-		ServerVersion: st.Version.LatestVersion(),
+		ServerVersion: st.Version.BinaryVersion(),
 	}
 	manualHeartbeat.ready <- nil
 	ctx := context.Background()
@@ -195,7 +190,7 @@ func TestClusterIDCompare(t *testing.T) {
 			request := &PingRequest{
 				Ping:          "testPing",
 				ClusterID:     &td.clientClusterID,
-				ServerVersion: st.Version.LatestVersion(),
+				ServerVersion: st.Version.BinaryVersion(),
 			}
 			_, err := heartbeat.Ping(context.Background(), request)
 			if td.expectError && err == nil {
@@ -240,7 +235,7 @@ func TestNodeIDCompare(t *testing.T) {
 			request := &PingRequest{
 				Ping:          "testPing",
 				TargetNodeID:  td.clientNodeID,
-				ServerVersion: st.Version.LatestVersion(),
+				ServerVersion: st.Version.BinaryVersion(),
 			}
 			_, err := heartbeat.Ping(context.Background(), request)
 			if td.expectError && err == nil {
@@ -261,8 +256,8 @@ func TestTenantVersionCheck(t *testing.T) {
 	clock := timeutil.NewManualTime(timeutil.Unix(0, 5))
 	maxOffset := time.Nanosecond
 	st := cluster.MakeTestingClusterSettingsWithVersions(
-		clusterversion.Latest.Version(),
-		clusterversion.MinSupported.Version(),
+		clusterversion.TestingBinaryVersion,
+		clusterversion.TestingBinaryMinSupportedVersion,
 		true /* initialize */)
 	heartbeat := &HeartbeatService{
 		clock:              clock,
@@ -273,7 +268,7 @@ func TestTenantVersionCheck(t *testing.T) {
 
 	request := &PingRequest{
 		Ping:          "testPing",
-		ServerVersion: st.Version.MinSupportedVersion(),
+		ServerVersion: st.Version.BinaryMinSupportedVersion(),
 	}
 	const failedRE = `version compatibility check failed on ping request:` +
 		` cluster requires at least version .*, but peer has version .*`

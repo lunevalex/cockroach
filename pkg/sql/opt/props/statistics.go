@@ -1,12 +1,7 @@
 // Copyright 2018 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package props
 
@@ -54,28 +49,22 @@ type Statistics struct {
 	// the row counts can be unpredictable; thus, a row count of 0.001 should be
 	// considered 1000 times better than a row count of 1, even though if this was
 	// a true row count they would be pretty much the same thing.
-	//
-	// For expressions with Cardinality.Max = 0, RowCount will be 0. For
-	// expressions with Cardinality.Max > 0, RowCount will be >= epsilon.
 	RowCount float64
+
+	// VirtualCols is the set of virtual computed columns produced by our input
+	// that we have statistics on. Any of these could appear in ColStats. This set
+	// is maintained separately from OutputCols to allow lookup of statistics on
+	// virtual columns for expressions that synthesize virtual columns.
+	VirtualCols opt.ColSet
 
 	// ColStats is a collection of statistics that pertain to columns in an
 	// expression or table. It is keyed by a set of one or more columns over which
 	// the statistic is defined.
 	ColStats ColStatsMap
 
-	// Selectivity is a value between 0 and 1 representing the estimated reduction
-	// in number of rows for the top-level operator in this expression, relative
-	// to some input. The input depends on the expression, e.g. for semi joins the
-	// input is the left child, for inner joins the input is the left child times
-	// the right child, for constrained scans the input is a full table scan, etc.
-	//
-	// Selectivity is used to calculate column statistics after the corresponding
-	// expression statistics have been derived.
-	//
-	// For expressions with Cardinality.Max = 0, selectivity will be 0. For
-	// expressions with Cardinality.Max > 0, selectivity will be in the range
-	// [epsilon, 1.0].
+	// Selectivity is a value between 0 and 1 representing the estimated
+	// reduction in number of rows for the top-level operator in this
+	// expression.
 	Selectivity Selectivity
 
 	// AvgColSizes contains the estimated average size of columns that
@@ -113,6 +102,7 @@ func (s *Statistics) RowCountIfAvailable() float64 {
 func (s *Statistics) CopyFrom(other *Statistics) {
 	s.Available = other.Available
 	s.RowCount = other.RowCount
+	s.VirtualCols = other.VirtualCols.Copy()
 	s.ColStats.CopyFrom(&other.ColStats)
 	s.Selectivity = other.Selectivity
 }
@@ -123,11 +113,6 @@ func (s *Statistics) CopyFrom(other *Statistics) {
 // See ColumnStatistic.ApplySelectivity for updating distinct counts, null
 // counts, and histograms.
 func (s *Statistics) ApplySelectivity(selectivity Selectivity) {
-	if selectivity == ZeroSelectivity {
-		s.RowCount = 0
-		s.Selectivity = ZeroSelectivity
-		return
-	}
 	s.RowCount *= selectivity.AsFloat()
 	s.Selectivity.Multiply(selectivity)
 }
@@ -139,10 +124,7 @@ func (s *Statistics) ApplySelectivity(selectivity Selectivity) {
 func (s *Statistics) UnionWith(other *Statistics) {
 	s.Available = s.Available && other.Available
 	s.RowCount += other.RowCount
-	s.Selectivity.UnsafeAdd(other.Selectivity)
-	if s.Selectivity.AsFloat() > 1.0 {
-		s.Selectivity = OneSelectivity
-	}
+	s.Selectivity.Add(other.Selectivity)
 }
 
 // String returns a string representation of the statistics.
@@ -185,6 +167,9 @@ func (s *Statistics) stringImpl(includeHistograms bool) string {
 				}
 			}
 		}
+	}
+	if !s.VirtualCols.Empty() {
+		fmt.Fprintf(&buf, "\nvirtcolstats: %v", s.VirtualCols)
 	}
 
 	return buf.String()
@@ -253,6 +238,7 @@ func (c *ColumnStatistic) ApplySelectivity(selectivity Selectivity, inputRows fl
 		// non-zero).
 		c.DistinctCount = epsilon
 	}
+
 }
 
 // CopyFromOther copies all fields of the other ColumnStatistic except Cols,

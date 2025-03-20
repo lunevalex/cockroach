@@ -1,12 +1,7 @@
 // Copyright 2020 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package sql
 
@@ -291,6 +286,17 @@ func (p *planner) dropTypeImpl(
 	if err := p.txn.Run(ctx, b); err != nil {
 		return err
 	}
+
+	// For this type descriptor, delete queued schema change jobs from the job
+	// cache. If the job had already been scheduled, we would also need to mark
+	// these jobs as successful, but that should never happen for types.
+	//
+	// Note that we still wait for jobs removed from the cache to finish running
+	// after the transaction, since they're not removed from the jobsCollection.
+	// Also, changes made here do not affect schema change jobs created in this
+	// transaction with no mutation ID; they remain in the cache, and will be
+	// updated when writing the job record to drop the table.
+	delete(p.ExtendedEvalContext().jobs.uniqueToCreate, typeDesc.ID)
 
 	if err := p.removeBackRefsFromAllTypesInType(ctx, typeDesc); err != nil {
 		return err

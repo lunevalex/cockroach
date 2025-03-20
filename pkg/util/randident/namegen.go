@@ -1,12 +1,7 @@
 // Copyright 2022 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package randident
 
@@ -33,7 +28,7 @@ func NewNameGenerator(cfg *NameGeneratorConfig, rand *rand.Rand, pattern string)
 		cfg:           cfg,
 		rand:          rand,
 		pattern:       pattern,
-		suffixReplace: strings.Contains(pattern, "#"),
+		numberReplace: strings.Contains(pattern, "#"),
 	}
 }
 
@@ -41,7 +36,7 @@ type nameGenerator struct {
 	cfg           *NameGeneratorConfig
 	rand          *rand.Rand
 	pattern       string
-	suffixReplace bool
+	numberReplace bool
 }
 
 var _ NameGenerator = (*nameGenerator)(nil)
@@ -63,7 +58,7 @@ var escGenerators = []func(s *strings.Builder, r *rand.Rand){
 }
 
 // GenerateOne generates one random name.
-func (g *nameGenerator) GenerateOne(suffix string) string {
+func (g *nameGenerator) GenerateOne(number int) string {
 	var s strings.Builder
 
 	// We want to consider every character position, including the start
@@ -147,13 +142,14 @@ func (g *nameGenerator) GenerateOne(suffix string) string {
 		insertNoise()
 	}
 
-	if g.cfg.Suffix {
-		if g.suffixReplace {
-			r := strings.ReplaceAll(s.String(), "#", suffix)
+	if g.cfg.Number {
+		if g.numberReplace {
+			is := strconv.Itoa(number)
+			r := strings.ReplaceAll(s.String(), "#", is)
 			r = lexbase.NormalizeString(r)
 			return r
 		}
-		fmt.Fprintf(&s, "_%s", suffix)
+		fmt.Fprintf(&s, "%d", number)
 	}
 	// The introduction of special unicode characters above may result
 	// in combined runes that should be reduced to NFC to form a valid
@@ -172,7 +168,7 @@ func (g *nameGenerator) GenerateMultiple(
 			return nil, ctx.Err()
 		default:
 		}
-		candidateName := g.GenerateOne(strconv.Itoa(i))
+		candidateName := g.GenerateOne(i)
 		if _, ok := conflictNames[candidateName]; ok {
 			continue
 		}

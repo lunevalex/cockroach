@@ -1,12 +1,7 @@
 // Copyright 2015 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package kvserver
 
@@ -129,6 +124,19 @@ func (rq *raftSnapshotQueue) processRaftSnapshot(
 				repDesc,
 			)
 			log.VEventf(ctx, 2, "%v", err)
+			// TODO(dan): This is super brittle and non-obvious. In the common case,
+			// this check avoids duplicate work, but in rare cases, we send the
+			// learner snap at an index before the one raft wanted here. The raft
+			// leader should be able to use logs to get the rest of the way, but it
+			// doesn't try. In this case, skipping the raft snapshot would mean that
+			// we have to wait for the next scanner cycle of the raft snapshot queue
+			// to pick it up again. So, punt the responsibility back to raft by
+			// telling it that the snapshot failed. If the learner snap ends up being
+			// sufficient, this message will be ignored, but if we hit the case
+			// described above, this will cause raft to keep asking for a snap and at
+			// some point the snapshot lock above will be released and we'll fall
+			// through to the logic below.
+			repl.reportSnapshotStatus(ctx, repDesc.ReplicaID, err)
 			return false, nil
 		}
 	}

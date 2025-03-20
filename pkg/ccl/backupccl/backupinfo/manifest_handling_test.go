@@ -1,10 +1,7 @@
 // Copyright 2023 The Cockroach Authors.
 //
-// Licensed as a CockroachDB Enterprise file under the Cockroach Community
-// License (the "License"); you may not use this file except in compliance with
-// the License. You may obtain a copy of the License at
-//
-//     https://github.com/cockroachdb/cockroach/blob/master/licenses/CCL.txt
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package backupinfo_test
 
@@ -19,8 +16,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/ccl/backupccl/backupinfo"
 	"github.com/cockroachdb/cockroach/pkg/ccl/backupccl/backuppb"
 	"github.com/cockroachdb/cockroach/pkg/cloud"
-	"github.com/cockroachdb/cockroach/pkg/keys"
-	"github.com/cockroachdb/cockroach/pkg/multitenant/mtinfopb"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/security/username"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/descpb"
@@ -29,7 +24,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/bulk"
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
 	"github.com/cockroachdb/cockroach/pkg/util/leaktest"
-	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/stretchr/testify/require"
 )
 
@@ -37,7 +31,6 @@ import (
 // the external SSTs of a backup manifest.
 func TestManifestHandlingIteratorOperations(t *testing.T) {
 	defer leaktest.AfterTest(t)()
-	defer log.Scope(t).Close(t)
 
 	const numFiles = 10
 	const numDescriptors = 10
@@ -47,13 +40,12 @@ func TestManifestHandlingIteratorOperations(t *testing.T) {
 	tc := serverutils.StartCluster(t, 1, base.TestClusterArgs{})
 	defer tc.Stopper().Stop(ctx)
 
-	s := tc.Server(0).ApplicationLayer()
 	store, err := cloud.ExternalStorageFromURI(ctx, "userfile:///foo",
 		base.ExternalIODirConfig{},
-		s.ClusterSettings(),
+		tc.Server(0).ClusterSettings(),
 		blobs.TestEmptyBlobClientFactory,
 		username.RootUserName(),
-		s.InternalDB().(isql.DB),
+		tc.Server(0).InternalDB().(isql.DB),
 		nil, /* limiters */
 		cloud.NilMetrics,
 	)
@@ -111,19 +103,17 @@ func TestManifestHandlingIteratorOperations(t *testing.T) {
 // manifest SST iterator.
 func TestManifestHandlingEmptyIterators(t *testing.T) {
 	defer leaktest.AfterTest(t)()
-	defer log.Scope(t).Close(t)
 
 	ctx := context.Background()
 	tc := serverutils.StartCluster(t, 1, base.TestClusterArgs{})
 	defer tc.Stopper().Stop(ctx)
 
-	s := tc.Server(0).ApplicationLayer()
 	store, err := cloud.ExternalStorageFromURI(ctx, "userfile:///foo",
 		base.ExternalIODirConfig{},
-		s.ClusterSettings(),
+		tc.Server(0).ClusterSettings(),
 		blobs.TestEmptyBlobClientFactory,
 		username.RootUserName(),
-		s.InternalDB().(isql.DB),
+		tc.Server(0).InternalDB().(isql.DB),
 		nil, /* limiters */
 		cloud.NilMetrics,
 	)
@@ -292,88 +282,5 @@ func mustCreateFileIterFactory(
 		it, err := iterFactory.NewFileIter(ctx)
 		require.NoError(t, err)
 		return it
-	}
-}
-
-func TestMakeBackupCodec(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-
-	tenID, err := roachpb.MakeTenantID(10)
-	require.NoError(t, err)
-	tenSpan := keys.MakeTenantSpan(tenID)
-	for _, tc := range []struct {
-		name          string
-		manifests     []backuppb.BackupManifest
-		expectedCodec keys.SQLCodec
-	}{
-		{
-			name: "full",
-			manifests: []backuppb.BackupManifest{
-				{Spans: []roachpb.Span{{Key: roachpb.Key("/Table/123")}}},
-			},
-			expectedCodec: keys.SystemSQLCodec,
-		},
-		{
-			name: "full-backup-tenant",
-			manifests: []backuppb.BackupManifest{
-				{Spans: []roachpb.Span{tenSpan}},
-			},
-			expectedCodec: keys.MakeSQLCodec(tenID),
-		},
-		{
-			name: "full-backup-of-tenant",
-			manifests: []backuppb.BackupManifest{
-				{
-					Spans:   []roachpb.Span{tenSpan},
-					Tenants: []mtinfopb.TenantInfoWithUsage{{SQLInfo: mtinfopb.SQLInfo{ID: 10}}},
-				},
-			},
-			expectedCodec: keys.SystemSQLCodec,
-		},
-		{
-			name: "empty-full-backup",
-			manifests: []backuppb.BackupManifest{
-				{Spans: []roachpb.Span{}},
-				{Spans: []roachpb.Span{{Key: roachpb.Key("/Table/123")}}},
-			},
-			expectedCodec: keys.SystemSQLCodec,
-		},
-		{
-			name: "empty-full-backup-tenant",
-			manifests: []backuppb.BackupManifest{
-				{Spans: []roachpb.Span{}},
-				{Spans: []roachpb.Span{tenSpan}},
-			},
-			expectedCodec: keys.MakeSQLCodec(tenID),
-		},
-		{
-			name: "empty-full-backup-of-tenant",
-			manifests: []backuppb.BackupManifest{
-				{
-					Spans:   []roachpb.Span{},
-					Tenants: []mtinfopb.TenantInfoWithUsage{{SQLInfo: mtinfopb.SQLInfo{ID: 10}}},
-				},
-				{
-					Spans:   []roachpb.Span{tenSpan},
-					Tenants: []mtinfopb.TenantInfoWithUsage{{SQLInfo: mtinfopb.SQLInfo{ID: 10}}},
-				},
-			},
-			expectedCodec: keys.SystemSQLCodec,
-		},
-		{
-			name: "all-empty",
-			manifests: []backuppb.BackupManifest{
-				{Spans: []roachpb.Span{{}}},
-				{Spans: []roachpb.Span{{}}},
-				{Spans: []roachpb.Span{{}}},
-			},
-			expectedCodec: keys.SystemSQLCodec,
-		},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			c, err := backupinfo.MakeBackupCodec(tc.manifests)
-			require.NoError(t, err)
-			require.Equal(t, tc.expectedCodec, c)
-		})
 	}
 }

@@ -1,10 +1,7 @@
 // Copyright 2018 The Cockroach Authors.
 //
-// Licensed as a CockroachDB Enterprise file under the Cockroach Community
-// License (the "License"); you may not use this file except in compliance with
-// the License. You may obtain a copy of the License at
-//
-//     https://github.com/cockroachdb/cockroach/blob/master/licenses/CCL.txt
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package kvfeed
 
@@ -19,6 +16,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/ccl/changefeedccl/kvevent"
 	"github.com/cockroachdb/cockroach/pkg/ccl/changefeedccl/schemafeed"
 	"github.com/cockroachdb/cockroach/pkg/ccl/changefeedccl/schemafeed/schematestutils"
+	"github.com/cockroachdb/cockroach/pkg/ccl/changefeedccl/timers"
 	"github.com/cockroachdb/cockroach/pkg/keys"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvclient/kvcoord"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvpb"
@@ -28,6 +26,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/descpb"
 	"github.com/cockroachdb/cockroach/pkg/sql/rowenc/keyside"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
+	"github.com/cockroachdb/cockroach/pkg/util"
 	"github.com/cockroachdb/cockroach/pkg/util/ctxgroup"
 	"github.com/cockroachdb/cockroach/pkg/util/encoding"
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
@@ -117,12 +116,12 @@ func TestKVFeed(t *testing.T) {
 			nil /* curCount */, nil /* maxHist */, math.MaxInt64, settings,
 		)
 		metrics := kvevent.MakeMetrics(time.Minute)
-		buf := kvevent.NewMemBuffer(mm.MakeBoundAccount(), &st.SV, &metrics)
+		buf := kvevent.NewMemBuffer(mm.MakeBoundAccount(), &st.SV, &metrics.AggregatorBufferMetricsWithCompat)
 
 		// bufferFactory, when called, gives you a memory-monitored
 		// in-memory "buffer" to write to and read from.
 		bufferFactory := func() kvevent.Buffer {
-			return kvevent.NewMemBuffer(mm.MakeBoundAccount(), &st.SV, &metrics)
+			return kvevent.NewMemBuffer(mm.MakeBoundAccount(), &st.SV, &metrics.RangefeedBufferMetricsWithCompat)
 		}
 		scans := make(chan scanConfig)
 
@@ -137,14 +136,16 @@ func TestKVFeed(t *testing.T) {
 		})
 		ref := rawEventFeed(tc.events)
 		tf := newRawTableFeed(tc.descs, tc.initialHighWater)
+		st := timers.New(time.Minute).GetOrCreateScopedTimers("")
 		f := newKVFeed(buf, tc.spans, tc.checkpoint, hlc.Timestamp{},
 			tc.schemaChangeEvents, tc.schemaChangePolicy,
 			tc.needsInitialScan, tc.withDiff, true, /* withFiltering */
 			tc.initialHighWater, tc.endTime,
 			codec,
 			tf, sf, rangefeedFactory(ref.run), bufferFactory,
+			util.ConstantWithMetamorphicTestBool("use_mux", true),
 			changefeedbase.Targets{},
-			TestingKnobs{})
+			st, TestingKnobs{})
 		ctx, cancel := context.WithCancel(context.Background())
 		g := ctxgroup.WithContext(ctx)
 		g.GoCtx(func(ctx context.Context) error {

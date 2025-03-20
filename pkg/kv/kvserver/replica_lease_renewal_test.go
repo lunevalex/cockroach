@@ -1,12 +1,7 @@
 // Copyright 2021 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package kvserver
 
@@ -122,11 +117,13 @@ func TestLeaseRenewer(t *testing.T) {
 
 		// Split off an expiration-based range, and assert that the lease is extended.
 		desc := tc.LookupRangeOrFatal(t, tc.ScratchRangeWithExpirationLease(t))
+		// Wait for the split to apply on all nodes first.
+		require.NoError(t, tc.WaitForFullReplication())
+		// Assert that the lease is extended.
 		assertLeaseExtension(desc.RangeID)
 
 		// Transfer the lease to a different leaseholder, and assert that the lease is
-		// still extended. Wait for the split to apply on all nodes first.
-		require.NoError(t, tc.WaitForFullReplication())
+		// still extended.
 		lease, _ := getNodeReplica(1, desc.RangeID).GetLease()
 		target := tc.Target(lookupNode(lease.Replica.NodeID%3 + 1))
 		tc.TransferRangeLeaseOrFatal(t, desc, target)

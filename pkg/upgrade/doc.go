@@ -1,12 +1,7 @@
 // Copyright 2022 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 /*
 Package upgrade contains infrastructure for migrating a cluster from a version
@@ -40,7 +35,7 @@ v24.1.0
 and let's futher say that we're creating the cluster at version v23.2.0. On
 cluster creation, we'll run all permanent upgrades <= v23.2.0, and none of the
 non-permanent ones. Then, let's say that all the nodes are upgraded to
-LatestVersion=v24.1.0 binaries (and automatic version upgrades are turned off);
+BinaryVersion=v24.1.0 binaries (and automatic version upgrades are turned off);
 the cluster logical version remains v23.2.0. No upgrades are run. Then automatic
 upgrades are turned on, and `SET CLUSTER VERSION 24.1.0` is run in the
 background. At this point, all permanent and non-permanent upgrades > 23.2.0 and
@@ -53,8 +48,8 @@ left in system.migrations.
 
 Upgrades need to be idempotent: they might be run multiple times as the jobs
 error or nodes crash in the middle of running one of the jobs. However, if an
-upgrade has been run successfully by a binary with LatestVersion=b, it is not
-run again by a binary with a different LatestVersion. This is a useful guarantee
+upgrade has been run successfully by a binary with BinaryVersion=b, it is not
+run again by a binary with a different BinaryVersion. This is a useful guarantee
 for permanent upgrades, as it allows the code for an upgrade to change between
 versions (for example in response to updated bootstrap schema), without needing
 to worry about making the upgrade work for cluster being upgraded. Consider the

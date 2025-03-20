@@ -1,12 +1,7 @@
 // Copyright 2017 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package rowcontainer
 
@@ -164,7 +159,7 @@ func TestDiskRowContainer(t *testing.T) {
 				}
 				row := randgen.RandEncDatumRowOfTypes(rng, typs)
 				func() {
-					d := MakeDiskRowContainer(diskMonitor, typs, ordering, tempEngine)
+					d, _ := MakeDiskRowContainer(ctx, diskMonitor, typs, ordering, tempEngine)
 					defer d.Close(ctx)
 					if err := d.AddRow(ctx, row); err != nil {
 						t.Fatal(err)
@@ -227,7 +222,7 @@ func TestDiskRowContainer(t *testing.T) {
 			types := randgen.RandSortingTypes(rng, numCols)
 			rows := randgen.RandEncDatumRowsOfTypes(rng, numRows, types)
 			func() {
-				d := MakeDiskRowContainer(diskMonitor, types, ordering, tempEngine)
+				d, _ := MakeDiskRowContainer(ctx, diskMonitor, types, ordering, tempEngine)
 				defer d.Close(ctx)
 				for i := 0; i < len(rows); i++ {
 					if err := d.AddRow(ctx, rows[i]); err != nil {
@@ -309,7 +304,7 @@ func TestDiskRowContainer(t *testing.T) {
 		// Use random types and random rows.
 		types := randgen.RandSortingTypes(rng, numCols)
 		numRows, rows := makeUniqueRows(t, &evalCtx, rng, numRows, types, ordering)
-		d := MakeDiskRowContainer(diskMonitor, types, ordering, tempEngine)
+		d, _ := MakeDiskRowContainer(ctx, diskMonitor, types, ordering, tempEngine)
 		defer d.Close(ctx)
 		d.DoDeDuplicate()
 		addRowsRepeatedly := func() {
@@ -351,7 +346,7 @@ func TestDiskRowContainer(t *testing.T) {
 		types := randgen.RandSortingTypes(rng, numCols)
 		rows := randgen.RandEncDatumRowsOfTypes(rng, numRows, types)
 		// There are no ordering columns when using the numberedRowIterator.
-		d := MakeDiskRowContainer(diskMonitor, types, nil, tempEngine)
+		d, _ := MakeDiskRowContainer(ctx, diskMonitor, types, nil, tempEngine)
 		defer d.Close(ctx)
 		for i := 0; i < numRows; i++ {
 			require.NoError(t, d.AddRow(ctx, rows[i]))
@@ -439,7 +434,8 @@ func TestDiskRowContainerDiskFull(t *testing.T) {
 	)
 	monitor.Start(ctx, nil, mon.NewStandaloneBudget(0 /* capacity */))
 
-	d := MakeDiskRowContainer(
+	d, _ := MakeDiskRowContainer(
+		ctx,
 		monitor,
 		[]*types.T{types.Int},
 		colinfo.ColumnOrdering{colinfo.ColumnOrderInfo{ColIdx: 0, Direction: encoding.Ascending}},
@@ -480,7 +476,7 @@ func TestDiskRowContainerFinalIterator(t *testing.T) {
 	diskMonitor.Start(ctx, nil /* pool */, mon.NewStandaloneBudget(math.MaxInt64))
 	defer diskMonitor.Stop(ctx)
 
-	d := MakeDiskRowContainer(diskMonitor, types.OneIntCol, nil /* ordering */, tempEngine)
+	d, _ := MakeDiskRowContainer(ctx, diskMonitor, types.OneIntCol, nil /* ordering */, tempEngine)
 	defer d.Close(ctx)
 
 	const numCols = 1
@@ -608,7 +604,7 @@ func TestDiskRowContainerUnsafeReset(t *testing.T) {
 	)
 	monitor.Start(ctx, nil, mon.NewStandaloneBudget(math.MaxInt64))
 
-	d := MakeDiskRowContainer(monitor, types.OneIntCol, nil /* ordering */, tempEngine)
+	d, _ := MakeDiskRowContainer(ctx, monitor, types.OneIntCol, nil /* ordering */, tempEngine)
 	defer d.Close(ctx)
 
 	const (

@@ -1,12 +1,7 @@
 // Copyright 2020 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package catalog
 
@@ -17,6 +12,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/jobs/jobspb"
 	"github.com/cockroachdb/cockroach/pkg/keys"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
+	"github.com/cockroachdb/cockroach/pkg/security/username"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/catenumpb"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/catpb"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/descpb"
@@ -107,6 +103,10 @@ type DescriptorBuilder interface {
 		descIDMightExist func(id descpb.ID) bool,
 		nonTerminalJobIDMightExist func(id jobspb.JobID) bool,
 	) error
+
+	// StripNonExistentRoles removes any privileges granted to roles that
+	// don't exist.
+	StripNonExistentRoles(roleExists func(role username.SQLUsername) bool) error
 
 	// SetRawBytesInStorage sets `rawBytesInStorage` field by deep-copying `rawBytes`.
 	SetRawBytesInStorage(rawBytes []byte)
@@ -759,6 +759,10 @@ type TableDescriptor interface {
 	// IsSchemaLocked returns true if we don't allow performing schema changes
 	// on this table descriptor.
 	IsSchemaLocked() bool
+	// IsPrimaryKeySwapMutation returns true if the mutation is a primary key
+	// swap mutation or a secondary index used by the declarative schema changer
+	// for a primary index swap.
+	IsPrimaryKeySwapMutation(m *descpb.DescriptorMutation) bool
 }
 
 // MutableTableDescriptor is both a MutableDescriptor and a TableDescriptor.

@@ -1,12 +1,7 @@
 // Copyright 2020 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package tracingpb
 
@@ -307,7 +302,7 @@ func (r Recording) visitSpan(sp RecordedSpan, depth int) []traceLogData {
 	// the Logs above. We conservatively serialize the structured events again
 	// here, for the case when the span had not been verbose at the time.
 	sp.Structured(func(sr *types.Any, t time.Time) {
-		str, err := MessageToJSONString(sr, false /* emitDefaults */)
+		str, err := MessageToJSONString(sr, true /* emitDefaults */)
 		if err != nil {
 			return
 		}
@@ -497,7 +492,7 @@ func (r Recording) ToJaegerJSON(stmt, comment, nodeStr string) (string, error) {
 		if !(sp.Verbose || sp.RecordingMode == RecordingMode_VERBOSE) {
 			sp.Structured(func(sr *types.Any, t time.Time) {
 				jl := jaegerjson.Log{Timestamp: uint64(t.UnixNano() / 1000)}
-				jsonStr, err := MessageToJSONString(sr, false /* emitDefaults */)
+				jsonStr, err := MessageToJSONString(sr, true /* emitDefaults */)
 				if err != nil {
 					return
 				}

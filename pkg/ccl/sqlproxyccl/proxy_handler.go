@@ -1,10 +1,7 @@
 // Copyright 2021 The Cockroach Authors.
 //
-// Licensed as a CockroachDB Enterprise file under the Cockroach Community
-// License (the "License"); you may not use this file except in compliance with
-// the License. You may obtain a copy of the License at
-//
-//     https://github.com/cockroachdb/cockroach/blob/master/licenses/CCL.txt
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package sqlproxyccl
 
@@ -321,13 +318,15 @@ func newProxyHandler(
 
 // handle is called by the proxy server to handle a single incoming client
 // connection.
-func (handler *proxyHandler) handle(ctx context.Context, incomingConn net.Conn) error {
+func (handler *proxyHandler) handle(
+	ctx context.Context, incomingConn net.Conn, requireProxyProtocol bool,
+) error {
 	connReceivedTime := timeutil.Now()
 
 	// Parse headers before admitting the connection since the connection may
 	// be upgraded to TLS.
 	var endpointID string
-	if handler.RequireProxyProtocol {
+	if requireProxyProtocol {
 		var err error
 		endpointID, err = acl.FindPrivateEndpointID(incomingConn)
 		if err != nil {

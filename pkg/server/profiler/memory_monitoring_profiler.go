@@ -1,12 +1,7 @@
 // Copyright 2023 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package profiler
 
@@ -108,6 +103,10 @@ func takeMemoryMonitoringDump(
 
 func getMonitorStateCb(f io.Writer) func(state mon.MonitorState) error {
 	return func(s mon.MonitorState) error {
+		if s.Stopped {
+			// Omit monitors that have been stopped.
+			return nil
+		}
 		if s.Used == 0 && s.ReservedUsed == 0 && s.ReservedReserved == 0 {
 			// Omit monitors that don't have any memory usage reported.
 			return nil

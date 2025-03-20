@@ -1,10 +1,7 @@
 // Copyright 2022 The Cockroach Authors.
 //
-// Licensed as a CockroachDB Enterprise file under the Cockroach Community
-// License (the "License"); you may not use this file except in compliance with
-// the License. You may obtain a copy of the License at
-//
-//     https://github.com/cockroachdb/cockroach/blob/master/licenses/CCL.txt
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package cdceval
 
@@ -134,6 +131,8 @@ functions along with the number of arguments and the return type of the overload
   crdb_internal.get_namespace_id                               |        2 | int8
   crdb_internal.get_namespace_id                               |        3 | int8
   crdb_internal.get_zone_config                                |        1 | bytea
+  crdb_internal.has_role_option                                |        1 | bool
+  crdb_internal.is_admin                                       |        0 | bool
   crdb_internal.locality_value                                 |        1 | text
   crdb_internal.node_id                                        |        0 | int8
   crdb_internal.num_geo_inverted_index_entries                 |        3 | int8

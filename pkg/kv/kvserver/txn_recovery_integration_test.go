@@ -1,12 +1,7 @@
 // Copyright 2019 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package kvserver
 
@@ -47,7 +42,8 @@ func TestTxnRecoveryFromStaging(t *testing.T) {
 		// implicit-commit condition.
 		implicitCommit bool
 		// futureWrites dictates whether the transaction has been writing at the
-		// present time or whether it has been writing into the future.
+		// present time or whether it has been writing into the future with a
+		// synthetic timestamp.
 		futureWrites bool
 	}{
 		{
@@ -84,7 +80,7 @@ func TestTxnRecoveryFromStaging(t *testing.T) {
 			// where it has refreshed up to its write timestamp in preparation
 			// to commit.
 			if tc.futureWrites {
-				txn.WriteTimestamp = txn.ReadTimestamp.Add(50, 0)
+				txn.WriteTimestamp = txn.ReadTimestamp.Add(50, 0).WithSynthetic(true)
 				txn.ReadTimestamp = txn.WriteTimestamp // simulate refresh
 			}
 

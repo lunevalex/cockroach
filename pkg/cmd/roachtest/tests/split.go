@@ -1,12 +1,7 @@
 // Copyright 2018 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package tests
 
@@ -58,7 +53,7 @@ type kvSplitLoad struct {
 
 func (ksl kvSplitLoad) init(ctx context.Context, t test.Test, c cluster.Cluster) error {
 	t.Status("running uniform kv workload")
-	return c.RunE(ctx, option.WithNodes(c.Node(c.Spec().NodeCount)), fmt.Sprintf("./workload init kv {pgurl:1-%d}", c.Spec().NodeCount-1))
+	return c.RunE(ctx, c.Node(c.Spec().NodeCount), fmt.Sprintf("./workload init kv {pgurl:1-%d}", c.Spec().NodeCount-1))
 }
 
 func (ksl kvSplitLoad) rangeCount(db *gosql.DB) (int, error) {
@@ -74,7 +69,7 @@ func (ksl kvSplitLoad) run(ctx context.Context, t test.Test, c cluster.Cluster) 
 		extraFlags += fmt.Sprintf("--min-block-bytes=%d --max-block-bytes=%d ",
 			ksl.blockSize, ksl.blockSize)
 	}
-	return c.RunE(ctx, option.WithNodes(c.Node(c.Spec().NodeCount)), fmt.Sprintf("./workload run kv "+
+	return c.RunE(ctx, c.Node(c.Spec().NodeCount), fmt.Sprintf("./workload run kv "+
 		"--init --concurrency=%d --read-percent=%d --span-percent=%d %s {pgurl:1-%d} --duration='%s'",
 		ksl.concurrency, ksl.readPercent, ksl.spanPercent, extraFlags, c.Spec().NodeCount-1,
 		ksl.waitDuration.String()))
@@ -100,7 +95,7 @@ func (ysl ycsbSplitLoad) init(ctx context.Context, t test.Test, c cluster.Cluste
 		extraArgs += "--insert-hash"
 	}
 
-	return c.RunE(ctx, option.WithNodes(c.Node(c.Spec().NodeCount)), fmt.Sprintf(
+	return c.RunE(ctx, c.Node(c.Spec().NodeCount), fmt.Sprintf(
 		"./workload init ycsb --insert-count=%d --workload=%s %s {pgurl:1-%d}",
 		ysl.insertCount, ysl.workload, extraArgs, c.Spec().NodeCount-1))
 }
@@ -115,7 +110,7 @@ func (ysl ycsbSplitLoad) run(ctx context.Context, t test.Test, c cluster.Cluster
 		extraArgs += "--insert-hash"
 	}
 
-	return c.RunE(ctx, option.WithNodes(c.Node(c.Spec().NodeCount)), fmt.Sprintf(
+	return c.RunE(ctx, c.Node(c.Spec().NodeCount), fmt.Sprintf(
 		"./workload run ycsb --record-count=%d --workload=%s --concurrency=%d "+
 			"--duration='%s' %s {pgurl:1-%d}",
 		ysl.insertCount, ysl.workload, ysl.concurrency,
@@ -206,9 +201,9 @@ func registerLoadSplits(r registry.Registry) {
 			runLoadSplits(ctx, t, c, splitParams{
 				maxSize:      10 << 30,               // 10 GB
 				cpuThreshold: 100 * time.Millisecond, // 1/10th of a CPU per second.
-				// There should be at least 15 splits, in practice there are on average
+				// There should be at least 13 splits, in practice there are on average
 				// 20.
-				minimumRanges: 15,
+				minimumRanges: 14,
 				maximumRanges: 25,
 				load: kvSplitLoad{
 					concurrency:  64, // 64 concurrent workers
@@ -230,9 +225,11 @@ func registerLoadSplits(r registry.Registry) {
 				qpsThreshold: 100,      // 100 queries per second
 				// We expect no splits so require only 1 range. However, in practice we
 				// sometimes see a split or two early in, presumably when the sampling
-				// gets lucky.
+				// gets lucky or due to workload concurrency, where later (>sequence)
+				// requests are serviced quicker than concurrent earlier requests, see
+				// reservoir sampling examples in #118457.
 				minimumRanges: 1,
-				maximumRanges: 3,
+				maximumRanges: 4,
 				load: kvSplitLoad{
 					concurrency:  64, // 64 concurrent workers
 					readPercent:  0,  // 0% reads
@@ -331,9 +328,9 @@ func registerLoadSplits(r registry.Registry) {
 				maxSize:      10 << 30,               // 10 GB
 				cpuThreshold: 100 * time.Millisecond, // 1/10th of a CPU per second.
 				// YCSB/A has a zipfian distribution with 50% inserts and 50% updates.
-				// The number of splits should be between 20-40 after 10 minutes with
+				// The number of splits should be between 18-38 after 10 minutes with
 				// 100ms threshold on 8vCPU machines.
-				minimumRanges:     20,
+				minimumRanges:     18,
 				maximumRanges:     40,
 				initialRangeCount: 2,
 				load: ycsbSplitLoad{
@@ -407,7 +404,7 @@ func registerLoadSplits(r registry.Registry) {
 				// YCSB/E has a zipfian distribution with 95% scans (limit 1k) and 5%
 				// inserts.
 				minimumRanges:     5,
-				maximumRanges:     15,
+				maximumRanges:     18,
 				initialRangeCount: 2,
 				load: ycsbSplitLoad{
 					workload:     "e",
@@ -434,7 +431,7 @@ func runLoadSplits(ctx context.Context, t test.Test, c cluster.Cluster, params s
 	// TODO(DarrylWong): enable metamorphic contants once issue is resolved
 	settings := install.MakeClusterSettings()
 	settings.Env = append(settings.Env, "COCKROACH_INTERNAL_DISABLE_METAMORPHIC_TESTING=true")
-	startOpts := option.DefaultStartOptsNoBackups()
+	startOpts := option.NewStartOpts(option.NoBackupSchedule)
 	startOpts.RoachprodOpts.ExtraArgs = append(startOpts.RoachprodOpts.ExtraArgs,
 		"--vmodule=split_queue=2,store_rebalancer=2,allocator=2,replicate_queue=2,"+
 			"decider=3,replica_split_load=1",
@@ -639,7 +636,7 @@ func runLargeRangeSplits(ctx context.Context, t test.Test, c cluster.Cluster, si
 
 			// NB: would probably be faster to use --data-loader=IMPORT here, but IMPORT
 			// will disregard our preference to keep things in a single range.
-			c.Run(ctx, option.WithNodes(c.Node(1)), fmt.Sprintf("./workload init bank "+
+			c.Run(ctx, c.Node(1), fmt.Sprintf("./workload init bank "+
 				"--rows=%d --payload-bytes=%d --data-loader INSERT --ranges=1 {pgurl:1}", rows, payload))
 
 			if rc, s := rangeCount(t); rc != 1 {

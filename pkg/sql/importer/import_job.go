@@ -1,12 +1,7 @@
 // Copyright 2017 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package importer
 
@@ -49,9 +44,9 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/catconstants"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/catid"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
-	"github.com/cockroachdb/cockroach/pkg/sql/sqlclustersettings"
 	"github.com/cockroachdb/cockroach/pkg/sql/sqltelemetry"
 	"github.com/cockroachdb/cockroach/pkg/sql/stats"
+	"github.com/cockroachdb/cockroach/pkg/storage"
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
 	"github.com/cockroachdb/cockroach/pkg/util/ioctx"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
@@ -103,6 +98,16 @@ var processorsPerNode = settings.RegisterIntSetting(
 	"bulkio.import.processors_per_node",
 	"number of input processors to run on each sql instance", 1,
 	settings.PositiveInt,
+)
+
+var performConstraintValidation = settings.RegisterBoolSetting(
+	settings.ApplicationLevel,
+	"bulkio.import.constraint_validation.unsafe.enabled",
+	"should import perform constraint validation after data load. "+
+		"NOTE: this setting should not be used on production clusters, as it could result in "+
+		"incorrect query results if the imported data set violates constraints (i.e. contains duplicates).",
+	true,
+	settings.WithUnsafe,
 )
 
 type preparedSchemaMetadata struct {
@@ -321,8 +326,10 @@ func (r *importResumer) Resume(ctx context.Context, execCtx interface{}) error {
 		return err
 	}
 
-	if err := r.checkVirtualConstraints(ctx, p.ExecCfg(), r.job, p.User()); err != nil {
-		return err
+	if performConstraintValidation.Get(&p.ExecCfg().Settings.SV) {
+		if err := r.checkVirtualConstraints(ctx, p.ExecCfg(), r.job, p.User()); err != nil {
+			return err
+		}
 	}
 
 	// If the table being imported into referenced UDTs, ensure that a concurrent
@@ -604,7 +611,7 @@ func prepareNewTablesForIngestion(
 	// Write the new TableDescriptors and flip the namespace entries over to
 	// them. After this call, any queries on a table will be served by the newly
 	// imported data.
-	includePublicSchemaCreatePriv := sqlclustersettings.PublicSchemaCreatePrivilegeEnabled.Get(&p.ExecCfg().Settings.SV)
+	includePublicSchemaCreatePriv := sql.PublicSchemaCreatePrivilegeEnabled.Get(&p.ExecCfg().Settings.SV)
 	if err := ingesting.WriteDescriptors(
 		ctx, txn, p.User(), descsCol, nil /* databases */, nil /* schemas */, tableDescs,
 		nil /* types */, nil /* functions */, tree.RequestedDescriptors, seqValKVs,
@@ -757,7 +764,9 @@ func (r *importResumer) parseBundleSchemaIfNeeded(ctx context.Context, phs inter
 		ctx, span = tracing.ChildSpan(ctx, "import-parsing-bundle-schema")
 		defer span.Finish()
 
-		if err := r.job.NoTxn().RunningStatus(ctx, runningStatusImportBundleParseSchema); err != nil {
+		if err := r.job.NoTxn().RunningStatus(ctx, func(_ context.Context, _ jobspb.Details) (jobs.RunningStatus, error) {
+			return runningStatusImportBundleParseSchema, nil
+		}); err != nil {
 			return errors.Wrapf(err, "failed to update running status of job %d", errors.Safe(r.job.ID()))
 		}
 
@@ -1037,14 +1046,7 @@ func (r *importResumer) writeStubStatisticsForImportedTables(
 			distinctCount := uint64(float64(rowCount) * memo.UnknownDistinctCountRatio)
 			nullCount := uint64(float64(rowCount) * memo.UnknownNullCountRatio)
 			avgRowSize := uint64(memo.UnknownAvgRowSize)
-			// Because we don't yet have real distinct and null counts, only produce
-			// single-column stats to avoid the appearance of perfectly correlated
-			// columns.
-			multiColEnabled := false
-			defaultHistogramBuckets := stats.GetDefaultHistogramBuckets(execCfg.SV(), desc)
-			statistics, err := sql.StubTableStats(
-				desc, jobspb.ImportStatsName, multiColEnabled, defaultHistogramBuckets,
-			)
+			statistics, err := sql.StubTableStats(desc, jobspb.ImportStatsName)
 			if err == nil {
 				for _, statistic := range statistics {
 					statistic.RowCount = rowCount
@@ -1122,8 +1124,9 @@ func (r *importResumer) checkVirtualConstraints(
 		desc.SetPublic()
 
 		if sql.HasVirtualUniqueConstraints(desc) {
-			status := jobs.RunningStatus(fmt.Sprintf("re-validating %s", desc.GetName()))
-			if err := job.NoTxn().RunningStatus(ctx, status); err != nil {
+			if err := job.NoTxn().RunningStatus(ctx, func(_ context.Context, _ jobspb.Details) (jobs.RunningStatus, error) {
+				return jobs.RunningStatus(fmt.Sprintf("re-validating %s", desc.GetName())), nil
+			}); err != nil {
 				return errors.Wrapf(err, "failed to update running status of job %d", errors.Safe(job.ID()))
 			}
 		}
@@ -1232,6 +1235,19 @@ func (r *importResumer) checkForUDTModification(
 	return sql.DescsTxn(ctx, execCfg, checkTypesAreEquivalent)
 }
 
+var retryDuration = settings.RegisterDurationSetting(
+	settings.ApplicationLevel,
+	"bulkio.import.retry_duration",
+	"duration during which the IMPORT can be retried in face of non-permanent errors",
+	time.Minute*2,
+	settings.PositiveDuration,
+)
+
+func getFractionCompleted(job *jobs.Job) float64 {
+	p := job.Progress()
+	return float64(p.GetFractionCompleted())
+}
+
 func ingestWithRetry(
 	ctx context.Context,
 	execCtx sql.JobExecContext,
@@ -1247,12 +1263,11 @@ func ingestWithRetry(
 	ctx, sp := tracing.ChildSpan(ctx, "importer.ingestWithRetry")
 	defer sp.Finish()
 
-	// We retry on pretty generic failures -- any rpc error. If a worker node were
-	// to restart, it would produce this kind of error, but there may be other
-	// errors that are also rpc errors. Don't retry to aggressively.
+	// Note that we don't specify MaxRetries since we use time-based limit
+	// in the loop below.
 	retryOpts := retry.Options{
-		MaxBackoff: 1 * time.Second,
-		MaxRetries: 5,
+		// Don't retry too aggressively.
+		MaxBackoff: 15 * time.Second,
 	}
 
 	// We want to retry an import if there are transient failures (i.e. worker
@@ -1260,11 +1275,15 @@ func ingestWithRetry(
 	// import.
 	var res kvpb.BulkOpSummary
 	var err error
+	// State to decide when to exit the retry loop.
+	lastProgressChange, lastProgress := timeutil.Now(), getFractionCompleted(job)
 	for r := retry.StartWithCtx(ctx, retryOpts); r.Next(); {
 		for {
-			res, err = distImport(ctx, execCtx, job, tables, typeDescs, from, format, walltime,
-				testingKnobs, procsPerNode)
-			// Replanning errors should not count towards retry limits.
+			res, err = distImport(
+				ctx, execCtx, job, tables, typeDescs, from, format, walltime, testingKnobs, procsPerNode,
+			)
+			// If we got a re-planning error, then do at least one more attempt
+			// regardless of the retry duration.
 			if err == nil || !errors.Is(err, sql.ErrPlanChanged) {
 				break
 			}
@@ -1299,8 +1318,33 @@ func ingestWithRetry(
 				job.ID(), reloadErr)
 		} else {
 			job = reloadedJob
+			// If we made decent progress with the IMPORT, reset the last
+			// progress state.
+			curProgress := getFractionCompleted(job)
+			if madeProgress := curProgress - lastProgress; madeProgress >= 0.01 {
+				log.Infof(ctx, "import made %d%% progress, resetting retry duration", int(math.Round(100*madeProgress)))
+				lastProgress = curProgress
+				lastProgressChange = timeutil.Now()
+				r.Reset()
+			}
 		}
-		log.Warningf(ctx, "encountered retryable error: %+v", err)
+
+		maxRetryDuration := retryDuration.Get(&execCtx.ExecCfg().Settings.SV)
+		if !execCtx.ExecCfg().Codec.ForSystemTenant() && flowinfra.IsFlowRetryableError(err) {
+			// If we encountered "could not register flow because the registry
+			// is draining" error in the application virtual cluster, we
+			// calibrate the retry duration. This is the case since DistSQL
+			// physical planning in virtual clusters uses 'sql_instances' table
+			// which currently doesn't have draining information
+			// TODO(#100578): remove this when this problem is addressed.
+			maxRetryDuration *= 30
+		}
+		if timeutil.Since(lastProgressChange) > maxRetryDuration {
+			log.Warningf(ctx, "encountered retryable error but exceeded retry duration, stopping: %+v", err)
+			break
+		} else {
+			log.Warningf(ctx, "encountered retryable error: %+v", err)
+		}
 	}
 
 	// We have exhausted retries, but we have not seen a "PermanentBulkJobError" so
@@ -1491,6 +1535,8 @@ func (r *importResumer) dropTables(
 		return nil
 	}
 
+	useDeleteRange := storage.CanUseMVCCRangeTombstones(ctx, r.settings)
+
 	var tableWasEmpty bool
 	var intoTable catalog.TableDescriptor
 	for _, tbl := range details.Tables {
@@ -1527,22 +1573,46 @@ func (r *importResumer) dropTables(
 		// it was rolled back to its pre-IMPORT state, and instead provide a manual
 		// admin knob (e.g. ALTER TABLE REVERT TO SYSTEM TIME) if anything goes wrong.
 		ts := hlc.Timestamp{WallTime: details.Walltime}.Prev()
-		predicates := kvpb.DeleteRangePredicates{StartTime: ts}
-		if err := sql.DeleteTableWithPredicate(
-			ctx,
-			execCfg.DB,
-			execCfg.Codec,
-			&execCfg.Settings.SV,
-			execCfg.DistSender,
-			intoTable,
-			predicates, sql.RevertTableDefaultBatchSize); err != nil {
-			return errors.Wrap(err, "rolling back IMPORT INTO in non empty table via DeleteRange")
+		if useDeleteRange {
+			predicates := kvpb.DeleteRangePredicates{StartTime: ts}
+			if err := sql.DeleteTableWithPredicate(
+				ctx,
+				execCfg.DB,
+				execCfg.Codec,
+				&execCfg.Settings.SV,
+				execCfg.DistSender,
+				intoTable,
+				predicates, sql.RevertTableDefaultBatchSize); err != nil {
+				return errors.Wrap(err, "rolling back IMPORT INTO in non empty table via DeleteRange")
+			}
+		} else {
+			// disallowShadowingBelow=writeTS used to write means no existing keys could
+			// have been covered by a key imported and the table was offline to other
+			// writes, so even if GC has run it would not have GC'ed any keys to which
+			// we need to revert, so we can safely ignore the target-time GC check.
+			const ignoreGC = true
+			if err := sql.RevertTables(ctx, txn.KV().DB(), execCfg, []catalog.TableDescriptor{intoTable}, ts, ignoreGC,
+				sql.RevertTableDefaultBatchSize); err != nil {
+				return errors.Wrap(err, "rolling back partially completed IMPORT via RevertRange")
+			}
 		}
 	} else if tableWasEmpty {
-		if err := gcjob.DeleteAllTableData(
-			ctx, execCfg.DB, execCfg.DistSender, execCfg.Codec, intoTable,
-		); err != nil {
-			return errors.Wrap(err, "rolling back IMPORT INTO in empty table via DeleteRange")
+		if useDeleteRange {
+			if err := gcjob.DeleteAllTableData(
+				ctx, execCfg.DB, execCfg.DistSender, execCfg.Codec, intoTable,
+			); err != nil {
+				return errors.Wrap(err, "rolling back IMPORT INTO in empty table via DeleteRange")
+			}
+		} else {
+			// Set a DropTime on the table descriptor to differentiate it from an
+			// older-format (v1.1) descriptor. This enables ClearTableData to use a
+			// RangeClear for faster data removal, rather than removing by chunks.
+			intoTable.TableDesc().DropTime = int64(1)
+			if err := gcjob.ClearTableData(
+				ctx, execCfg.DB, execCfg.DistSender, execCfg.Codec, &execCfg.Settings.SV, intoTable,
+			); err != nil {
+				return errors.Wrapf(err, "rolling back IMPORT INTO in empty table via ClearRange")
+			}
 		}
 	}
 

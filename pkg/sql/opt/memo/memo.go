@@ -1,12 +1,7 @@
 // Copyright 2018 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 // Package memo exposes logic for `Memo`, the central data structure for `opt`.
 package memo
@@ -25,6 +20,14 @@ import (
 	"github.com/cockroachdb/errors"
 	"github.com/cockroachdb/redact"
 )
+
+// replaceFunc is the callback function passed to norm.Factory.Replace. It is
+// copied here from norm.ReplaceFunc to avoid a circular dependency.
+type ReplaceFunc func(e opt.Expr) opt.Expr
+
+// replacer is a wrapper around norm.Factory.Replace, so that we can call it
+// without creating a circular dependency.
+type replacer func(e opt.Expr, replace ReplaceFunc) opt.Expr
 
 // Memo is a data structure for efficiently storing a forest of query plans.
 // Conceptually, the memo is composed of a numbered set of equivalency classes
@@ -117,6 +120,10 @@ type Memo struct {
 	// most one instance of each expression in the memo.
 	interner interner
 
+	// replacer is a wrapper around norm.Factory.Replace, used by statistics
+	// builder to rewrite some expressions when calculating stats.
+	replacer replacer
+
 	// logPropsBuilder is inlined in the memo so that it can be reused each time
 	// scalar or relational properties need to be built.
 	logPropsBuilder logicalPropsBuilder
@@ -151,6 +158,7 @@ type Memo struct {
 	intervalStyle                              duration.IntervalStyle
 	propagateInputOrdering                     bool
 	disallowFullTableScans                     bool
+	applyFullScanPenaltyToVirtualTables        bool
 	largeFullScanRows                          float64
 	txnRowsReadErr                             int64
 	nullOrderedLast                            bool
@@ -174,7 +182,16 @@ type Memo struct {
 	sharedLockingForSerializable               bool
 	useLockOpForSerializable                   bool
 	useProvidedOrderingFix                     bool
-	mergeJoinsEnabled                          bool
+	useVirtualComputedColumnStats              bool
+	useTrigramSimilarityOptimization           bool
+	useImprovedDistinctOnLimitHintCosting      bool
+	useImprovedTrigramSimilaritySelectivity    bool
+	trigramSimilarityThreshold                 float64
+	useImprovedZigzagJoinCosting               bool
+	useImprovedMultiColumnSelectivityEstimate  bool
+	proveImplicationWithVirtualComputedCols    bool
+	pushOffsetIntoIndexJoin                    bool
+	legacyVarcharTyping                        bool
 
 	// txnIsoLevel is the isolation level under which the plan was created. This
 	// affects the planning of some locking operations, so it must be included in
@@ -224,6 +241,7 @@ func (m *Memo) Init(ctx context.Context, evalCtx *eval.Context) {
 		intervalStyle:                              evalCtx.SessionData().GetIntervalStyle(),
 		propagateInputOrdering:                     evalCtx.SessionData().PropagateInputOrdering,
 		disallowFullTableScans:                     evalCtx.SessionData().DisallowFullTableScans,
+		applyFullScanPenaltyToVirtualTables:        evalCtx.SessionData().OptimizerApplyFullScanPenaltyToVirtualTables,
 		largeFullScanRows:                          evalCtx.SessionData().LargeFullScanRows,
 		txnRowsReadErr:                             evalCtx.SessionData().TxnRowsReadErr,
 		nullOrderedLast:                            evalCtx.SessionData().NullOrderedLast,
@@ -247,11 +265,24 @@ func (m *Memo) Init(ctx context.Context, evalCtx *eval.Context) {
 		sharedLockingForSerializable:               evalCtx.SessionData().SharedLockingForSerializable,
 		useLockOpForSerializable:                   evalCtx.SessionData().OptimizerUseLockOpForSerializable,
 		useProvidedOrderingFix:                     evalCtx.SessionData().OptimizerUseProvidedOrderingFix,
-		mergeJoinsEnabled:                          evalCtx.SessionData().OptimizerMergeJoinsEnabled,
+		useVirtualComputedColumnStats:              evalCtx.SessionData().OptimizerUseVirtualComputedColumnStats,
+		useTrigramSimilarityOptimization:           evalCtx.SessionData().OptimizerUseTrigramSimilarityOptimization,
+		useImprovedDistinctOnLimitHintCosting:      evalCtx.SessionData().OptimizerUseImprovedDistinctOnLimitHintCosting,
+		useImprovedTrigramSimilaritySelectivity:    evalCtx.SessionData().OptimizerUseImprovedTrigramSimilaritySelectivity,
+		trigramSimilarityThreshold:                 evalCtx.SessionData().TrigramSimilarityThreshold,
+		useImprovedZigzagJoinCosting:               evalCtx.SessionData().OptimizerUseImprovedZigzagJoinCosting,
+		useImprovedMultiColumnSelectivityEstimate:  evalCtx.SessionData().OptimizerUseImprovedMultiColumnSelectivityEstimate,
+		proveImplicationWithVirtualComputedCols:    evalCtx.SessionData().OptimizerProveImplicationWithVirtualComputedColumns,
+		pushOffsetIntoIndexJoin:                    evalCtx.SessionData().OptimizerPushOffsetIntoIndexJoin,
+		legacyVarcharTyping:                        evalCtx.SessionData().LegacyVarcharTyping,
 		txnIsoLevel:                                evalCtx.TxnIsoLevel,
 	}
 	m.metadata.Init()
 	m.logPropsBuilder.init(ctx, evalCtx, m)
+}
+
+func (m *Memo) SetReplacer(replacer replacer) {
+	m.replacer = replacer
 }
 
 // AllowUnconstrainedNonCoveringIndexScan indicates whether unconstrained
@@ -371,6 +402,7 @@ func (m *Memo) IsStale(
 		m.intervalStyle != evalCtx.SessionData().GetIntervalStyle() ||
 		m.propagateInputOrdering != evalCtx.SessionData().PropagateInputOrdering ||
 		m.disallowFullTableScans != evalCtx.SessionData().DisallowFullTableScans ||
+		m.applyFullScanPenaltyToVirtualTables != evalCtx.SessionData().OptimizerApplyFullScanPenaltyToVirtualTables ||
 		m.largeFullScanRows != evalCtx.SessionData().LargeFullScanRows ||
 		m.txnRowsReadErr != evalCtx.SessionData().TxnRowsReadErr ||
 		m.nullOrderedLast != evalCtx.SessionData().NullOrderedLast ||
@@ -394,7 +426,16 @@ func (m *Memo) IsStale(
 		m.sharedLockingForSerializable != evalCtx.SessionData().SharedLockingForSerializable ||
 		m.useLockOpForSerializable != evalCtx.SessionData().OptimizerUseLockOpForSerializable ||
 		m.useProvidedOrderingFix != evalCtx.SessionData().OptimizerUseProvidedOrderingFix ||
-		m.mergeJoinsEnabled != evalCtx.SessionData().OptimizerMergeJoinsEnabled ||
+		m.useVirtualComputedColumnStats != evalCtx.SessionData().OptimizerUseVirtualComputedColumnStats ||
+		m.useTrigramSimilarityOptimization != evalCtx.SessionData().OptimizerUseTrigramSimilarityOptimization ||
+		m.useImprovedDistinctOnLimitHintCosting != evalCtx.SessionData().OptimizerUseImprovedDistinctOnLimitHintCosting ||
+		m.useImprovedTrigramSimilaritySelectivity != evalCtx.SessionData().OptimizerUseImprovedTrigramSimilaritySelectivity ||
+		m.trigramSimilarityThreshold != evalCtx.SessionData().TrigramSimilarityThreshold ||
+		m.useImprovedZigzagJoinCosting != evalCtx.SessionData().OptimizerUseImprovedZigzagJoinCosting ||
+		m.useImprovedMultiColumnSelectivityEstimate != evalCtx.SessionData().OptimizerUseImprovedMultiColumnSelectivityEstimate ||
+		m.proveImplicationWithVirtualComputedCols != evalCtx.SessionData().OptimizerProveImplicationWithVirtualComputedColumns ||
+		m.pushOffsetIntoIndexJoin != evalCtx.SessionData().OptimizerPushOffsetIntoIndexJoin ||
+		m.legacyVarcharTyping != evalCtx.SessionData().LegacyVarcharTyping ||
 		m.txnIsoLevel != evalCtx.TxnIsoLevel {
 		return true, nil
 	}
@@ -463,6 +504,17 @@ func (m *Memo) IsOptimized() bool {
 	// assigned.
 	rel, ok := m.rootExpr.(RelExpr)
 	return ok && rel.RequiredPhysical() != nil
+}
+
+// OptimizationCost returns a rough estimate of the cost of optimization of the
+// memo. It is dependent on the number of tables in the metadata, based on the
+// reasoning that queries with more tables likely have more joins, which tend
+// to be the biggest contributors to optimization overhead.
+func (m *Memo) OptimizationCost() Cost {
+	// This cpuCostFactor is the same as cpuCostFactor in the coster.
+	// TODO(mgartner): Package these constants up in a shared location.
+	const cpuCostFactor = 0.01
+	return Cost(m.Metadata().NumTables()) * 1000 * cpuCostFactor
 }
 
 // NextRank returns a new rank that can be assigned to a scalar expression.

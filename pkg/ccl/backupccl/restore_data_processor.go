@@ -1,10 +1,7 @@
 // Copyright 2020 The Cockroach Authors.
 //
-// Licensed as a CockroachDB Enterprise file under the Cockroach Community
-// License (the "License"); you may not use this file except in compliance with
-// the License. You may obtain a copy of the License at
-//
-//     https://github.com/cockroachdb/cockroach/blob/master/licenses/CCL.txt
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package backupccl
 
@@ -40,9 +37,11 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/humanizeutil"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/cockroach/pkg/util/mon"
+	"github.com/cockroachdb/cockroach/pkg/util/pprofutil"
 	"github.com/cockroachdb/cockroach/pkg/util/protoutil"
 	"github.com/cockroachdb/cockroach/pkg/util/quotapool"
 	"github.com/cockroachdb/cockroach/pkg/util/timeutil"
+	"github.com/cockroachdb/cockroach/pkg/util/tracing"
 	"github.com/cockroachdb/errors"
 	"github.com/cockroachdb/logtags"
 	gogotypes "github.com/gogo/protobuf/types"
@@ -113,6 +112,13 @@ const sstReaderEncryptedOverheadBytesPerFile = 8 << 20
 // ensure that all workers at least can simultaneously process at least one
 // file.
 const minWorkerMemReservation = 15 << 20
+
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
 
 var defaultNumWorkers = util.ConstantWithMetamorphicTestRange(
 	"restore-worker-concurrency",
@@ -375,6 +381,7 @@ func (rd *restoreDataProcessor) openSSTs(
 		readAsOfIter := storage.NewReadAsOfIterator(iter, rd.spec.RestoreTime)
 
 		cleanup := func() {
+			log.VInfof(ctx, 1, "finished with and closing %d files in span %d [%s-%s)", len(entry.Files), entry.ProgressIdx, entry.Span.Key, entry.Span.EndKey)
 			readAsOfIter.Close()
 			rd.qp.Release(iterAllocs...)
 
@@ -396,7 +403,7 @@ func (rd *restoreDataProcessor) openSSTs(
 		return mSST, nil
 	}
 
-	log.VEventf(ctx, 1 /* level */, "ingesting span [%s-%s)", entry.Span.Key, entry.Span.EndKey)
+	log.VEventf(ctx, 1, "ingesting %d files in span %d [%s-%s)", len(entry.Files), entry.ProgressIdx, entry.Span.Key, entry.Span.EndKey)
 
 	storeFiles := make([]storageccl.StoreFile, 0, len(entry.Files))
 	iterAllocs := make([]*quotapool.IntAlloc, 0, len(entry.Files))
@@ -487,6 +494,10 @@ func (rd *restoreDataProcessor) runRestoreWorkers(
 	ctx context.Context, entries chan execinfrapb.RestoreSpanEntry,
 ) error {
 	return ctxgroup.GroupWorkers(ctx, rd.numWorkers, func(ctx context.Context, worker int) error {
+		ctx = logtags.AddTag(ctx, "restore-worker", worker)
+		ctx, undo := pprofutil.SetProfilerLabelsFromCtxTags(ctx)
+		defer undo()
+
 		kr, err := MakeKeyRewriterFromRekeys(rd.FlowCtx.Codec(), rd.spec.TableRekeys, rd.spec.TenantRekeys,
 			false /* restoreTenantFromStream */)
 		if err != nil {
@@ -501,6 +512,12 @@ func (rd *restoreDataProcessor) runRestoreWorkers(
 					done = true
 					return done, nil
 				}
+
+				ctx := logtags.AddTag(ctx, "restore-span", entry.ProgressIdx)
+				ctx, undo := pprofutil.SetProfilerLabelsFromCtxTags(ctx)
+				defer undo()
+				ctx, sp := tracing.ChildSpan(ctx, "restore.processRestoreSpanEntry")
+				defer sp.Finish()
 
 				var res *resumeEntry
 				for {

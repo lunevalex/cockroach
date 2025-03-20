@@ -1,12 +1,7 @@
 // Copyright 2018 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package props
 
@@ -152,36 +147,6 @@ func (m *ColStatsMap) Lookup(cols opt.ColSet) (colStat *ColumnStatistic, ok bool
 			return nil, false
 		}
 	}
-}
-
-// LookupSingleton is similar to Lookup. It returns a column statistic for a
-// single column, allowing callers to avoid building a column set, thus reducing
-// allocations.
-func (m *ColStatsMap) LookupSingleton(col opt.ColumnID) (colStat *ColumnStatistic, ok bool) {
-	// Scan the inlined statistics if there are only a few statistics in the map.
-	if m.count <= initialColStatsCap {
-		for i := 0; i < m.count; i++ {
-			colStat = &m.initial[i]
-			if colStat.Cols.SingletonOf(col) {
-				return colStat, true
-			}
-		}
-		return nil, false
-	}
-
-	// Use the prefix tree index to look up the column statistic.
-	// Fetch index entry for next prefix+col combo.
-	key := colStatKey{prefix: 0, id: col}
-	if val, ok := m.index[key]; ok {
-		if val.pos == -1 {
-			// No stat exists for this column set.
-			return nil, false
-		}
-
-		// A stat exists, so return it.
-		return m.Get(int(val.pos)), true
-	}
-	return nil, false
 }
 
 // Add ensures that a ColumnStatistic over the given columns is in the map. If

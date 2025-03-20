@@ -7,12 +7,4 @@ CREATE OR REPLACE PROCEDURE foo() AS $$
   BEGIN
     RAISE NOTICE 'x: %', x;
   END
-$$ LANGUAGE PLpgSQL;
-
-statement error pgcode 0A000 pq: unimplemented: block labels are not yet supported
-CREATE OR REPLACE PROCEDURE foo() AS $$
-  <<bar>>
-  BEGIN
-    RAISE NOTICE 'baz';
-  END
-$$ LANGUAGE PLpgSQL;
+$$ LANGUAGE plpgsql;

@@ -1,10 +1,7 @@
 // Copyright 2023 The Cockroach Authors.
 //
-// Licensed as a CockroachDB Enterprise file under the Cockroach Community
-// License (the "License"); you may not use this file except in compliance with
-// the License. You may obtain a copy of the License at
-//
-//     https://github.com/cockroachdb/cockroach/blob/master/licenses/CCL.txt
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package auditloggingccl
 
@@ -16,6 +13,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
 	"github.com/cockroachdb/cockroach/pkg/sql/auditlogging"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
+	"github.com/cockroachdb/cockroach/pkg/util/uuid"
 	"github.com/cockroachdb/errors"
 )
 
@@ -95,8 +93,8 @@ var ConfigureRoleBasedAuditClusterSettings = func(ctx context.Context, acl *audi
 	UpdateAuditConfigOnChange(ctx, acl, st)
 }
 
-var UserAuditEnabled = func(st *cluster.Settings) bool {
-	return UserAuditLogConfig.Get(&st.SV) != "" && utilccl.IsEnterpriseEnabled(st, "role-based audit logging")
+var UserAuditEnabled = func(st *cluster.Settings, clusterID uuid.UUID) bool {
+	return UserAuditLogConfig.Get(&st.SV) != "" && utilccl.IsEnterpriseEnabled(st, clusterID, "role-based audit logging")
 }
 
 var UserAuditReducedConfigEnabled = func(sv *settings.Values) bool {

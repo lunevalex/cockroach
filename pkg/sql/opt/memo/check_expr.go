@@ -1,12 +1,7 @@
 // Copyright 2018 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package memo
 
@@ -224,11 +219,8 @@ func (m *Memo) CheckExpr(e opt.Expr) {
 		if t.Cols.SubsetOf(t.Input.Relational().OutputCols) {
 			panic(errors.AssertionFailedf("lookup join with no lookup columns"))
 		}
-		switch t.JoinType {
-		case opt.AntiJoinOp:
-			if len(t.RemoteLookupExpr) > 0 {
-				panic(errors.AssertionFailedf("anti join with a non-empty RemoteLookupExpr"))
-			}
+		if t.JoinType == opt.AntiJoinOp && len(t.RemoteLookupExpr) > 0 {
+			panic(errors.AssertionFailedf("anti join with a non-empty RemoteLookupExpr"))
 		}
 		var requiredCols opt.ColSet
 		requiredCols.UnionWith(t.Relational().OutputCols)
@@ -241,8 +233,18 @@ func (m *Memo) CheckExpr(e opt.Expr) {
 		for i := range t.KeyCols {
 			requiredCols.Add(t.Table.ColumnID(idx.Column(i).Ordinal()))
 		}
-		if !t.Cols.SubsetOf(requiredCols) {
-			panic(errors.AssertionFailedf("lookup join with columns that are not required"))
+		projectedCols := t.Cols
+		if t.JoinType == opt.SemiJoinOp || t.JoinType == opt.AntiJoinOp {
+			// Semi and anti joins have an implicit projection that removes the
+			// columns from the right side. Therefore, we're not strict about removing
+			// right-side columns from t.Cols.
+			projectedCols = t.Cols.Intersection(t.Input.Relational().OutputCols)
+		}
+		if !projectedCols.SubsetOf(requiredCols) {
+			panic(errors.AssertionFailedf(
+				"lookup join with columns %s that are not required; required: %s",
+				projectedCols, requiredCols,
+			))
 		}
 		if t.IsFirstJoinInPairedJoiner {
 			switch t.JoinType {

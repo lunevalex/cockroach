@@ -1,12 +1,7 @@
 // Copyright 2021 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package persistedsqlstats
 
@@ -25,6 +20,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/sqlstats"
 	"github.com/cockroachdb/cockroach/pkg/sql/sqlstats/persistedsqlstats/sqlstatsutil"
 	"github.com/cockroachdb/cockroach/pkg/sql/types"
+	"github.com/cockroachdb/cockroach/pkg/util/admission/admissionpb"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/cockroach/pkg/util/timeutil"
 	"github.com/cockroachdb/errors"
@@ -68,8 +64,10 @@ func (s *PersistedSQLStats) Flush(ctx context.Context) {
 		return
 	}
 
+	fingerprintCount := s.SQLStats.GetTotalFingerprintCount()
+	s.cfg.FlushedFingerprintCount.Inc(fingerprintCount)
 	log.Infof(ctx, "flushing %d stmt/txn fingerprints (%d bytes) after %s",
-		s.SQLStats.GetTotalFingerprintCount(), s.SQLStats.GetTotalFingerprintBytes(), timeutil.Since(s.lastFlushStarted))
+		fingerprintCount, s.SQLStats.GetTotalFingerprintBytes(), timeutil.Since(s.lastFlushStarted))
 	s.lastFlushStarted = now
 
 	aggregatedTs := s.ComputeAggregatedTs()
@@ -108,7 +106,7 @@ func (s *PersistedSQLStats) Flush(ctx context.Context) {
 func (s *PersistedSQLStats) StmtsLimitSizeReached(ctx context.Context) (bool, error) {
 	// Doing a count check on every flush for every node adds a lot of overhead.
 	// To reduce the overhead only do the check once an hour by default.
-	intervalToCheck := sqlStatsLimitTableCheckInterval.Get(&s.cfg.Settings.SV)
+	intervalToCheck := SQLStatsLimitTableCheckInterval.Get(&s.cfg.Settings.SV)
 	if !s.lastSizeCheck.IsZero() && s.lastSizeCheck.Add(intervalToCheck).After(timeutil.Now()) {
 		log.Infof(ctx, "PersistedSQLStats.StmtsLimitSizeReached skipped with last check at: %s and check interval: %s", s.lastSizeCheck, intervalToCheck)
 		return false, nil
@@ -132,7 +130,7 @@ func (s *PersistedSQLStats) StmtsLimitSizeReached(ctx context.Context) (bool, er
 		ctx,
 		"fetch-stmt-count",
 		nil,
-		sessiondata.NodeUserSessionDataOverride,
+		sessiondata.NodeUserWithLowUserPrioritySessionDataOverride,
 		readStmt,
 		randomShard,
 	)
@@ -245,7 +243,7 @@ func (s *PersistedSQLStats) doFlushSingleTxnStats(
 			return errors.Wrapf(err, "flushing transaction %d's statistics", stats.TransactionFingerprintID)
 		}
 		return nil
-	})
+	}, isql.WithPriority(admissionpb.UserLowPri))
 }
 
 func (s *PersistedSQLStats) doFlushSingleStmtStats(
@@ -318,7 +316,7 @@ func (s *PersistedSQLStats) doFlushSingleStmtStats(
 			return errors.Wrapf(err, "flush statement %d's statistics", scopedStats.ID)
 		}
 		return nil
-	})
+	}, isql.WithPriority(admissionpb.UserLowPri))
 }
 
 func (s *PersistedSQLStats) doInsertElseDoUpdate(
@@ -407,7 +405,7 @@ DO NOTHING
 		ctx,
 		"insert-txn-stats",
 		txn.KV(),
-		sessiondata.NodeUserSessionDataOverride,
+		sessiondata.NodeUserWithLowUserPrioritySessionDataOverride,
 		insertStmt,
 		aggregatedTs,            // aggregated_ts
 		serializedFingerprintID, // fingerprint_id
@@ -447,7 +445,7 @@ WHERE fingerprint_id = $2
 		ctx,
 		"update-stmt-stats",
 		txn.KV(), /* txn */
-		sessiondata.NodeUserSessionDataOverride,
+		sessiondata.NodeUserWithLowUserPrioritySessionDataOverride,
 		updateStmt,
 		statistics,              // statistics
 		serializedFingerprintID, // fingerprint_id
@@ -505,7 +503,7 @@ WHERE fingerprint_id = $3
 		ctx,
 		"update-stmt-stats",
 		txn.KV(), /* txn */
-		sessiondata.NodeUserSessionDataOverride,
+		sessiondata.NodeUserWithLowUserPrioritySessionDataOverride,
 		updateStmt,
 		statistics,                         // statistics
 		indexRecommendations,               // index_recommendations
@@ -597,7 +595,7 @@ DO NOTHING
 		ctx,
 		"insert-stmt-stats",
 		txn.KV(), /* txn */
-		sessiondata.NodeUserSessionDataOverride,
+		sessiondata.NodeUserWithLowUserPrioritySessionDataOverride,
 		insertStmt,
 		args...,
 	)
@@ -632,7 +630,7 @@ FOR UPDATE
 		ctx,
 		"fetch-txn-stats",
 		txn.KV(), /* txn */
-		sessiondata.NodeUserSessionDataOverride,
+		sessiondata.NodeUserWithLowUserPrioritySessionDataOverride,
 		readStmt,                // stmt
 		serializedFingerprintID, // fingerprint_id
 		appName,                 // app_name
@@ -688,7 +686,7 @@ FOR UPDATE
 		ctx,
 		"fetch-stmt-stats",
 		txn.KV(), /* txn */
-		sessiondata.NodeUserSessionDataOverride,
+		sessiondata.NodeUserWithLowUserPrioritySessionDataOverride,
 		readStmt,                           // stmt
 		serializedFingerprintID,            // fingerprint_id
 		serializedTransactionFingerprintID, // transaction_fingerprint_id

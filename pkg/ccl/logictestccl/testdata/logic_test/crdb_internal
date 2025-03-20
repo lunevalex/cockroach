@@ -202,7 +202,7 @@ ALTER TENANT [5] GRANT CAPABILITY can_view_node_info
 query ITT colnames,retry,rowsort
 SELECT * FROM crdb_internal.node_tenant_capabilities_cache WHERE capability_name = 'can_view_node_info'
 ----
-tenant_id  capability_name  capability_value
+tenant_id  capability_name     capability_value
 1          can_view_node_info  true
 5          can_view_node_info  true
 

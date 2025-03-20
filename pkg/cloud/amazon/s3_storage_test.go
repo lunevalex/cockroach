@@ -1,12 +1,7 @@
 // Copyright 2019 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package amazon
 
@@ -20,6 +15,7 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws/awserr"
 	"github.com/aws/aws-sdk-go/aws/credentials"
+	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/service/s3"
 	"github.com/cockroachdb/cockroach/pkg/base"
 	"github.com/cockroachdb/cockroach/pkg/blobs"
@@ -383,19 +379,9 @@ func TestPutS3Endpoint(t *testing.T) {
 
 func TestS3DisallowCustomEndpoints(t *testing.T) {
 	defer leaktest.AfterTest(t)()
-
-	// If environment credentials are not present, we want to skip all S3 tests,
-	// including auth-implicit, even though it is not used in auth-implicit.
-	// Without credentials, it's unclear if we can even communicate with an s3
-	// endpoint.
-	_, err := credentials.NewEnvCredentials().Get()
-	if err != nil {
-		skip.IgnoreLint(t, "No AWS credentials")
-	}
-
 	dest := cloudpb.ExternalStorage{S3Config: &cloudpb.ExternalStorage_S3{Endpoint: "http://do.not.go.there/"}}
 	s3, err := MakeS3Storage(context.Background(),
-		cloud.EarlyBootExternalStorageContext{
+		cloud.ExternalStorageContext{
 			IOConf: base.ExternalIODirConfig{DisableHTTP: true},
 		},
 		dest,
@@ -406,22 +392,12 @@ func TestS3DisallowCustomEndpoints(t *testing.T) {
 
 func TestS3DisallowImplicitCredentials(t *testing.T) {
 	defer leaktest.AfterTest(t)()
-
-	// If environment credentials are not present, we want to skip all S3 tests,
-	// including auth-implicit, even though it is not used in auth-implicit.
-	// Without credentials, it's unclear if we can even communicate with an s3
-	// endpoint.
-	_, err := credentials.NewEnvCredentials().Get()
-	if err != nil {
-		skip.IgnoreLint(t, "No AWS credentials")
-	}
-
 	dest := cloudpb.ExternalStorage{S3Config: &cloudpb.ExternalStorage_S3{Endpoint: "http://do-not-go-there", Auth: cloud.AuthParamImplicit}}
 
 	testSettings := cluster.MakeTestingClusterSettings()
 
 	s3, err := MakeS3Storage(context.Background(),
-		cloud.EarlyBootExternalStorageContext{
+		cloud.ExternalStorageContext{
 			IOConf:   base.ExternalIODirConfig{DisableImplicitCredentials: true},
 			Settings: testSettings,
 		},
@@ -586,15 +562,11 @@ func TestS3BucketDoesNotExist(t *testing.T) {
 func TestAntagonisticS3Read(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 
-	// If environment credentials are not present, we want to skip all S3 tests,
-	// including auth-implicit, even though it is not used in auth-implicit.
-	// Without credentials, it's unclear if we can even communicate with an s3
-	// endpoint.
-	_, err := credentials.NewEnvCredentials().Get()
+	// Check if we can create aws session with implicit credentials.
+	_, err := session.NewSession()
 	if err != nil {
 		skip.IgnoreLint(t, "No AWS credentials")
 	}
-
 	bucket := os.Getenv("AWS_S3_BUCKET")
 	if bucket == "" {
 		skip.IgnoreLint(t, "AWS_S3_BUCKET env var must be set")
@@ -614,22 +586,22 @@ func TestAntagonisticS3Read(t *testing.T) {
 func TestNewClientErrorsOnBucketRegion(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 
-	// If environment credentials are not present, we want to skip all S3 tests,
-	// including auth-implicit, even though it is not used in auth-implicit.
-	// Without credentials, it's unclear if we can even communicate with an s3
-	// endpoint.
-	_, err := credentials.NewEnvCredentials().Get()
+	_, err := session.NewSession()
 	if err != nil {
 		skip.IgnoreLint(t, "No AWS credentials")
 	}
 
 	testSettings := cluster.MakeTestingClusterSettings()
 	ctx := context.Background()
-	cfg := s3ClientConfig{
-		bucket: "bucket-does-not-exist-v1i3m",
-		auth:   cloud.AuthParamImplicit,
+	s3 := s3Storage{
+		opts: s3ClientConfig{
+			bucket: "bucket-does-not-exist-v1i3m",
+			auth:   cloud.AuthParamImplicit,
+		},
+		metrics:  cloud.NilMetrics,
+		settings: testSettings,
 	}
-	_, _, err = newClient(ctx, cfg, testSettings)
+	_, _, err = s3.newClient(ctx)
 	require.Regexp(t, "could not find s3 bucket's region", err)
 }
 
@@ -657,11 +629,13 @@ func TestReadFileAtReturnsSize(t *testing.T) {
 	gsURI := fmt.Sprintf("s3://%s/%s?AUTH=implicit", bucket, "read-file-at-returns-size")
 	conf, err := cloud.ExternalStorageConfFromURI(gsURI, user)
 	require.NoError(t, err)
-	args := cloud.EarlyBootExternalStorageContext{
-		IOConf:   base.ExternalIODirConfig{},
-		Settings: testSettings,
-		Options:  nil,
-		Limiters: nil,
+	args := cloud.ExternalStorageContext{
+		IOConf:          base.ExternalIODirConfig{},
+		Settings:        testSettings,
+		DB:              nil,
+		Options:         nil,
+		Limiters:        nil,
+		MetricsRecorder: cloud.NilMetrics,
 	}
 	s, err := MakeS3Storage(ctx, args, conf)
 	require.NoError(t, err)

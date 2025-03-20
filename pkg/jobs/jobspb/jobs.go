@@ -1,25 +1,11 @@
 // Copyright 2023 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package jobspb
 
-import (
-	"github.com/cockroachdb/cockroach/pkg/sql/catalog/catpb"
-	"github.com/cockroachdb/cockroach/pkg/util/tracing/tracingpb"
-)
-
-// JobID is the ID of a job.
-type JobID = catpb.JobID
-
-// InvalidJobID is the zero value for JobID corresponding to no job.
-const InvalidJobID = catpb.InvalidJobID
+import "github.com/cockroachdb/cockroach/pkg/util/tracing/tracingpb"
 
 // ToText implements the ProtobinExecutionDetailFile interface.
 func (t *TraceData) ToText() []byte {
@@ -44,3 +30,6 @@ func (fes RestoreFrontierEntries) Equal(fes2 RestoreFrontierEntries) bool {
 	}
 	return true
 }
+
+// SafeValue implements the redact.SafeValue interface.
+func (ResolvedSpan_BoundaryType) SafeValue() {}

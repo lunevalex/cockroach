@@ -1,12 +1,7 @@
 // Copyright 2020 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package kvnemesis
 
@@ -86,15 +81,6 @@ func TestOperationsFormat(t *testing.T) {
 		},
 		{
 			step: step(addSSTable(sstFile.Data(), sstSpan, sstTS, sstValueHeader.KVNemesisSeq.Get(), true)),
-		},
-		{
-			step: step(
-				closureTxn(ClosureTxnType_Commit,
-					isolation.Serializable,
-					createSavepoint(0), put(k9, 3), releaseSavepoint(0),
-					get(k8),
-					createSavepoint(4), del(k9, 1), rollbackSavepoint(4),
-				)),
 		},
 		{step: step(barrier(k1, k2, false /* withLAI */))},
 		{step: step(barrier(k3, k4, true /* withLAI */))},

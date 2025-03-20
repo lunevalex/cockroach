@@ -31,14 +31,11 @@ go_test(
         "main_test.go",
         "naked_go_test.go",
     ],
+    args = ["-test.timeout=55s"],
     data = [
         ":testdata",
         "@go_sdk//:files",
     ],
-    exec_properties = select({
-        "//build/toolchains:is_heavy": {"Pool": "heavy"},
-        "//conditions:default": {"Pool": "default"},
-    }),
     deps = [
         ":forbiddenmethod",
         "//pkg/build/bazel",

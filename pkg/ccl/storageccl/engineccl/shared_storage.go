@@ -1,10 +1,7 @@
 // Copyright 2023 The Cockroach Authors.
 //
-// Licensed as a CockroachDB Enterprise file under the Cockroach Community
-// License (the "License"); you may not use this file except in compliance with
-// the License. You may obtain a copy of the License at
-//
-//     https://github.com/cockroachdb/cockroach/blob/master/licenses/CCL.txt
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package engineccl
 
@@ -44,7 +41,7 @@ func iterateReplicaKeySpansShared(
 	ctx context.Context,
 	desc *roachpb.RangeDescriptor,
 	st *cluster.Settings,
-	_ uuid.UUID,
+	clusterID uuid.UUID,
 	reader storage.Reader,
 	visitPoint func(key *pebble.InternalKey, val pebble.LazyValue, info pebble.IteratorLevel) error,
 	visitRangeDel func(start, end []byte, seqNum uint64) error,
@@ -54,7 +51,7 @@ func iterateReplicaKeySpansShared(
 	if !reader.ConsistentIterators() {
 		panic("reader must provide consistent iterators")
 	}
-	if err := utilccl.CheckEnterpriseEnabled(st, "disaggregated shared storage"); err != nil {
+	if err := utilccl.CheckEnterpriseEnabled(st, clusterID, "disaggregated shared storage"); err != nil {
 		// NB: ScanInternal returns ErrInvalidSkipSharedIteration if we can't do
 		// a skip-shared iteration. Return the same error here so the caller can
 		// fall back to regular, non-shared snapshots.

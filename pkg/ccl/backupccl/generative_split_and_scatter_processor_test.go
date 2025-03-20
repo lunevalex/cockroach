@@ -1,10 +1,7 @@
 // Copyright 2023 The Cockroach Authors.
 //
-// Licensed as a CockroachDB Enterprise file under the Cockroach Community
-// License (the "License"); you may not use this file except in compliance with
-// the License. You may obtain a copy of the License at
-//
-//     https://github.com/cockroachdb/cockroach/blob/master/licenses/CCL.txt
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package backupccl
 
@@ -29,6 +26,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/leaktest"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/cockroach/pkg/util/protoutil"
+	"github.com/cockroachdb/errors"
 	"github.com/stretchr/testify/require"
 )
 
@@ -56,8 +54,8 @@ func TestRunGenerativeSplitAndScatterContextCancel(t *testing.T) {
 
 	// Set up the test so that the test context is canceled after the first entry
 	// has been processed by the generative split and scatterer.
-	s0 := tc.ApplicationLayer(0)
-	registry := s0.JobRegistry().(*jobs.Registry)
+	s0 := tc.Server(0)
+	registry := tc.Server(0).JobRegistry().(*jobs.Registry)
 	execCfg := s0.ExecutorConfig().(sql.ExecutorConfig)
 	flowCtx := execinfra.FlowCtx{
 		Cfg: &execinfra.ServerConfig{
@@ -87,7 +85,7 @@ func TestRunGenerativeSplitAndScatterContextCancel(t *testing.T) {
 	uri := localFoo + "/" + backups[0][0]
 
 	codec := keys.MakeSQLCodec(s0.RPCContext().TenantID)
-	backupTableDesc := desctestutils.TestingGetPublicTableDescriptor(s0.DB(), codec, "data", "bank")
+	backupTableDesc := desctestutils.TestingGetPublicTableDescriptor(tc.Servers[0].DB(), codec, "data", "bank")
 	backupStartKey := backupTableDesc.PrimaryIndexSpan(codec).Key
 
 	spec := makeTestingGenerativeSplitAndScatterSpec(
@@ -136,22 +134,19 @@ func TestRunGenerativeSplitAndScatterRandomizedDestOnFailScatter(t *testing.T) {
 	const numAccounts = 1000
 	const localFoo = "nodelocal://0/foo"
 	ctx := context.Background()
-	tc, sqlDB, _, cleanupFn := backupRestoreTestSetupWithParams(t, singleNode, numAccounts,
-		InitManualReplication, base.TestClusterArgs{
-			ServerArgs: base.TestServerArgs{
-				DefaultTestTenant: base.TestIsSpecificToStorageLayerAndNeedsASystemTenant,
-			}})
+	tc, sqlDB, _, cleanupFn := backupRestoreTestSetup(t, singleNode, numAccounts,
+		InitManualReplication)
 	defer cleanupFn()
 
-	s0 := tc.SystemLayer(0)
 	st := cluster.MakeTestingClusterSettings()
 	evalCtx := eval.MakeTestingEvalContext(st)
-	evalCtx.NodeID = base.NewSQLIDContainerForNode(s0.RPCContext().NodeID)
+	evalCtx.NodeID = base.NewSQLIDContainerForNode(tc.Server(0).RPCContext().NodeID)
 
 	testDiskMonitor := execinfra.NewTestDiskMonitor(ctx, st)
 	defer testDiskMonitor.Stop(ctx)
 
-	registry := s0.JobRegistry().(*jobs.Registry)
+	s0 := tc.Server(0)
+	registry := tc.Server(0).JobRegistry().(*jobs.Registry)
 	execCfg := s0.ExecutorConfig().(sql.ExecutorConfig)
 	flowCtx := execinfra.FlowCtx{
 		Cfg: &execinfra.ServerConfig{
@@ -174,7 +169,7 @@ func TestRunGenerativeSplitAndScatterRandomizedDestOnFailScatter(t *testing.T) {
 	uri := localFoo + "/" + backups[0][0]
 
 	codec := keys.MakeSQLCodec(s0.RPCContext().TenantID)
-	backupTableDesc := desctestutils.TestingGetPublicTableDescriptor(s0.DB(), codec, "data", "bank")
+	backupTableDesc := desctestutils.TestingGetPublicTableDescriptor(tc.Servers[0].DB(), codec, "data", "bank")
 	backupStartKey := backupTableDesc.PrimaryIndexSpan(codec).Key
 
 	spec := makeTestingGenerativeSplitAndScatterSpec(
@@ -229,23 +224,34 @@ func TestRunGenerativeSplitAndScatterRandomizedDestOnFailScatter(t *testing.T) {
 		// and can break if it changes.
 		require.GreaterOrEqual(t, cnt, 2)
 	}
+
+	// Also test that errors from split mid-chunk are returned (this deadlocked at
+	// one point).
+	spec.ChunkSize = 2
+	require.Error(t, runGenerativeSplitAndScatter(ctx, &flowCtx, &spec,
+		[]splitAndScatterer{&scatterAlwaysFailsSplitScatterer{}},
+		[]splitAndScatterer{&scatterAlwaysFailsSplitScatterer{err: errors.New("injected")}},
+		make(chan entryNode, 1000),
+		&cache,
+	))
 }
 
 // scatterAlwaysFailsSplitScatterer always fails the scatter and returns 0 as
 // the chunk destination.
 type scatterAlwaysFailsSplitScatterer struct {
+	err error
 }
 
 func (t *scatterAlwaysFailsSplitScatterer) split(
 	ctx context.Context, codec keys.SQLCodec, splitKey roachpb.Key,
 ) error {
-	return nil
+	return t.err
 }
 
 func (t *scatterAlwaysFailsSplitScatterer) scatter(
 	ctx context.Context, codec keys.SQLCodec, scatterKey roachpb.Key,
 ) (roachpb.NodeID, error) {
-	return 0, nil
+	return 0, t.err
 }
 
 func makeTestingGenerativeSplitAndScatterSpec(
@@ -265,5 +271,6 @@ func makeTestingGenerativeSplitAndScatterSpec(
 		NumEntries:         1,
 		NumNodes:           1,
 		JobID:              0,
+		SQLInstanceIDs:     []int32{1},
 	}
 }

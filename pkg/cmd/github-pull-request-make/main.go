@@ -1,12 +1,7 @@
 // Copyright 2016 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 // This utility detects new tests added in a given pull request, and runs them
 // under stress in our CI infrastructure.
@@ -345,8 +340,9 @@ func main() {
 				args = append(args, "--")
 				if target == "stressrace" {
 					args = append(args, "--config=race")
+				} else {
+					args = append(args, "--test_sharding_strategy=disabled")
 				}
-				args = append(args, "--test_sharding_strategy=disabled")
 				var filters []string
 				for test := range pkg.tests {
 					filters = append(filters, "^"+test+"$")

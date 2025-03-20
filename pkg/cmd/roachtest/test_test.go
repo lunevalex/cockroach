@@ -1,12 +1,7 @@
 // Copyright 2018 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package main
 
@@ -28,6 +23,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/roachtestflags"
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/spec"
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/test"
+	"github.com/cockroachdb/cockroach/pkg/roachprod"
 	"github.com/cockroachdb/cockroach/pkg/roachprod/logger"
 	"github.com/cockroachdb/cockroach/pkg/roachprod/vm"
 	"github.com/cockroachdb/cockroach/pkg/testutils"
@@ -432,4 +428,50 @@ func TestExitCode(t *testing.T) {
 	require.NoError(t, runExitCodeTest(t, nil /* test passes */))
 	err := runExitCodeTest(t, errors.New("boom"))
 	require.True(t, errors.Is(err, errTestsFailed))
+}
+
+func TestNewCluster(t *testing.T) {
+	ctx := context.Background()
+	factory := &clusterFactory{sem: make(chan struct{}, 1)}
+	cfg := clusterConfig{spec: spec.MakeClusterSpec(1)}
+	setStatus := func(string) {}
+
+	defer func() {
+		create = roachprod.Create
+	}()
+
+	var createCallsCounter int
+
+	testCases := []struct {
+		name                string
+		createMock          func(ctx context.Context, l *logger.Logger, username string, numNodes int, createVMOpts vm.CreateOpts, providerOptsContainer vm.ProviderOptionsContainer) (retErr error)
+		expectedCreateCalls int
+	}{
+		{
+			"Malformed Cluster Name Error",
+			func(ctx context.Context, l *logger.Logger, username string, numNodes int, createVMOpts vm.CreateOpts, providerOptsContainer vm.ProviderOptionsContainer) (retErr error) {
+				createCallsCounter++
+				return &roachprod.MalformedClusterNameError{}
+			},
+			1, /* expectedCreateCalls */
+		},
+		{
+			"Cluster Already Exists Error",
+			func(ctx context.Context, l *logger.Logger, username string, numNodes int, createVMOpts vm.CreateOpts, providerOptsContainer vm.ProviderOptionsContainer) (retErr error) {
+				createCallsCounter++
+				return &roachprod.ClusterAlreadyExistsError{}
+			},
+			1, /* expectedCreateCalls */
+		},
+	}
+
+	for _, c := range testCases {
+		t.Run(c.name, func(t *testing.T) {
+			createCallsCounter = 0
+			create = c.createMock
+			_, _, err := factory.newCluster(ctx, cfg, setStatus, true)
+			require.Error(t, err)
+			require.Equal(t, c.expectedCreateCalls, createCallsCounter)
+		})
+	}
 }

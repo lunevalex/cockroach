@@ -1,16 +1,13 @@
 // Copyright 2022 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package slstorage
 
 import (
+	"github.com/cockroachdb/cockroach/pkg/clusterversion"
+	"github.com/cockroachdb/cockroach/pkg/sql/enum"
 	"github.com/cockroachdb/cockroach/pkg/sql/sqlliveness"
 	"github.com/cockroachdb/cockroach/pkg/util/uuid"
 	"github.com/cockroachdb/errors"
@@ -68,7 +65,15 @@ func MakeSessionID(region []byte, id uuid.UUID) (sqlliveness.SessionID, error) {
 func UnsafeDecodeSessionID(session sqlliveness.SessionID) (region, id []byte, err error) {
 	b := session.UnsafeBytes()
 	if len(b) == legacyLen {
-		return nil, nil, errors.Newf("unexpected legacy SessionID format")
+		// TODO(jeffswenson): once the V23_1_SystemRbrCleanup version gate is
+		// deleted, replace this branch with a validation error.
+		_ = clusterversion.V23_1_SystemRbrCleanup
+
+		// Legacy format of SessionID. Treat the session as if it belongs to
+		// region enum.One. This may crop up briefly if a session was created
+		// with an old binary right before the server is upgraded and the
+		// upgrade is kicked off while the session is still 'live'.
+		return enum.One, b, nil
 	}
 	if len(b) < minimumNonLegacyLen {
 		// The smallest valid v1 session id is a [version, 1, single_byte_region, uuid...],

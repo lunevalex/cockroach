@@ -1,10 +1,7 @@
 // Copyright 2022 The Cockroach Authors.
 //
-// Licensed as a CockroachDB Enterprise file under the Cockroach Community
-// License (the "License"); you may not use this file except in compliance with
-// the License. You may obtain a copy of the License at
-//
-//     https://github.com/cockroachdb/cockroach/blob/master/licenses/CCL.txt
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package changefeedccl
 
@@ -41,7 +38,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/cockroach/pkg/util/randutil"
 	"github.com/cockroachdb/cockroach/pkg/util/syncutil"
-	"github.com/cockroachdb/cockroach/pkg/util/timeutil"
 	"github.com/cockroachdb/errors"
 	"github.com/stretchr/testify/require"
 )
@@ -64,7 +60,7 @@ func TestAlterChangefeedAddTargetPrivileges(t *testing.T) {
 						if _, ok := s.(*externalConnectionKafkaSink); ok {
 							return s
 						}
-						return &externalConnectionKafkaSink{sink: s}
+						return &externalConnectionKafkaSink{sink: s, ignoreDialError: true}
 					},
 				},
 			},
@@ -246,13 +242,30 @@ func TestAlterChangefeedAddTargetFamily(t *testing.T) {
 		testFeed := feed(t, f, `CREATE CHANGEFEED FOR foo FAMILY onlya`)
 		defer closeFeed(t, testFeed)
 
-		sqlDB.Exec(t, `INSERT INTO foo VALUES(1, 'hello')`)
-		assertPayloads(t, testFeed, []string{
-			`foo.onlya: [1]->{"after": {"a": 1}}`,
-		})
-
 		feed, ok := testFeed.(cdctest.EnterpriseTestFeed)
 		require.True(t, ok)
+
+		tsr := sqlDB.QueryRow(t, `INSERT INTO foo VALUES(42, 'hello') RETURNING cluster_logical_timestamp()`)
+		var insertTsDecStr string
+		tsr.Scan(&insertTsDecStr)
+		insertTs := parseTimeToHLC(t, insertTsDecStr)
+		assertPayloads(t, testFeed, []string{
+			`foo.onlya: [42]->{"after": {"a": 42}}`,
+		})
+
+		// Wait for the high water mark (aka resolved ts) to advance past the row we inserted's
+		// mvcc ts. Otherwise, we'd see [42] again due to a catch up scan, and it
+		// would muddy the waters.
+		testutils.SucceedsSoon(t, func() error {
+			registry := s.Server.JobRegistry().(*jobs.Registry)
+			job, err := registry.LoadJob(context.Background(), feed.JobID())
+			require.NoError(t, err)
+			prog := job.Progress()
+			if p := prog.GetHighWater(); p != nil && !p.IsEmpty() && insertTs.Less(*p) {
+				return nil
+			}
+			return errors.New("waiting for highwater")
+		})
 
 		sqlDB.Exec(t, `PAUSE JOB $1`, feed.JobID())
 		waitForJobStatus(sqlDB, t, feed.JobID(), `paused`)
@@ -261,12 +274,12 @@ func TestAlterChangefeedAddTargetFamily(t *testing.T) {
 
 		sqlDB.Exec(t, fmt.Sprintf(`RESUME JOB %d`, feed.JobID()))
 		waitForJobStatus(sqlDB, t, feed.JobID(), `running`)
-
-		sqlDB.Exec(t, `INSERT INTO foo VALUES(2, 'goodbye')`)
+		sqlDB.Exec(t, `INSERT INTO foo VALUES(37, 'goodbye')`)
 		assertPayloads(t, testFeed, []string{
-			`foo.onlyb: [1]->{"after": {"b": "hello"}}`,
-			`foo.onlya: [2]->{"after": {"a": 2}}`,
-			`foo.onlyb: [2]->{"after": {"b": "goodbye"}}`,
+			// Note that we don't see foo.onlyb.[42] here, because we're not
+			// doing a catchup scan and we've already processed that tuple.
+			`foo.onlya: [37]->{"after": {"a": 37}}`,
+			`foo.onlyb: [37]->{"after": {"b": "goodbye"}}`,
 		})
 	}
 
@@ -285,13 +298,31 @@ func TestAlterChangefeedSwitchFamily(t *testing.T) {
 		testFeed := feed(t, f, `CREATE CHANGEFEED FOR foo FAMILY onlya`)
 		defer closeFeed(t, testFeed)
 
-		sqlDB.Exec(t, `INSERT INTO foo VALUES(1, 'hello')`)
+		tsr := sqlDB.QueryRow(t, `INSERT INTO foo VALUES(1, 'hello') RETURNING cluster_logical_timestamp()`)
+		var insertTsDecStr string
+		tsr.Scan(&insertTsDecStr)
+		insertTs := parseTimeToHLC(t, insertTsDecStr)
+
 		assertPayloads(t, testFeed, []string{
 			`foo.onlya: [1]->{"after": {"a": 1}}`,
 		})
 
 		feed, ok := testFeed.(cdctest.EnterpriseTestFeed)
 		require.True(t, ok)
+
+		// Wait for the high water mark (aka resolved ts) to advance past the row we inserted's
+		// mvcc ts. Otherwise, we'd see [1] again due to a catch up scan, and it
+		// would muddy the waters.
+		testutils.SucceedsSoon(t, func() error {
+			registry := s.Server.JobRegistry().(*jobs.Registry)
+			job, err := registry.LoadJob(context.Background(), feed.JobID())
+			require.NoError(t, err)
+			prog := job.Progress()
+			if p := prog.GetHighWater(); p != nil && !p.IsEmpty() && insertTs.Less(*p) {
+				return nil
+			}
+			return errors.New("waiting for highwater")
+		})
 
 		sqlDB.Exec(t, `PAUSE JOB $1`, feed.JobID())
 		waitForJobStatus(sqlDB, t, feed.JobID(), `paused`)
@@ -303,7 +334,8 @@ func TestAlterChangefeedSwitchFamily(t *testing.T) {
 
 		sqlDB.Exec(t, `INSERT INTO foo VALUES(2, 'goodbye')`)
 		assertPayloads(t, testFeed, []string{
-			`foo.onlyb: [1]->{"after": {"b": "hello"}}`,
+			// Note that we don't see foo.onlyb.[1] here, because we're not
+			// doing a catchup scan and we've already processed that tuple.
 			`foo.onlyb: [2]->{"after": {"b": "goodbye"}}`,
 		})
 	}
@@ -710,7 +742,11 @@ func TestAlterChangefeedPersistSinkURI(t *testing.T) {
 	const unredactedSinkURI = "null://blah?AWS_ACCESS_KEY_ID=the_secret"
 
 	ctx := context.Background()
-	srv, rawSQLDB, _ := serverutils.StartServer(t, base.TestServerArgs{})
+	srv, rawSQLDB, _ := serverutils.StartServer(t, base.TestServerArgs{
+		Knobs: base.TestingKnobs{
+			JobsTestingKnobs: jobs.NewTestingKnobsWithShortIntervals(),
+		},
+	})
 	defer srv.Stopper().Stop(ctx)
 
 	s := srv.ApplicationLayer()
@@ -1206,7 +1242,13 @@ func TestAlterChangefeedAddTargetsDuringSchemaChangeError(t *testing.T) {
 		}()
 
 		// Ensure initial backfill completes
-		waitForHighwater(t, jobFeed, jobRegistry)
+		testutils.SucceedsSoon(t, func() error {
+			prog := loadProgress(t, jobFeed, jobRegistry)
+			if p := prog.GetHighWater(); p != nil && !p.IsEmpty() {
+				return nil
+			}
+			return errors.New("waiting for highwater")
+		})
 
 		// Pause job and setup overrides to force a checkpoint
 		require.NoError(t, jobFeed.Pause())
@@ -1232,8 +1274,6 @@ func TestAlterChangefeedAddTargetsDuringSchemaChangeError(t *testing.T) {
 		var backfillTimestamp hlc.Timestamp
 		var initialCheckpoint roachpb.SpanGroup
 		var foundCheckpoint int32
-		progressBackoff := jobRecordPollFrequency
-		var nextProgressCheck time.Time
 		knobs.FilterSpanWithMutation = func(r *jobspb.ResolvedSpan) (bool, error) {
 			// Stop resolving anything after checkpoint set to avoid eventually resolving the full span
 			if initialCheckpoint.Len() > 0 {
@@ -1249,18 +1289,12 @@ func TestAlterChangefeedAddTargetsDuringSchemaChangeError(t *testing.T) {
 				return false, nil
 			}
 
-			// Avoid reading for the job progress too frequently. Attempting
-			// to read the job record continuously in a loop may continuously
-			// abort the transaction which is trying to write the job record.
-			if nextProgressCheck.IsZero() || nextProgressCheck.Before(timeutil.Now()) {
-				// Check if we've set a checkpoint yet
-				progress := loadProgress(t, jobFeed, jobRegistry)
-				if p := progress.GetChangefeed(); p != nil && p.Checkpoint != nil && len(p.Checkpoint.Spans) > 0 {
-					initialCheckpoint.Add(p.Checkpoint.Spans...)
-					atomic.StoreInt32(&foundCheckpoint, 1)
-					t.Logf("found checkpoint %v", p.Checkpoint.Spans)
-				}
-				nextProgressCheck = timeutil.Now().Add(progressBackoff)
+			// Check if we've set a checkpoint yet
+			progress := loadProgress(t, jobFeed, jobRegistry)
+			if p := progress.GetChangefeed(); p != nil && p.Checkpoint != nil && len(p.Checkpoint.Spans) > 0 {
+				initialCheckpoint.Add(p.Checkpoint.Spans...)
+				atomic.StoreInt32(&foundCheckpoint, 1)
+				t.Logf("found checkpoint %v", p.Checkpoint.Spans)
 			}
 
 			// Filter non-backfill-related spans
@@ -1396,7 +1430,13 @@ func TestAlterChangefeedAddTargetsDuringBackfill(t *testing.T) {
 		jobFeed := testFeed.(cdctest.EnterpriseTestFeed)
 
 		// Wait for non-nil checkpoint.
-		waitForCheckpoint(t, jobFeed, registry)
+		testutils.SucceedsSoon(t, func() error {
+			progress := loadProgress(t, jobFeed, registry)
+			if p := progress.GetChangefeed(); p != nil && p.Checkpoint != nil && len(p.Checkpoint.Spans) > 0 {
+				return nil
+			}
+			return errors.New("waiting for checkpoint")
+		})
 
 		// Pause the job and read and verify the latest checkpoint information.
 		require.NoError(t, jobFeed.Pause())
@@ -1426,7 +1466,14 @@ func TestAlterChangefeedAddTargetsDuringBackfill(t *testing.T) {
 
 		require.NoError(t, jobFeed.Resume())
 
-		waitForHighwater(t, jobFeed, registry)
+		// Wait for the high water mark to be non-zero.
+		testutils.SucceedsSoon(t, func() error {
+			prog := loadProgress(t, jobFeed, registry)
+			if p := prog.GetHighWater(); p != nil && !p.IsEmpty() {
+				return nil
+			}
+			return errors.New("waiting for highwater")
+		})
 
 		// At this point, highwater mark should be set, and previous checkpoint should be gone.
 		progress = loadProgress(t, jobFeed, registry)
@@ -1441,7 +1488,7 @@ func TestAlterChangefeedAddTargetsDuringBackfill(t *testing.T) {
 		}
 	}
 
-	cdcTestWithSystem(t, testFn, feedTestEnterpriseSinks, feedTestNoExternalConnection)
+	cdcTestWithSystem(t, testFn, feedTestEnterpriseSinks, feedTestNoExternalConnection, feedTestNoForcedSyntheticTimestamps)
 }
 
 func TestAlterChangefeedInitialScan(t *testing.T) {

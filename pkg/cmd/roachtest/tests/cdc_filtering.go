@@ -1,12 +1,7 @@
 // Copyright 2023 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package tests
 
@@ -243,7 +238,7 @@ func checkCDCEvents[S any](
 
 	// Collect the events from the file-based sink on n1.
 	cmd := fmt.Sprintf("find {store-dir}/extern/%s -name '*.ndjson' | xargs cat", nodeLocalSinkDir)
-	d, err := c.RunWithDetailsSingleNode(ctx, t.L(), option.WithNodes(c.Node(1)), cmd)
+	d, err := c.RunWithDetailsSingleNode(ctx, t.L(), c.Node(1), cmd)
 	require.NoError(t, err)
 
 	var events []changefeedSinkEvent[S]

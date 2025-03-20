@@ -1,12 +1,7 @@
 // Copyright 2019 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package kvserver
 
@@ -55,8 +50,8 @@ func (r *Replica) quiesceLocked(ctx context.Context, lagging laggingReplicaSet) 
 // maybeUnquiesce unquiesces the replica if it is quiesced and can be
 // unquiesced, returning true in that case. See maybeUnquiesceLocked() for
 // details.
-func (r *Replica) maybeUnquiesce(ctx context.Context, wakeLeader, mayCampaign bool) bool {
-	r.mu.TracedLock(ctx)
+func (r *Replica) maybeUnquiesce(wakeLeader, mayCampaign bool) bool {
+	r.mu.Lock()
 	defer r.mu.Unlock()
 	return r.maybeUnquiesceLocked(wakeLeader, mayCampaign)
 }

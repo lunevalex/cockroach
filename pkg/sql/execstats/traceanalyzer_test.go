@@ -1,12 +1,7 @@
 // Copyright 2020 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package execstats_test
 
@@ -284,7 +279,6 @@ func TestQueryLevelStatsAccumulate(t *testing.T) {
 		MvccRangeKeySkippedPoints:          23,
 		SqlInstanceIds:                     aSQLInstanceIds,
 		Regions:                            []string{"east-usA"},
-		ClientTime:                         time.Second,
 	}
 	bEvent := kvpb.ContentionEvent{Duration: 14 * time.Second}
 	bSQLInstanceIds := map[base.SQLInstanceID]struct{}{}
@@ -318,7 +312,6 @@ func TestQueryLevelStatsAccumulate(t *testing.T) {
 		MvccRangeKeySkippedPoints:          30,
 		SqlInstanceIds:                     bSQLInstanceIds,
 		Regions:                            []string{"east-usB"},
-		ClientTime:                         2 * time.Second,
 	}
 	cSQLInstanceIds := map[base.SQLInstanceID]struct{}{}
 	cSQLInstanceIds[1] = struct{}{}
@@ -352,7 +345,6 @@ func TestQueryLevelStatsAccumulate(t *testing.T) {
 		MvccRangeKeySkippedPoints:          53,
 		SqlInstanceIds:                     cSQLInstanceIds,
 		Regions:                            []string{"east-usA", "east-usB"},
-		ClientTime:                         3 * time.Second,
 	}
 
 	aCopy := a

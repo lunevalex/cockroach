@@ -1,12 +1,7 @@
 // Copyright 2016 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package sqlutils
 
@@ -84,7 +79,6 @@ func fmtMessage(message string) string {
 
 // Exec is a wrapper around gosql.Exec that kills the test on error.
 func (sr *SQLRunner) Exec(t Fataler, query string, args ...interface{}) gosql.Result {
-	helperOrNoop(t)()
 	return sr.ExecWithMessage(t, "", query, args...)
 }
 
@@ -223,14 +217,12 @@ func (sr *SQLRunner) ExpectErrSucceedsSoon(
 	helperOrNoop(t)()
 	sr.succeedsWithin(t, func() error {
 		_, err := sr.DB.ExecContext(context.Background(), query, args...)
-		if !testutils.IsError(err, errRE) {
-			return errors.Newf("expected error '%s', got: %s", errRE, pgerror.FullError(err))
-		}
+		sr.expectErr(t, query, err, errRE)
 		return nil
 	})
 }
 
-// ExpectErrWithTimeout wraps ExpectErr with a timeout.
+// ExpectErrWithTimeout wraps ExpectErr with a timeout..
 func (sr *SQLRunner) ExpectErrWithTimeout(
 	t Fataler, errRE string, query string, args ...interface{},
 ) {
@@ -241,9 +233,7 @@ func (sr *SQLRunner) ExpectErrWithTimeout(
 	}
 	err := timeutil.RunWithTimeout(context.Background(), "expect-err", d, func(ctx context.Context) error {
 		_, err := sr.DB.ExecContext(ctx, query, args...)
-		if !testutils.IsError(err, errRE) {
-			return errors.Newf("expected error '%s', got: %s", errRE, pgerror.FullError(err))
-		}
+		sr.expectErr(t, query, err, errRE)
 		return nil
 	})
 

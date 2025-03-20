@@ -1,12 +1,7 @@
 // Copyright 2022 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package tests
 
@@ -52,9 +47,10 @@ func registerCostFuzz(r registry.Registry) {
 			RequiresLicense:  true,
 			Cluster:          clusterSpec,
 			CompatibleClouds: registry.AllExceptAWS,
-			Suites:           registry.Suites(registry.Nightly),
+			Suites:           registry.Suites(registry.Weekly),
 			Leases:           registry.MetamorphicLeases,
 			NativeLibs:       registry.LibGEOS,
+			Randomized:       true,
 			Run: func(ctx context.Context, t test.Test, c cluster.Cluster) {
 				// When running in CI, only allow running workload-replay in the private roachtest,
 				// which has the required credentials.

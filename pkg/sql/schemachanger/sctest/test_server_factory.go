@@ -1,12 +1,7 @@
 // Copyright 2023 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package sctest
 
@@ -69,7 +64,8 @@ func (f SingleNodeTestClusterFactory) WithSchemaChangerKnobs(
 // WithMixedVersion implements the TestServerFactory interface.
 func (f SingleNodeTestClusterFactory) WithMixedVersion() TestServerFactory {
 	f.server = &server.TestingKnobs{
-		BinaryVersionOverride:          OldVersionKey.Version(),
+		BootstrapVersionKeyOverride:    OldVersionKey,
+		BinaryVersionOverride:          clusterversion.ByKey(OldVersionKey),
 		DisableAutomaticVersionUpgrade: make(chan struct{}),
 	}
 	return f
@@ -104,7 +100,7 @@ func (f SingleNodeTestClusterFactory) Run(
 
 // OldVersionKey is the version key used by the WithMixedVersion method
 // in the TestServerFactory interface.
-const OldVersionKey = clusterversion.MinSupported
+const OldVersionKey = clusterversion.BinaryMinSupportedVersionKey
 
 // newJobsKnobs constructs jobs.TestingKnobs for the end-to-end tests.
 func newJobsKnobs() *jobs.TestingKnobs {

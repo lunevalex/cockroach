@@ -1,12 +1,7 @@
 // Copyright 2021 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 import { createMemoryHistory } from "history";
 import Long from "long";
@@ -279,7 +274,7 @@ describe("Database Table Page", function () {
         {},
         // Table replicas query
         {
-          rows: [{ replicas: [1, 2, 3, 4, 5] }],
+          rows: [{ store_ids: [1, 2, 3, 4, 5], replica_count: 10 }],
         },
       ],
     );
@@ -292,7 +287,7 @@ describe("Database Table Page", function () {
       requestError: null,
       queryError: undefined,
       createStatement: { create_statement: "CREATE TABLE foo" },
-      replicaData: { replicaCount: 5, nodeCount: 5, nodeIDs: [1, 2, 3, 4, 5] },
+      replicaData: { storeIDs: [1, 2, 3, 4, 5], replicaCount: 10 },
       spanStats: {
         approximate_disk_bytes: 23,
         live_bytes: 45,

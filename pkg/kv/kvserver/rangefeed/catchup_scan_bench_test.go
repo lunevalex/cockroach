@@ -1,12 +1,7 @@
 // Copyright 2021 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package rangefeed_test
 
@@ -50,7 +45,7 @@ func runCatchUpBenchmark(b *testing.B, emk engineMaker, opts benchOptions) (numE
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		func() {
-			iter, err := rangefeed.NewCatchUpIterator(ctx, eng, span, opts.ts, nil, nil)
+			iter, err := rangefeed.NewCatchUpIterator(eng, span, opts.ts, nil, nil)
 			if err != nil {
 				b.Fatal(err)
 			}
@@ -234,7 +229,7 @@ func setupMVCCPebble(b testing.TB, dir string, lBaseMaxBytes int64, readOnly boo
 func setupData(
 	ctx context.Context, b *testing.B, emk engineMaker, opts benchDataOptions,
 ) (storage.Engine, string) {
-	verStr := fmt.Sprintf("v%s", clusterversion.Latest.String())
+	verStr := fmt.Sprintf("v%s", clusterversion.TestingBinaryVersion.String())
 	orderStr := "linear"
 	if opts.randomKeyOrder {
 		orderStr = "random"

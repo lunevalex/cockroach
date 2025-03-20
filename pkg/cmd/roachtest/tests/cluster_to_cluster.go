@@ -1,12 +1,7 @@
 // Copyright 2022 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package tests
 
@@ -37,6 +32,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/keys"
 	"github.com/cockroachdb/cockroach/pkg/multitenant/mtinfopb"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
+	"github.com/cockroachdb/cockroach/pkg/roachprod"
 	"github.com/cockroachdb/cockroach/pkg/roachprod/install"
 	"github.com/cockroachdb/cockroach/pkg/roachprod/logger"
 	"github.com/cockroachdb/cockroach/pkg/roachprod/prometheus"
@@ -211,7 +207,7 @@ type streamingWorkload interface {
 func defaultWorkloadDriver(
 	workloadCtx context.Context, setup *c2cSetup, c cluster.Cluster, workload streamingWorkload,
 ) error {
-	return c.RunE(workloadCtx, option.WithNodes(setup.workloadNode), workload.sourceRunCmd(setup.src.name, setup.src.gatewayNodes))
+	return c.RunE(workloadCtx, setup.workloadNode, workload.sourceRunCmd(setup.src.name, setup.src.gatewayNodes))
 }
 
 type replicateTPCC struct {
@@ -308,7 +304,7 @@ func (kv replicateKV) runDriver(
 		require.NotEqual(t, "", kv.antiRegion, "if partitionKVDatabaseInRegion is set, then antiRegion must be set")
 		t.L().Printf("constrain the kv database to region %s", kv.partitionKVDatabaseInRegion)
 		alterStmt := fmt.Sprintf("ALTER DATABASE kv CONFIGURE ZONE USING constraints = '[+region=%s]'", kv.partitionKVDatabaseInRegion)
-		srcTenantConn := c.Conn(workloadCtx, t.L(), setup.src.nodes.RandNode()[0], option.TenantName(setup.src.name))
+		srcTenantConn := c.Conn(workloadCtx, t.L(), setup.src.nodes.RandNode()[0], option.VirtualClusterName(setup.src.name))
 		srcTenantSQL := sqlutils.MakeSQLRunner(srcTenantConn)
 		srcTenantSQL.Exec(t, alterStmt)
 		defer kv.checkRegionalConstraints(t, setup, srcTenantSQL)
@@ -400,10 +396,6 @@ type replicationSpec struct {
 	// multiregion specifies multiregion cluster specs
 	multiregion multiRegionSpecs
 
-	// overrideTenantTTL specifies the TTL that will be applied by the system tenant on
-	// both the source and destination tenant range.
-	overrideTenantTTL time.Duration
-
 	// additionalDuration specifies how long the workload will run after the initial scan
 	//completes. If the time out is set to 0, it will run until completion.
 	additionalDuration time.Duration
@@ -421,6 +413,11 @@ type replicationSpec struct {
 
 	// maxLatency override the maxAcceptedLatencyDefault.
 	maxAcceptedLatency time.Duration
+
+	// TODO(msbutler): this knob only exists because the revision history
+	// fingerprint can encounter a gc ttl error for large fingerprints. Delete
+	// this knob once we lay a pts during fingerprinting.
+	nonRevisionHistoryFingerprint bool
 
 	// skipNodeDistributionCheck removes the requirement that multiple source and
 	// destination nodes must participate in the replication stream. This should
@@ -497,24 +494,24 @@ func (rd *replicationDriver) setupC2C(
 	c.Put(ctx, t.DeprecatedWorkload(), "./workload", workloadNode)
 
 	// TODO(msbutler): allow for backups once this test stabilizes a bit more.
-	srcStartOps := option.DefaultStartOptsNoBackups()
+	srcStartOps := option.NewStartOpts(option.NoBackupSchedule)
 	srcStartOps.RoachprodOpts.InitTarget = 1
 
 	roachtestutil.SetDefaultAdminUIPort(c, &srcStartOps.RoachprodOpts)
-	srcClusterSetting := install.MakeClusterSettings(install.SecureOption(true))
+	srcClusterSetting := install.MakeClusterSettings()
 	c.Start(ctx, t.L(), srcStartOps, srcClusterSetting, srcCluster)
 
 	// TODO(msbutler): allow for backups once this test stabilizes a bit more.
-	dstStartOps := option.DefaultStartOptsNoBackups()
+	dstStartOps := option.NewStartOpts(option.NoBackupSchedule)
 	dstStartOps.RoachprodOpts.InitTarget = rd.rs.srcNodes + 1
 	roachtestutil.SetDefaultAdminUIPort(c, &dstStartOps.RoachprodOpts)
-	dstClusterSetting := install.MakeClusterSettings(install.SecureOption(true))
+	dstClusterSetting := install.MakeClusterSettings()
 	c.Start(ctx, t.L(), dstStartOps, dstClusterSetting, dstCluster)
 
 	srcNode := srcCluster.SeededRandNode(rd.rng)
 	destNode := dstCluster.SeededRandNode(rd.rng)
 
-	addr, err := c.ExternalPGUrl(ctx, t.L(), srcNode, "" /* tenant */, 0 /* sqlInstance */)
+	addr, err := c.ExternalPGUrl(ctx, t.L(), srcNode, roachprod.PGURLOptions{})
 	t.L().Printf("Randomly chosen src node %d for gateway with address %s", srcNode, addr)
 	t.L().Printf("Randomly chosen dst node %d for gateway", destNode)
 
@@ -527,8 +524,6 @@ func (rd *replicationDriver) setupC2C(
 
 	srcClusterSettings(t, srcSQL)
 	destClusterSettings(t, destSQL, rd.rs.additionalDuration)
-
-	overrideSrcAndDestTenantTTL(t, srcSQL, destSQL, rd.rs.overrideTenantTTL)
 
 	createTenantAdminRole(t, "src-system", srcSQL)
 	createTenantAdminRole(t, "dst-system", destSQL)
@@ -656,7 +651,7 @@ func (rd *replicationDriver) preStreamingWorkload(ctx context.Context) {
 	if initCmd := rd.rs.workload.sourceInitCmd(rd.setup.src.name, rd.setup.src.nodes); initCmd != "" {
 		rd.t.Status("populating source cluster before replication")
 		initStart := timeutil.Now()
-		rd.c.Run(ctx, option.WithNodes(rd.setup.workloadNode), initCmd)
+		rd.c.Run(ctx, rd.setup.workloadNode, initCmd)
 		rd.t.L().Printf("src cluster workload initialization took %s",
 			timeutil.Since(initStart))
 	}
@@ -758,13 +753,21 @@ func (rd *replicationDriver) compareTenantFingerprintsAtTimestamp(
 	rd.t.Status(fmt.Sprintf("comparing tenant fingerprints between start time %s and end time %s",
 		startTime, endTime))
 	fingerprintQuery := fmt.Sprintf(`
-SELECT fingerprint FROM [SHOW EXPERIMENTAL_FINGERPRINTS FROM VIRTUAL CLUSTER $1 WITH START TIMESTAMP = '%s'] AS OF SYSTEM TIME '%s'`,
-		startTime.AsOfSystemTime(), endTime.AsOfSystemTime())
+SELECT *
+FROM crdb_internal.fingerprint(crdb_internal.tenant_span($1::INT), '%s'::DECIMAL, true)
+AS OF SYSTEM TIME '%s'`, startTime.AsOfSystemTime(), endTime.AsOfSystemTime())
+
+	if rd.rs.nonRevisionHistoryFingerprint {
+		fingerprintQuery = fmt.Sprintf(`
+SELECT *
+FROM crdb_internal.fingerprint(crdb_internal.tenant_span($1::INT), 0::DECIMAL, false)
+AS OF SYSTEM TIME '%s'`, endTime.AsOfSystemTime())
+	}
 
 	var srcFingerprint int64
 	fingerPrintMonitor := rd.newMonitor(ctx)
 	fingerPrintMonitor.Go(func(ctx context.Context) error {
-		rd.setup.src.sysSQL.QueryRow(rd.t, fingerprintQuery, rd.setup.src.name).Scan(&srcFingerprint)
+		rd.setup.src.sysSQL.QueryRow(rd.t, fingerprintQuery, rd.setup.src.ID).Scan(&srcFingerprint)
 		rd.t.L().Printf("finished fingerprinting source tenant")
 		return nil
 	})
@@ -772,7 +775,7 @@ SELECT fingerprint FROM [SHOW EXPERIMENTAL_FINGERPRINTS FROM VIRTUAL CLUSTER $1 
 	fingerPrintMonitor.Go(func(ctx context.Context) error {
 		// TODO(adityamaru): Measure and record fingerprinting throughput.
 		rd.metrics.fingerprintingStart = timeutil.Now()
-		rd.setup.dst.sysSQL.QueryRow(rd.t, fingerprintQuery, rd.setup.dst.name).Scan(&destFingerprint)
+		rd.setup.dst.sysSQL.QueryRow(rd.t, fingerprintQuery, rd.setup.dst.ID).Scan(&destFingerprint)
 		rd.metrics.fingerprintingEnd = timeutil.Now()
 		fingerprintingDuration := rd.metrics.fingerprintingEnd.Sub(rd.metrics.fingerprintingStart).String()
 		rd.t.L().Printf("fingerprinting the destination tenant took %s", fingerprintingDuration)
@@ -791,9 +794,9 @@ func (rd *replicationDriver) onFingerprintMismatch(
 	ctx context.Context, startTime, endTime hlc.Timestamp,
 ) {
 	rd.t.L().Printf("conducting table level fingerprints")
-	srcTenantConn := rd.c.Conn(ctx, rd.t.L(), 1, option.TenantName(rd.setup.src.name))
+	srcTenantConn := rd.c.Conn(ctx, rd.t.L(), 1, option.VirtualClusterName(rd.setup.src.name))
 	defer srcTenantConn.Close()
-	dstTenantConn := rd.c.Conn(ctx, rd.t.L(), rd.rs.srcNodes+1, option.TenantName(rd.setup.dst.name))
+	dstTenantConn := rd.c.Conn(ctx, rd.t.L(), rd.rs.srcNodes+1, option.VirtualClusterName(rd.setup.dst.name))
 	defer dstTenantConn.Close()
 	fingerprintBisectErr := replicationutils.InvestigateFingerprints(ctx, srcTenantConn, dstTenantConn,
 		startTime,
@@ -930,14 +933,7 @@ func (rd *replicationDriver) main(ctx context.Context) {
 
 	latencyMonitor := rd.newMonitor(ctx)
 	latencyMonitor.Go(func(ctx context.Context) error {
-		if err := lv.pollLatencyUntilJobSucceeds(ctx, rd.setup.dst.db, ingestionJobID, time.Second, workloadDoneCh); err != nil {
-			// The latency poller may have failed because latency got too high. Grab a
-			// debug zip before the replication jobs spin down.
-			rd.fetchDebugZip(ctx, rd.setup.src.nodes, "latency_source_debug.zip")
-			rd.fetchDebugZip(ctx, rd.setup.dst.nodes, "latency_dest_debug.zip")
-			return err
-		}
-		return nil
+		return lv.pollLatencyUntilJobSucceeds(ctx, rd.setup.dst.db, ingestionJobID, time.Second, workloadDoneCh)
 	})
 	defer latencyMonitor.Wait()
 
@@ -1024,17 +1020,18 @@ func c2cRegisterWrapper(
 	}
 
 	r.Add(registry.TestSpec{
-		Name:             sp.name,
-		Owner:            registry.OwnerDisasterRecovery,
-		Benchmark:        sp.benchmark,
-		Cluster:          r.MakeClusterSpec(sp.dstNodes+sp.srcNodes+1, clusterOps...),
-		Leases:           registry.MetamorphicLeases,
-		Timeout:          sp.timeout,
-		Skip:             sp.skip,
-		CompatibleClouds: sp.clouds,
-		Suites:           sp.suites,
-		RequiresLicense:  true,
-		Run:              run,
+		Name:                      sp.name,
+		Owner:                     registry.OwnerDisasterRecovery,
+		Benchmark:                 sp.benchmark,
+		Cluster:                   r.MakeClusterSpec(sp.dstNodes+sp.srcNodes+1, clusterOps...),
+		Leases:                    registry.MetamorphicLeases,
+		Timeout:                   sp.timeout,
+		Skip:                      sp.skip,
+		CompatibleClouds:          sp.clouds,
+		Suites:                    sp.suites,
+		TestSelectionOptOutSuites: sp.suites,
+		RequiresLicense:           true,
+		Run:                       run,
 	})
 }
 
@@ -1145,12 +1142,13 @@ func registerClusterToCluster(r registry.Registry) {
 		},
 		{
 			// Large workload to test our 23.2 perf goals.
-			name:      "c2c/weekly/kv50",
-			benchmark: true,
-			srcNodes:  8,
-			dstNodes:  8,
-			cpus:      8,
-			pdSize:    1000,
+			name:                          "c2c/weekly/kv50",
+			benchmark:                     true,
+			srcNodes:                      8,
+			dstNodes:                      8,
+			cpus:                          8,
+			pdSize:                        1000,
+			nonRevisionHistoryFingerprint: true,
 
 			workload: replicateKV{
 				// Write a ~2TB initial scan.
@@ -1159,12 +1157,7 @@ func registerClusterToCluster(r registry.Registry) {
 				maxBlockBytes: 4096,
 				maxQPS:        2000,
 			},
-			maxAcceptedLatency: time.Minute * 5,
 			timeout:            12 * time.Hour,
-			// We bump the TTL on the source and destination tenants to 12h to give
-			// the fingerprinting post cutover adequate time to complete before GC
-			// kicks in.
-			overrideTenantTTL:  12 * time.Hour,
 			additionalDuration: 2 * time.Hour,
 			cutover:            0,
 			clouds:             registry.AllClouds,
@@ -1236,18 +1229,20 @@ func registerClusterToCluster(r registry.Registry) {
 			maxAcceptedLatency: 1 * time.Hour,
 			clouds:             registry.AllExceptAWS,
 			suites:             registry.Suites(registry.Nightly),
+			skip:               "flakes on 23.2. known limitation",
 		},
 		{
-			name:               "c2c/BulkOps/singleImport",
-			srcNodes:           4,
-			dstNodes:           4,
-			cpus:               8,
-			pdSize:             100,
-			workload:           replicateBulkOps{short: true, debugSkipRollback: true},
-			timeout:            2 * time.Hour,
-			cutoverTimeout:     1 * time.Hour,
+			name:     "c2c/BulkOps/short",
+			srcNodes: 4,
+			dstNodes: 4,
+			cpus:     8,
+			pdSize:   100,
+			workload: replicateBulkOps{short: true},
+			timeout:  2 * time.Hour,
+			// Give the cluster plenty of time to catch up after the cutover command is issued.
+			cutoverTimeout:     30 * time.Minute,
 			additionalDuration: 0,
-			cutover:            1 * time.Minute,
+			cutover:            5 * time.Minute,
 			maxAcceptedLatency: 1 * time.Hour,
 
 			// skipNodeDistributionCheck is set to true because the roachtest
@@ -1609,7 +1604,7 @@ func registerClusterReplicationResilience(r registry.Registry) {
 					shutdownNode:    rrd.shutdownNode,
 					watcherNode:     destinationWatcherNode,
 					crdbNodes:       rrd.crdbNodes(),
-					restartSettings: []install.ClusterSettingOption{install.SecureOption(true)},
+					restartSettings: []install.ClusterSettingOption{},
 					rng:             rrd.rng,
 				}
 				if err := executeNodeShutdown(ctx, t, c, shutdownCfg, shutdownStarter()); err != nil {
@@ -1767,17 +1762,6 @@ func destClusterSettings(t test.Test, db *sqlutils.SQLRunner, additionalDuration
 	}
 }
 
-func overrideSrcAndDestTenantTTL(
-	t test.Test, srcSQL *sqlutils.SQLRunner, destSQL *sqlutils.SQLRunner, overrideTTL time.Duration,
-) {
-	if overrideTTL == 0 {
-		return
-	}
-	t.L().Printf("overriding dest and src tenant TTL to %s", overrideTTL)
-	srcSQL.Exec(t, `ALTER RANGE tenants CONFIGURE ZONE USING gc.ttlseconds = $1`, overrideTTL.Seconds())
-	destSQL.Exec(t, `ALTER RANGE tenants CONFIGURE ZONE USING gc.ttlseconds = $1`, overrideTTL.Seconds())
-}
-
 func copyPGCertsAndMakeURL(
 	ctx context.Context,
 	t test.Test,
@@ -1791,7 +1775,7 @@ func copyPGCertsAndMakeURL(
 		return "", err
 	}
 
-	tmpDir, err := os.MkdirTemp("", "certs")
+	tmpDir, err := os.MkdirTemp("", install.CockroachNodeCertsDir)
 	if err != nil {
 		return "", err
 	}
@@ -1805,11 +1789,11 @@ func copyPGCertsAndMakeURL(
 	if err != nil {
 		return "", err
 	}
-	sslClientCert, err := os.ReadFile(filepath.Join(tmpDir, "client.root.crt"))
+	sslClientCert, err := os.ReadFile(filepath.Join(tmpDir, fmt.Sprintf("client.%s.crt", install.DefaultUser)))
 	if err != nil {
 		return "", err
 	}
-	sslClientKey, err := os.ReadFile(filepath.Join(tmpDir, "client.root.key"))
+	sslClientKey, err := os.ReadFile(filepath.Join(tmpDir, fmt.Sprintf("client.%s.key", install.DefaultUser)))
 	if err != nil {
 		return "", err
 	}

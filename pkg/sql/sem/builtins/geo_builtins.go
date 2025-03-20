@@ -1,12 +1,7 @@
 // Copyright 2020 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package builtins
 
@@ -67,6 +62,8 @@ const spheroidDistanceMessage = "\n\nWhen operating on a spheroid, this function
 
 const (
 	defaultWKTDecimalDigits = 15
+	// defaultGeoJSONDecimalDigits is the default number of digits coordinates for builtins in GeoJSON.
+	defaultGeoJSONDecimalDigits = 9
 )
 
 // infoBuilder is used to build a detailed info string that is consistent between
@@ -774,9 +771,9 @@ var geoBuiltins = map[string]builtinDefinition{
 			},
 			// Simulate PostgreSQL's ambiguity type resolving check that prefers
 			// strings over JSON.
-			PreferredOverload: true,
-			Info:              infoBuilder{info: "Returns the Geometry from an GeoJSON representation."}.String(),
-			Volatility:        volatility.Immutable,
+			OverloadPreference: tree.OverloadPreferencePreferred,
+			Info:               infoBuilder{info: "Returns the Geometry from an GeoJSON representation."}.String(),
+			Volatility:         volatility.Immutable,
 		},
 		jsonOverload1(
 			func(_ context.Context, _ *eval.Context, s json.JSON) (tree.Datum, error) {
@@ -1127,18 +1124,11 @@ var geoBuiltins = map[string]builtinDefinition{
 				{Name: "geohash", Typ: types.String},
 				{Name: "precision", Typ: types.Int},
 			},
-			CalledOnNullInput: true,
-			ReturnType:        tree.FixedReturnType(types.Geometry),
+			ReturnType: tree.FixedReturnType(types.Geometry),
 			Fn: func(_ context.Context, _ *eval.Context, args tree.Datums) (tree.Datum, error) {
-				if args[0] == tree.DNull {
-					return tree.DNull, nil
-				}
 				g := tree.MustBeDString(args[0])
-				p := -1
-				if args[1] != tree.DNull {
-					p = int(tree.MustBeDInt(args[1]))
-				}
-				ret, err := geo.ParseGeometryPointFromGeoHash(string(g), p)
+				p := tree.MustBeDInt(args[1])
+				ret, err := geo.ParseGeometryPointFromGeoHash(string(g), int(p))
 				if err != nil {
 					return nil, err
 				}
@@ -1176,18 +1166,11 @@ var geoBuiltins = map[string]builtinDefinition{
 				{Name: "geohash", Typ: types.String},
 				{Name: "precision", Typ: types.Int},
 			},
-			CalledOnNullInput: true,
-			ReturnType:        tree.FixedReturnType(types.Geometry),
-			Fn: func(ctx context.Context, _ *eval.Context, args tree.Datums) (tree.Datum, error) {
-				if args[0] == tree.DNull {
-					return tree.DNull, nil
-				}
+			ReturnType: tree.FixedReturnType(types.Geometry),
+			Fn: func(_ context.Context, _ *eval.Context, args tree.Datums) (tree.Datum, error) {
 				g := tree.MustBeDString(args[0])
-				p := -1
-				if args[1] != tree.DNull {
-					p = int(tree.MustBeDInt(args[1]))
-				}
-				bbox, err := geo.ParseCartesianBoundingBoxFromGeoHash(string(g), p)
+				p := tree.MustBeDInt(args[1])
+				bbox, err := geo.ParseCartesianBoundingBoxFromGeoHash(string(g), int(p))
 				if err != nil {
 					return nil, err
 				}
@@ -1778,14 +1761,14 @@ var geoBuiltins = map[string]builtinDefinition{
 					evalCtx,
 					tuple,
 					"", /* geoColumn */
-					geo.DefaultGeoJSONDecimalDigits,
+					defaultGeoJSONDecimalDigits,
 					false, /* pretty */
 				)
 			},
 			Info: infoBuilder{
 				info: fmt.Sprintf(
 					"Returns the GeoJSON representation of a given Geometry. Coordinates have a maximum of %d decimal digits.",
-					geo.DefaultGeoJSONDecimalDigits,
+					defaultGeoJSONDecimalDigits,
 				),
 			}.String(),
 			Volatility: volatility.Immutable,
@@ -1799,14 +1782,14 @@ var geoBuiltins = map[string]builtinDefinition{
 					evalCtx,
 					tuple,
 					string(tree.MustBeDString(args[1])),
-					geo.DefaultGeoJSONDecimalDigits,
+					defaultGeoJSONDecimalDigits,
 					false, /* pretty */
 				)
 			},
 			Info: infoBuilder{
 				info: fmt.Sprintf(
 					"Returns the GeoJSON representation of a given Geometry, using geo_column as the geometry for the given Feature. Coordinates have a maximum of %d decimal digits.",
-					geo.DefaultGeoJSONDecimalDigits,
+					defaultGeoJSONDecimalDigits,
 				),
 			}.String(),
 			Volatility: volatility.Stable,
@@ -1864,14 +1847,14 @@ var geoBuiltins = map[string]builtinDefinition{
 		},
 		geometryOverload1(
 			func(_ context.Context, _ *eval.Context, g *tree.DGeometry) (tree.Datum, error) {
-				geojson, err := geo.SpatialObjectToGeoJSON(g.Geometry.SpatialObject(), geo.DefaultGeoJSONDecimalDigits, geo.SpatialObjectToGeoJSONFlagShortCRSIfNot4326)
+				geojson, err := geo.SpatialObjectToGeoJSON(g.Geometry.SpatialObject(), defaultGeoJSONDecimalDigits, geo.SpatialObjectToGeoJSONFlagShortCRSIfNot4326)
 				return tree.NewDString(string(geojson)), err
 			},
 			types.String,
 			infoBuilder{
 				info: fmt.Sprintf(
 					"Returns the GeoJSON representation of a given Geometry. Coordinates have a maximum of %d decimal digits.",
-					geo.DefaultGeoJSONDecimalDigits,
+					defaultGeoJSONDecimalDigits,
 				),
 			},
 			volatility.Immutable,
@@ -1921,14 +1904,14 @@ Options is a flag that can be bitmasked. The options are:
 		},
 		geographyOverload1(
 			func(_ context.Context, _ *eval.Context, g *tree.DGeography) (tree.Datum, error) {
-				geojson, err := geo.SpatialObjectToGeoJSON(g.Geography.SpatialObject(), geo.DefaultGeoJSONDecimalDigits, geo.SpatialObjectToGeoJSONFlagZero)
+				geojson, err := geo.SpatialObjectToGeoJSON(g.Geography.SpatialObject(), defaultGeoJSONDecimalDigits, geo.SpatialObjectToGeoJSONFlagZero)
 				return tree.NewDString(string(geojson)), err
 			},
 			types.String,
 			infoBuilder{
 				info: fmt.Sprintf(
 					"Returns the GeoJSON representation of a given Geography. Coordinates have a maximum of %d decimal digits.",
-					geo.DefaultGeoJSONDecimalDigits,
+					defaultGeoJSONDecimalDigits,
 				),
 			},
 			volatility.Immutable,
@@ -7144,127 +7127,6 @@ Note that the top vertex of the segment touching another line does not count as 
 		},
 	),
 
-	"st_tileenvelope": makeBuiltin(
-		defProps(),
-		tree.Overload{
-			Types: tree.ParamTypes{
-				{Name: "tileZoom", Typ: types.Int4},
-				{Name: "tileX", Typ: types.Int4},
-				{Name: "tileY", Typ: types.Int4},
-			},
-			ReturnType: tree.FixedReturnType(types.Geometry),
-			Fn: func(_ context.Context, _ *eval.Context, args tree.Datums) (tree.Datum, error) {
-				if args[0] == tree.DNull || args[1] == tree.DNull || args[2] == tree.DNull {
-					return tree.DNull, nil
-				}
-
-				tileZoom := int(tree.MustBeDInt(args[0]))
-				tileX := int(tree.MustBeDInt(args[1]))
-				tileY := int(tree.MustBeDInt(args[2]))
-
-				defBounds := "SRID=3857;LINESTRING(-20037508.342789244 -20037508.342789244, 20037508.342789244 20037508.342789244)"
-				bounds, err := geo.ParseGeometryFromEWKT(geopb.EWKT(defBounds), geopb.DefaultGeometrySRID, geo.DefaultSRIDIsHint)
-				if err != nil {
-					return nil, err
-				}
-
-				envelope, err := geomfn.TileEnvelope(tileZoom, tileX, tileY, bounds, 0.0)
-				if err != nil {
-					return nil, err
-				}
-				return &tree.DGeometry{Geometry: envelope}, nil
-			},
-			Info: infoBuilder{
-				info: `Creates a rectangular Polygon giving the extent of a tile in the XYZ tile system. 
-The tile is specifed by the zoom level Z and the XY index of the tile in the grid at that level. 
-Can be used to define the tile bounds required by ST_AsMVTGeom to convert geometry into the MVT tile coordinate space.`,
-			}.String(),
-			Volatility:        volatility.Immutable,
-			CalledOnNullInput: true,
-		},
-		tree.Overload{
-			Types: tree.ParamTypes{
-				{Name: "tileZoom", Typ: types.Int4},
-				{Name: "tileX", Typ: types.Int4},
-				{Name: "tileY", Typ: types.Int4},
-				{Name: "bounds", Typ: types.Geometry},
-			},
-			ReturnType: tree.FixedReturnType(types.Geometry),
-			Fn: func(_ context.Context, _ *eval.Context, args tree.Datums) (tree.Datum, error) {
-				if args[0] == tree.DNull || args[1] == tree.DNull || args[2] == tree.DNull {
-					return tree.DNull, nil
-				}
-
-				tileZoom := int(tree.MustBeDInt(args[0]))
-				tileX := int(tree.MustBeDInt(args[1]))
-				tileY := int(tree.MustBeDInt(args[2]))
-
-				if args[3] == tree.DNull {
-					return tree.DNull, nil
-				}
-
-				bounds := tree.MustBeDGeometry(args[3])
-
-				envelope, err := geomfn.TileEnvelope(tileZoom, tileX, tileY, bounds.Geometry, 0.0)
-				if err != nil {
-					return nil, err
-				}
-				return &tree.DGeometry{Geometry: envelope}, nil
-			},
-			Info: infoBuilder{
-				info: `Creates a rectangular Polygon giving the extent of a tile in the XYZ tile system. 
-The tile is specifed by the zoom level Z and the XY index of the tile in the grid at that level. 
-Can be used to define the tile bounds required by ST_AsMVTGeom to convert geometry into the MVT tile coordinate space.`,
-			}.String(),
-			Volatility:        volatility.Immutable,
-			CalledOnNullInput: true,
-		},
-		tree.Overload{
-			Types: tree.ParamTypes{
-				{Name: "tileZoom", Typ: types.Int4},
-				{Name: "tileX", Typ: types.Int4},
-				{Name: "tileY", Typ: types.Int4},
-				{Name: "bounds", Typ: types.Geometry},
-				{Name: "margin", Typ: types.Float},
-			},
-			ReturnType: tree.FixedReturnType(types.Geometry),
-			Fn: func(_ context.Context, _ *eval.Context, args tree.Datums) (tree.Datum, error) {
-				if args[0] == tree.DNull || args[1] == tree.DNull || args[2] == tree.DNull {
-					return tree.DNull, nil
-				}
-
-				tileZoom := int(tree.MustBeDInt(args[0]))
-				tileX := int(tree.MustBeDInt(args[1]))
-				tileY := int(tree.MustBeDInt(args[2]))
-
-				if args[3] == tree.DNull {
-					return tree.DNull, nil
-				}
-
-				bounds := tree.MustBeDGeometry(args[3])
-
-				if args[4] == tree.DNull {
-					return tree.DNull, nil
-				}
-
-				margin := float64(tree.MustBeDFloat(args[4]))
-
-				envelope, err := geomfn.TileEnvelope(tileZoom, tileX, tileY, bounds.Geometry, margin)
-				if err != nil {
-					return nil, err
-				}
-				return &tree.DGeometry{Geometry: envelope}, nil
-			},
-			Info: infoBuilder{
-				info: `Creates a rectangular Polygon giving the extent of a tile in the XYZ tile system. 
-The tile is specifed by the zoom level Z and the XY index of the tile in the grid at that level. 
-Can be used to define the tile bounds required by ST_AsMVTGeom to convert geometry into the MVT tile coordinate space.`,
-			}.String(),
-			Volatility:        volatility.Immutable,
-			CalledOnNullInput: true,
-		},
-	),
-
 	//
 	// Unimplemented.
 	//
@@ -7295,6 +7157,7 @@ Can be used to define the tile bounds required by ST_AsMVTGeom to convert geomet
 	"st_seteffectivearea":    makeBuiltin(tree.FunctionProperties{UnsupportedWithIssue: 49030}),
 	"st_simplifyvw":          makeBuiltin(tree.FunctionProperties{UnsupportedWithIssue: 49039}),
 	"st_split":               makeBuiltin(tree.FunctionProperties{UnsupportedWithIssue: 49045}),
+	"st_tileenvelope":        makeBuiltin(tree.FunctionProperties{UnsupportedWithIssue: 49053}),
 	"st_wrapx":               makeBuiltin(tree.FunctionProperties{UnsupportedWithIssue: 49068}),
 	"st_geomfromgml":         makeBuiltin(tree.FunctionProperties{UnsupportedWithIssue: 48807}),
 	"st_geomfromtwkb":        makeBuiltin(tree.FunctionProperties{UnsupportedWithIssue: 48809}),
@@ -7805,7 +7668,7 @@ func stAsGeoJSONFromTuple(
 			if g, ok := d.(*tree.DGeometry); ok {
 				foundGeoColumn = true
 				var err error
-				geometry, err = g.ToJSON()
+				geometry, err = json.FromSpatialObject(g.SpatialObject(), numDecimalDigits)
 				if err != nil {
 					return nil, err
 				}
@@ -7814,7 +7677,7 @@ func stAsGeoJSONFromTuple(
 			if g, ok := d.(*tree.DGeography); ok {
 				foundGeoColumn = true
 				var err error
-				geometry, err = g.ToJSON()
+				geometry, err = json.FromSpatialObject(g.SpatialObject(), numDecimalDigits)
 				if err != nil {
 					return nil, err
 				}
@@ -7965,14 +7828,14 @@ func makeSTDWithinBuiltin(exclusivity geo.FnExclusivity) builtinDefinition {
 }
 
 func applyGeoindexConfigStorageParams(
-	ctx context.Context, evalCtx *eval.Context, cfg geopb.Config, params string,
-) (geopb.Config, error) {
+	ctx context.Context, evalCtx *eval.Context, cfg geoindex.Config, params string,
+) (geoindex.Config, error) {
 	indexDesc := &descpb.IndexDescriptor{GeoConfig: cfg}
 	stmt, err := parser.ParseOne(
 		fmt.Sprintf("CREATE INDEX t_idx ON t USING GIST(geom) WITH (%s)", params),
 	)
 	if err != nil {
-		return geopb.Config{}, errors.Newf("invalid storage parameters specified: %s", params)
+		return geoindex.Config{}, errors.Newf("invalid storage parameters specified: %s", params)
 	}
 	semaCtx := tree.MakeSemaContext()
 	if err := storageparam.Set(
@@ -7982,7 +7845,7 @@ func applyGeoindexConfigStorageParams(
 		stmt.AST.(*tree.CreateIndex).StorageParams,
 		&indexstorageparam.Setter{IndexDesc: indexDesc},
 	); err != nil {
-		return geopb.Config{}, err
+		return geoindex.Config{}, err
 	}
 	return indexDesc.GeoConfig, nil
 }
@@ -7998,16 +7861,12 @@ func stEnvelopeFromArgs(args tree.Datums) (tree.Datum, error) {
 	if len(args) > 4 {
 		srid = int(tree.MustBeDInt(args[4]))
 	}
-	coords := []float64{
-		xmin, ymin,
-		xmin, ymax,
-		xmax, ymax,
-		xmax, ymin,
-		xmin, ymin,
-	}
 
 	extent, err := geo.MakeGeometryFromGeomT(
-		geom.NewPolygonFlat(geom.XY, coords, []int{len(coords)}).SetSRID(srid),
+		geom.NewBounds(geom.XY).
+			Set(xmin, ymin, xmax, ymax).
+			Polygon().
+			SetSRID(srid),
 	)
 	if err != nil {
 		return nil, err

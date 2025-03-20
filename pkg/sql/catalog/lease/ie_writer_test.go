@@ -1,12 +1,7 @@
 // Copyright 2021 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package lease
 
@@ -20,16 +15,13 @@ import (
 )
 
 type ieWriter struct {
-	insertQuery      string
-	deleteQuery      string
-	ie               isql.Executor
-	sessionBasedMode SessionBasedLeasingMode
+	insertQuery string
+	deleteQuery string
+	ie          isql.Executor
 }
 
-func newInternalExecutorWriter(
-	ie isql.Executor, tableName string, mode SessionBasedLeasingMode,
-) *ieWriter {
-	var (
+func newInternalExecutorWriter(ie isql.Executor, tableName string) *ieWriter {
+	const (
 		deleteLease = `
 DELETE FROM %s
       WHERE (crdb_region, "descID", version, "nodeID", expiration)
@@ -39,59 +31,28 @@ INSERT
   INTO %s (crdb_region, "descID", version, "nodeID", expiration)
 VALUES ($1, $2, $3, $4, $5)`
 	)
-	if mode == SessionBasedOnly {
-		deleteLease = `
-DELETE FROM %s
-      WHERE (crdb_region, desc_id, version, sql_instance_id, session_id)
-            = ($1, $2, $3, $4, $5);`
-		insertLease = `
-INSERT
-  INTO %s (crdb_region, desc_id, version, sql_instance_id, session_id)
-VALUES ($1, $2, $3, $4, $5)`
-	}
 	return &ieWriter{
-		ie:               ie,
-		insertQuery:      fmt.Sprintf(insertLease, tableName),
-		deleteQuery:      fmt.Sprintf(deleteLease, tableName),
-		sessionBasedMode: mode,
+		ie:          ie,
+		insertQuery: fmt.Sprintf(insertLease, tableName),
+		deleteQuery: fmt.Sprintf(deleteLease, tableName),
 	}
 }
 
 func (w *ieWriter) deleteLease(ctx context.Context, txn *kv.Txn, l leaseFields) error {
-	var err error
-	if w.sessionBasedMode == SessionBasedLeasingOff {
-		_, err = w.ie.Exec(
-			ctx,
-			"lease-release",
-			nil, /* txn */
-			w.deleteQuery,
-			l.regionPrefix, l.descID, l.version, l.instanceID, &l.expiration,
-		)
-	} else {
-		_, err = w.ie.Exec(
-			ctx,
-			"lease-release",
-			nil, /* txn */
-			w.deleteQuery,
-			l.regionPrefix, l.descID, l.version, l.instanceID, l.sessionID,
-		)
-	}
-
+	_, err := w.ie.Exec(
+		ctx,
+		"lease-release",
+		nil, /* txn */
+		w.deleteQuery,
+		l.regionPrefix, l.descID, l.version, l.instanceID, &l.expiration,
+	)
 	return err
 }
 
 func (w *ieWriter) insertLease(ctx context.Context, txn *kv.Txn, l leaseFields) error {
-	var count int
-	var err error
-	if w.sessionBasedMode == SessionBasedLeasingOff {
-		count, err = w.ie.Exec(ctx, "lease-insert", txn, w.insertQuery,
-			l.regionPrefix, l.descID, l.version, l.instanceID, &l.expiration,
-		)
-	} else {
-		count, err = w.ie.Exec(ctx, "lease-insert", txn, w.insertQuery,
-			l.regionPrefix, l.descID, l.version, l.instanceID, l.sessionID,
-		)
-	}
+	count, err := w.ie.Exec(ctx, "lease-insert", txn, w.insertQuery,
+		l.regionPrefix, l.descID, l.version, l.instanceID, &l.expiration,
+	)
 	if err != nil {
 		return err
 	}

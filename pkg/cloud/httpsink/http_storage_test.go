@@ -1,12 +1,7 @@
 // Copyright 2019 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package httpsink
 
@@ -241,7 +236,7 @@ func TestHttpGet(t *testing.T) {
 			})
 
 			conf := cloudpb.ExternalStorage{HttpPath: cloudpb.ExternalStorage_Http{BaseUri: s.URL}}
-			store, err := MakeHTTPStorage(ctx, cloud.EarlyBootExternalStorageContext{Settings: testSettings}, conf)
+			store, err := MakeHTTPStorage(ctx, cloud.ExternalStorageContext{Settings: testSettings}, conf)
 			require.NoError(t, err)
 
 			var file ioctx.ReadCloserCtx
@@ -279,7 +274,7 @@ func TestHttpGetWithCancelledContext(t *testing.T) {
 
 	conf := cloudpb.ExternalStorage{HttpPath: cloudpb.ExternalStorage_Http{BaseUri: s.URL}}
 	store, err := MakeHTTPStorage(context.Background(),
-		cloud.EarlyBootExternalStorageContext{Settings: testSettings}, conf)
+		cloud.ExternalStorageContext{Settings: testSettings}, conf)
 	require.NoError(t, err)
 	defer func() {
 		require.NoError(t, store.Close())
@@ -408,7 +403,8 @@ func TestExhaustRetries(t *testing.T) {
 	cloud.HTTPRetryOptions.MaxRetries = 10
 
 	conf := cloudpb.ExternalStorage{HttpPath: cloudpb.ExternalStorage_Http{BaseUri: "http://does.not.matter"}}
-	store, err := MakeHTTPStorage(context.Background(), cloud.EarlyBootExternalStorageContext{Settings: testSettings}, conf)
+	store, err := MakeHTTPStorage(context.Background(), cloud.ExternalStorageContext{Settings: testSettings,
+		MetricsRecorder: cloud.NilMetrics}, conf)
 	require.NoError(t, err)
 	defer func() {
 		require.NoError(t, store.Close())
@@ -465,11 +461,13 @@ func TestReadFileAtReturnsSize(t *testing.T) {
 	defer server.Close()
 
 	conf := cloudpb.ExternalStorage{HttpPath: cloudpb.ExternalStorage_Http{BaseUri: server.URL}}
-	args := cloud.EarlyBootExternalStorageContext{
-		IOConf:   base.ExternalIODirConfig{},
-		Settings: testSettings,
-		Options:  nil,
-		Limiters: nil,
+	args := cloud.ExternalStorageContext{
+		IOConf:          base.ExternalIODirConfig{},
+		Settings:        testSettings,
+		DB:              nil,
+		Options:         nil,
+		Limiters:        nil,
+		MetricsRecorder: cloud.NilMetrics,
 	}
 	s, err := MakeHTTPStorage(ctx, args, conf)
 	require.NoError(t, err)

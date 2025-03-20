@@ -22,6 +22,7 @@ go_library(
     importpath = "github.com/cockroachdb/cockroach/pkg/sql/stats",
     visibility = ["//visibility:public"],
     deps = [
+        "//pkg/base",
         "//pkg/clusterversion",
         "//pkg/jobs/jobspb",
         "//pkg/keys",
@@ -84,11 +85,8 @@ go_test(
         "stats_cache_test.go",
         "stats_test.go",
     ],
+    args = ["-test.timeout=295s"],
     embed = [":stats"],
-    exec_properties = select({
-        "//build/toolchains:is_heavy": {"Pool": "heavy"},
-        "//conditions:default": {"Pool": "default"},
-    }),
     shard_count = 8,
     deps = [
         "//pkg/base",
@@ -118,7 +116,6 @@ go_test(
         "//pkg/sql/opt/cat",
         "//pkg/sql/randgen",
         "//pkg/sql/rowenc",
-        "//pkg/sql/rowenc/valueside",
         "//pkg/sql/rowexec",
         "//pkg/sql/sem/catid",
         "//pkg/sql/sem/eval",

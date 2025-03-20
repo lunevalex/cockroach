@@ -1,12 +1,7 @@
 // Copyright 2018 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 /**
  * Alerts is a collection of selectors which determine if there are any Alerts
@@ -55,6 +50,7 @@ export enum AlertLevel {
   WARNING,
   CRITICAL,
   SUCCESS,
+  INFORMATION,
 }
 
 export interface AlertInfo {
@@ -631,20 +627,6 @@ export const upgradeNotFinalizedWarningSelector = createSelector(
 
 /**
  * Selector which returns an array of all active alerts which should be
- * displayed in the overview list page, these should be non-critical alerts.
- */
-
-export const overviewListAlertsSelector = createSelector(
-  staggeredVersionWarningSelector,
-  clusterPreserveDowngradeOptionOvertimeSelector,
-  upgradeNotFinalizedWarningSelector,
-  (...alerts: Alert[]): Alert[] => {
-    return _.without(alerts, null, undefined);
-  },
-);
-
-/**
- * Selector which returns an array of all active alerts which should be
  * displayed in the alerts panel, which is embedded within the cluster overview
  * page; currently, this includes all non-critical alerts.
  */
@@ -684,6 +666,105 @@ export const dataFromServerAlertSelector = createSelector(
   },
 );
 
+export type LicenseType =
+  | "Evaluation"
+  | "Trial"
+  | "Enterprise"
+  | "Non-Commercial"
+  | "None"
+  | "Free";
+
+const licenseTypeNames = new Map<string, LicenseType>([
+  ["Evaluation", "Evaluation"],
+  ["Enterprise", "Enterprise"],
+  ["NonCommercial", "Non-Commercial"],
+  ["OSS", "None"],
+  ["BSD", "None"],
+  ["Free", "Free"],
+  ["Trial", "Trial"],
+]);
+
+// licenseTypeSelector returns user-friendly names of license types.
+export const licenseTypeSelector = createSelector(
+  getDataFromServer,
+  data => licenseTypeNames.get(data.LicenseType) || "None",
+);
+
+export const licenseUpdateDismissedLocalSetting = new LocalSetting(
+  "license_update_dismissed",
+  localSettingsSelector,
+  moment(0),
+);
+
+/**
+ * Selector which returns an array of all active alerts which should be
+ * displayed in the overview list page, these should be non-critical alerts.
+ */
+
+export const overviewListAlertsSelector = createSelector(
+  staggeredVersionWarningSelector,
+  clusterPreserveDowngradeOptionOvertimeSelector,
+  upgradeNotFinalizedWarningSelector,
+  (...alerts: Alert[]): Alert[] => {
+    return _.without(alerts, null, undefined);
+  },
+);
+
+// daysUntilLicenseExpiresSelector returns number of days remaining before license expires.
+export const daysUntilLicenseExpiresSelector = createSelector(
+  getDataFromServer,
+  data => {
+    return Math.ceil(data.SecondsUntilLicenseExpiry / 86400); // seconds in 1 day
+  },
+);
+
+export const showLicenseTTLLocalSetting = new LocalSetting(
+  "show_license_ttl",
+  localSettingsSelector,
+  { show: true },
+);
+
+export const showLicenseTTLAlertSelector = createSelector(
+  showLicenseTTLLocalSetting.selector,
+  daysUntilLicenseExpiresSelector,
+  licenseTypeSelector,
+  (showLicenseTTL, daysUntilLicenseExpired, licenseType): Alert => {
+    if (!showLicenseTTL.show) {
+      return;
+    }
+    if (licenseType === "None") {
+      return;
+    }
+    const daysToShowAlert = 14;
+    let title: string;
+    let level: AlertLevel;
+
+    if (daysUntilLicenseExpired > daysToShowAlert) {
+      return;
+    } else if (daysUntilLicenseExpired < 0) {
+      title = `License expired ${Math.abs(daysUntilLicenseExpired)} days ago`;
+      level = AlertLevel.CRITICAL;
+    } else if (daysUntilLicenseExpired === 0) {
+      title = `License expired`;
+      level = AlertLevel.CRITICAL;
+    } else if (daysUntilLicenseExpired <= daysToShowAlert) {
+      title = `License expires in ${daysUntilLicenseExpired} days`;
+      level = AlertLevel.WARNING;
+    }
+    return {
+      level: level,
+      title: title,
+      showAsAlert: true,
+      autoClose: false,
+      closable: true,
+      dismiss: (dispatch: Dispatch<Action>) => {
+        dispatch(showLicenseTTLLocalSetting.set({ show: false }));
+        return Promise.resolve();
+      },
+    };
+  },
+);
+
 /**
  * Selector which returns an array of all active alerts which should be
  * displayed as a banner, which appears at the top of the page and overlaps
@@ -698,6 +779,7 @@ export const bannerAlertsSelector = createSelector(
   terminateSessionAlertSelector,
   terminateQueryAlertSelector,
   dataFromServerAlertSelector,
+  showLicenseTTLAlertSelector,
   (...alerts: Alert[]): Alert[] => {
     return _.without(alerts, null, undefined);
   },

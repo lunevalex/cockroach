@@ -6,6 +6,7 @@ go_library(
     importpath = "github.com/cockroachdb/cockroach/pkg/sql/sqlliveness/slinstance",
     visibility = ["//visibility:public"],
     deps = [
+        "//pkg/kv/kvpb",
         "//pkg/settings",
         "//pkg/settings/cluster",
         "//pkg/sql/enum",
@@ -28,13 +29,12 @@ go_test(
     name = "slinstance_test",
     size = "small",
     srcs = ["slinstance_test.go"],
-    exec_properties = select({
-        "//build/toolchains:is_heavy": {"Pool": "heavy"},
-        "//conditions:default": {"Pool": "default"},
-    }),
+    args = ["-test.timeout=55s"],
     deps = [
         ":slinstance",
         "//pkg/clusterversion",
+        "//pkg/kv/kvpb",
+        "//pkg/roachpb",
         "//pkg/settings/cluster",
         "//pkg/sql/enum",
         "//pkg/sql/sqlliveness",
@@ -44,6 +44,7 @@ go_test(
         "//pkg/util/leaktest",
         "//pkg/util/log",
         "//pkg/util/stop",
+        "//pkg/util/syncutil",
         "//pkg/util/timeutil",
         "@com_github_cockroachdb_errors//:errors",
         "@com_github_stretchr_testify//require",

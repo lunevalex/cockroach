@@ -1,12 +1,7 @@
 // Copyright 2021 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 //go:build docker
 // +build docker
@@ -30,6 +25,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/cockroach/pkg/util/timeutil"
 	"github.com/cockroachdb/errors"
+	"github.com/cockroachdb/redact"
 	"github.com/docker/docker/api/types"
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/filters"
@@ -234,7 +230,7 @@ func TestSingleNodeDocker(t *testing.T) {
 
 				if err := timeutil.RunWithTimeout(
 					ctx,
-					fmt.Sprintf("execute command \"%s\"", query),
+					redact.Sprintf("execute command \"%s\"", query),
 					defaultTimeout,
 					func(ctx context.Context) error {
 						resp, err := dn.execSQLQuery(ctx, query, test.sqlOpts)

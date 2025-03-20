@@ -35,11 +35,8 @@ go_test(
         "main_test.go",
         "pgbench_test.go",
     ],
+    args = ["-test.timeout=55s"],
     embed = [":bench"],
-    exec_properties = select({
-        "//build/toolchains:is_heavy": {"Pool": "heavy"},
-        "//conditions:default": {"Pool": "default"},
-    }),
     deps = [
         "//pkg/base",
         "//pkg/security/securityassets",

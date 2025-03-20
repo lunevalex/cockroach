@@ -1,12 +1,7 @@
 // Copyright 2016 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package duration
 
@@ -820,6 +815,16 @@ func (d Duration) Div(x int64) Duration {
 
 // MulFloat returns a Duration representing a time length of d*x.
 func (d Duration) MulFloat(x float64) Duration {
+	// Have a couple of special cases to avoid rounding errors with very large
+	// intervals.
+	// TODO(#26932): once we correctly error out on intervals out of range, this
+	// could be removed.
+	switch x {
+	case 1:
+		return d
+	case -1:
+		return MakeDuration(-d.nanos, -d.Days, -d.Months)
+	}
 	monthInt, monthFrac := math.Modf(float64(d.Months) * x)
 	dayInt, dayFrac := math.Modf((float64(d.Days) * x) + (monthFrac * DaysPerMonth))
 
@@ -832,6 +837,16 @@ func (d Duration) MulFloat(x float64) Duration {
 
 // DivFloat returns a Duration representing a time length of d/x.
 func (d Duration) DivFloat(x float64) Duration {
+	// Have a couple of special cases to avoid rounding errors with very large
+	// intervals.
+	// TODO(#26932): once we correctly error out on intervals out of range, this
+	// could be removed.
+	switch x {
+	case 1:
+		return d
+	case -1:
+		return MakeDuration(-d.nanos, -d.Days, -d.Months)
+	}
 	// In order to keep it compatible with PostgreSQL, we use the same logic.
 	// Refer to https://github.com/postgres/postgres/blob/e56bce5d43789cce95d099554ae9593ada92b3b7/src/backend/utils/adt/timestamp.c#L3266-L3304.
 	month := int32(float64(d.Months) / x)

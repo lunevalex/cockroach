@@ -1,12 +1,7 @@
 // Copyright 2020 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package execstats
 
@@ -126,7 +121,7 @@ type NodeLevelStats struct {
 	MvccRangeKeySkippedPointsGroupedByNode          map[base.SQLInstanceID]int64
 	NetworkMessagesGroupedByNode                    map[base.SQLInstanceID]int64
 	ContentionTimeGroupedByNode                     map[base.SQLInstanceID]time.Duration
-	RUEstimateGroupedByNode                         map[base.SQLInstanceID]float64
+	RUEstimateGroupedByNode                         map[base.SQLInstanceID]int64
 	CPUTimeGroupedByNode                            map[base.SQLInstanceID]time.Duration
 }
 
@@ -158,11 +153,10 @@ type QueryLevelStats struct {
 	NetworkMessages                    int64
 	ContentionTime                     time.Duration
 	ContentionEvents                   []kvpb.ContentionEvent
-	RUEstimate                         float64
+	RUEstimate                         int64
 	CPUTime                            time.Duration
 	SqlInstanceIds                     map[base.SQLInstanceID]struct{}
 	Regions                            []string
-	ClientTime                         time.Duration
 }
 
 // QueryLevelStatsWithErr is the same as QueryLevelStats, but also tracks
@@ -220,8 +214,8 @@ func (s *QueryLevelStats) Accumulate(other QueryLevelStats) {
 			s.SqlInstanceIds[id] = struct{}{}
 		}
 	}
+
 	s.Regions = util.CombineUnique(s.Regions, other.Regions)
-	s.ClientTime += other.ClientTime
 }
 
 // TraceAnalyzer is a struct that helps calculate top-level statistics from a
@@ -311,7 +305,7 @@ func (a *TraceAnalyzer) ProcessStats() error {
 		MvccRangeKeySkippedPointsGroupedByNode:          make(map[base.SQLInstanceID]int64),
 		NetworkMessagesGroupedByNode:                    make(map[base.SQLInstanceID]int64),
 		ContentionTimeGroupedByNode:                     make(map[base.SQLInstanceID]time.Duration),
-		RUEstimateGroupedByNode:                         make(map[base.SQLInstanceID]float64),
+		RUEstimateGroupedByNode:                         make(map[base.SQLInstanceID]int64),
 		CPUTimeGroupedByNode:                            make(map[base.SQLInstanceID]time.Duration),
 	}
 	var errs error
@@ -341,7 +335,7 @@ func (a *TraceAnalyzer) ProcessStats() error {
 		a.nodeLevelStats.MvccRangeKeyContainedPointsGroupedByNode[instanceID] += int64(stats.KV.RangeKeyContainedPoints.Value())
 		a.nodeLevelStats.MvccRangeKeySkippedPointsGroupedByNode[instanceID] += int64(stats.KV.RangeKeySkippedPoints.Value())
 		a.nodeLevelStats.ContentionTimeGroupedByNode[instanceID] += stats.KV.ContentionTime.Value()
-		a.nodeLevelStats.RUEstimateGroupedByNode[instanceID] += float64(stats.Exec.ConsumedRU.Value())
+		a.nodeLevelStats.RUEstimateGroupedByNode[instanceID] += int64(stats.Exec.ConsumedRU.Value())
 		a.nodeLevelStats.CPUTimeGroupedByNode[instanceID] += stats.Exec.CPUTime.Value()
 	}
 
@@ -396,7 +390,7 @@ func (a *TraceAnalyzer) ProcessStats() error {
 				}
 			}
 			if v.FlowStats.ConsumedRU.HasValue() {
-				a.nodeLevelStats.RUEstimateGroupedByNode[instanceID] += float64(v.FlowStats.ConsumedRU.Value())
+				a.nodeLevelStats.RUEstimateGroupedByNode[instanceID] += int64(v.FlowStats.ConsumedRU.Value())
 			}
 		}
 	}

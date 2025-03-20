@@ -1,21 +1,18 @@
 // Copyright 2015 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package status
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"regexp"
 	"runtime"
 	"runtime/debug"
+	"runtime/metrics"
 	"time"
 
 	"github.com/cockroachdb/cockroach/pkg/build"
@@ -92,6 +89,12 @@ var (
 		Help:        "Current GC pause percentage",
 		Measurement: "GC Pause",
 		Unit:        metric.Unit_PERCENT,
+	}
+	metaGCAssistNS = metric.Metadata{
+		Name:        "sys.gc.assist.ns",
+		Help:        "Estimated total CPU time user goroutines spent to assist the GC process",
+		Measurement: "CPU Time",
+		Unit:        metric.Unit_NANOSECONDS,
 	}
 
 	metaCPUUserNS = metric.Metadata{
@@ -177,67 +180,67 @@ var (
 		Name:        "sys.host.disk.read.count",
 		Unit:        metric.Unit_COUNT,
 		Measurement: "Operations",
-		Help:        "Disk read operations across all disks since this process started (as reported by the OS)",
+		Help:        "Disk read operations across all disks since this process started",
 	}
 	metaHostDiskReadBytes = metric.Metadata{
 		Name:        "sys.host.disk.read.bytes",
 		Unit:        metric.Unit_BYTES,
 		Measurement: "Bytes",
-		Help:        "Bytes read from all disks since this process started (as reported by the OS)",
+		Help:        "Bytes read from all disks since this process started",
 	}
 	metaHostDiskReadTime = metric.Metadata{
 		Name:        "sys.host.disk.read.time",
 		Unit:        metric.Unit_NANOSECONDS,
 		Measurement: "Time",
-		Help:        "Time spent reading from all disks since this process started (as reported by the OS)",
+		Help:        "Time spent reading from all disks since this process started",
 	}
 	metaHostDiskWriteCount = metric.Metadata{
 		Name:        "sys.host.disk.write.count",
 		Unit:        metric.Unit_COUNT,
 		Measurement: "Operations",
-		Help:        "Disk write operations across all disks since this process started (as reported by the OS)",
+		Help:        "Disk write operations across all disks since this process started",
 	}
 	metaHostDiskWriteBytes = metric.Metadata{
 		Name:        "sys.host.disk.write.bytes",
 		Unit:        metric.Unit_BYTES,
 		Measurement: "Bytes",
-		Help:        "Bytes written to all disks since this process started (as reported by the OS)",
+		Help:        "Bytes written to all disks since this process started",
 	}
 	metaHostDiskWriteTime = metric.Metadata{
 		Name:        "sys.host.disk.write.time",
 		Unit:        metric.Unit_NANOSECONDS,
 		Measurement: "Time",
-		Help:        "Time spent writing to all disks since this process started (as reported by the OS)",
+		Help:        "Time spent writing to all disks since this process started",
 	}
 	metaHostDiskIOTime = metric.Metadata{
 		Name:        "sys.host.disk.io.time",
 		Unit:        metric.Unit_NANOSECONDS,
 		Measurement: "Time",
-		Help:        "Time spent reading from or writing to all disks since this process started (as reported by the OS)",
+		Help:        "Time spent reading from or writing to all disks since this process started",
 	}
 	metaHostDiskWeightedIOTime = metric.Metadata{
 		Name:        "sys.host.disk.weightedio.time",
 		Unit:        metric.Unit_NANOSECONDS,
 		Measurement: "Time",
-		Help:        "Weighted time spent reading from or writing to to all disks since this process started (as reported by the OS)",
+		Help:        "Weighted time spent reading from or writing to to all disks since this process started",
 	}
 	metaHostIopsInProgress = metric.Metadata{
 		Name:        "sys.host.disk.iopsinprogress",
 		Unit:        metric.Unit_COUNT,
 		Measurement: "Operations",
-		Help:        "IO operations currently in progress on this host (as reported by the OS)",
+		Help:        "IO operations currently in progress on this host",
 	}
 	metaHostNetRecvBytes = metric.Metadata{
 		Name:        "sys.host.net.recv.bytes",
 		Unit:        metric.Unit_BYTES,
 		Measurement: "Bytes",
-		Help:        "Bytes received on all network interfaces since this process started (as reported by the OS)",
+		Help:        "Bytes received on all network interfaces since this process started",
 	}
 	metaHostNetRecvPackets = metric.Metadata{
 		Name:        "sys.host.net.recv.packets",
 		Unit:        metric.Unit_COUNT,
 		Measurement: "Packets",
-		Help:        "Packets received on all network interfaces since this process started (as reported by the OS)",
+		Help:        "Packets received on all network interfaces since this process started",
 	}
 	metaHostNetRecvErr = metric.Metadata{
 		Name:        "sys.host.net.recv.err",
@@ -255,13 +258,13 @@ var (
 		Name:        "sys.host.net.send.bytes",
 		Unit:        metric.Unit_BYTES,
 		Measurement: "Bytes",
-		Help:        "Bytes sent on all network interfaces since this process started (as reported by the OS)",
+		Help:        "Bytes sent on all network interfaces since this process started",
 	}
 	metaHostNetSendPackets = metric.Metadata{
 		Name:        "sys.host.net.send.packets",
 		Unit:        metric.Unit_COUNT,
 		Measurement: "Packets",
-		Help:        "Packets sent on all network interfaces since this process started (as reported by the OS)",
+		Help:        "Packets sent on all network interfaces since this process started",
 	}
 	metaHostNetSendErr = metric.Metadata{
 		Name:        "sys.host.net.send.err",
@@ -291,6 +294,85 @@ var diskMetricsIgnoredDevices = envutil.EnvOrDefaultString("COCKROACH_DISK_METRI
 // total     uint: total bytes requested from system
 // error           : any issues fetching stats. This should be a warning only.
 var getCgoMemStats func(context.Context) (uint, uint, error)
+
+// Estimated total CPU time goroutines spent performing GC tasks to assist the
+// GC and prevent it from falling behind the application. This metric is an
+// overestimate, and not directly comparable to system CPU time measurements.
+// Compare only with other /cpu/classes metrics.
+const runtimeMetricGCAssist = "/cpu/classes/gc/mark/assist:cpu-seconds"
+
+var runtimeMetrics = []string{runtimeMetricGCAssist}
+
+// GoRuntimeSampler are a collection of metrics to sample from golang's runtime environment and
+// runtime metrics metadata. It fetches go runtime metrics and provides read access.
+// https://pkg.go.dev/runtime/metrics
+type GoRuntimeSampler struct {
+	// The collection of metrics we want to sample.
+	metricSamples []metrics.Sample
+	// The mapping to find metric slot in metricSamples by name.
+	metricIndexes map[string]int
+}
+
+// getIndex finds the position of metrics in the sample array by name.
+func (grm *GoRuntimeSampler) getIndex(name string) int {
+	i, found := grm.metricIndexes[name]
+	if !found {
+		panic(fmt.Sprintf("unsampled metric: %s", name))
+	}
+	return i
+}
+
+// float64 gets the sampled value by metrics name as float64.
+// N.B. This method will panic if the metrics value is not metrics.KindFloat64.
+func (grm *GoRuntimeSampler) float64(name string) float64 {
+	i := grm.getIndex(name)
+	return grm.metricSamples[i].Value.Float64()
+}
+
+// sampleRuntimeMetrics reads from metrics.Read api and fill in the value
+// in the metricSamples field.
+// Benchmark results on 12 core Apple M3 Pro:
+// goos: darwin
+// goarch: arm64
+// pkg: github.com/cockroachdb/cockroach/pkg/server/status
+// BenchmarkGoRuntimeSampler
+// BenchmarkGoRuntimeSampler-12    	28886398	        40.03 ns/op
+//
+//	func BenchmarkGoRuntimeSampler(b *testing.B) {
+//		 s := NewGoRuntimeSampler([]string{runtimeMetricGCAssist})
+//		 for n := 0; n < b.N; n++ {
+//			 s.sampleRuntimeMetrics()
+//		 }
+//	}
+func (grm *GoRuntimeSampler) sampleRuntimeMetrics() {
+	metrics.Read(grm.metricSamples)
+}
+
+// NewGoRuntimeSampler constructs a new GoRuntimeSampler object.
+// This method will panic on invalid metrics names provided.
+func NewGoRuntimeSampler(metricNames []string) *GoRuntimeSampler {
+	m := metrics.All()
+	metricTypes := make(map[string]metrics.ValueKind, len(m))
+	for _, desc := range m {
+		metricTypes[desc.Name] = desc.Kind
+	}
+	metricSamples := make([]metrics.Sample, len(metricNames))
+	metricIndexes := make(map[string]int, len(metricNames))
+	for i, n := range metricNames {
+		_, hasDesc := metricTypes[n]
+		if !hasDesc {
+			panic(fmt.Sprintf("unexpected metric: %s", n))
+		}
+		metricSamples[i] = metrics.Sample{Name: n}
+		metricIndexes[n] = i
+	}
+
+	grm := &GoRuntimeSampler{
+		metricSamples: metricSamples,
+		metricIndexes: metricIndexes,
+	}
+	return grm
+}
 
 // RuntimeStatSampler is used to periodically sample the runtime environment
 // for useful statistics, performing some rudimentary calculations and storing
@@ -326,25 +408,28 @@ type RuntimeStatSampler struct {
 	// Only show "not implemented" errors once, we don't need the log spam.
 	fdUsageNotImplemented bool
 
+	goRuntimeSampler *GoRuntimeSampler
+
 	// Metric gauges maintained by the sampler.
 	// Go runtime stats.
-	CgoCalls                 *metric.Gauge
+	CgoCalls                 *metric.Counter
 	Goroutines               *metric.Gauge
 	RunnableGoroutinesPerCPU *metric.GaugeFloat64
 	GoAllocBytes             *metric.Gauge
 	GoTotalBytes             *metric.Gauge
 	CgoAllocBytes            *metric.Gauge
 	CgoTotalBytes            *metric.Gauge
-	GcCount                  *metric.Gauge
-	GcPauseNS                *metric.Gauge
+	GcCount                  *metric.Counter
+	GcPauseNS                *metric.Counter
 	GcPausePercent           *metric.GaugeFloat64
+	GcAssistNS               *metric.Gauge
 	// CPU stats for the CRDB process usage.
-	CPUUserNS              *metric.Gauge
+	CPUUserNS              *metric.Counter
 	CPUUserPercent         *metric.GaugeFloat64
-	CPUSysNS               *metric.Gauge
+	CPUSysNS               *metric.Counter
 	CPUSysPercent          *metric.GaugeFloat64
 	CPUCombinedPercentNorm *metric.GaugeFloat64
-	CPUNowNS               *metric.Gauge
+	CPUNowNS               *metric.Counter
 	// CPU stats for the CRDB process usage.
 	HostCPUCombinedPercentNorm *metric.GaugeFloat64
 	// Memory stats.
@@ -354,25 +439,25 @@ type RuntimeStatSampler struct {
 	FDOpen      *metric.Gauge
 	FDSoftLimit *metric.Gauge
 	// Disk and network stats.
-	HostDiskReadBytes      *metric.Gauge
-	HostDiskReadCount      *metric.Gauge
-	HostDiskReadTime       *metric.Gauge
-	HostDiskWriteBytes     *metric.Gauge
-	HostDiskWriteCount     *metric.Gauge
-	HostDiskWriteTime      *metric.Gauge
-	HostDiskIOTime         *metric.Gauge
-	HostDiskWeightedIOTime *metric.Gauge
+	HostDiskReadBytes      *metric.Counter
+	HostDiskReadCount      *metric.Counter
+	HostDiskReadTime       *metric.Counter
+	HostDiskWriteBytes     *metric.Counter
+	HostDiskWriteCount     *metric.Counter
+	HostDiskWriteTime      *metric.Counter
+	HostDiskIOTime         *metric.Counter
+	HostDiskWeightedIOTime *metric.Counter
 	IopsInProgress         *metric.Gauge
-	HostNetRecvBytes       *metric.Gauge
-	HostNetRecvPackets     *metric.Gauge
-	HostNetRecvErr         *metric.Gauge
-	HostNetRecvDrop        *metric.Gauge
-	HostNetSendBytes       *metric.Gauge
-	HostNetSendPackets     *metric.Gauge
-	HostNetSendErr         *metric.Gauge
-	HostNetSendDrop        *metric.Gauge
+	HostNetRecvBytes       *metric.Counter
+	HostNetRecvPackets     *metric.Counter
+	HostNetRecvErr         *metric.Counter
+	HostNetRecvDrop        *metric.Counter
+	HostNetSendBytes       *metric.Counter
+	HostNetSendPackets     *metric.Counter
+	HostNetSendErr         *metric.Counter
+	HostNetSendDrop        *metric.Counter
 	// Uptime and build.
-	Uptime         *metric.Gauge // We use a gauge to be able to call Update.
+	Uptime         *metric.Counter
 	BuildTimestamp *metric.Gauge
 }
 
@@ -414,48 +499,50 @@ func NewRuntimeStatSampler(ctx context.Context, clock hlc.WallClock) *RuntimeSta
 		startTimeNanos:           clock.Now().UnixNano(),
 		initialNetCounters:       netCounters,
 		initialDiskCounters:      diskCounters,
-		CgoCalls:                 metric.NewGauge(metaCgoCalls),
+		goRuntimeSampler:         NewGoRuntimeSampler(runtimeMetrics),
+		CgoCalls:                 metric.NewCounter(metaCgoCalls),
 		Goroutines:               metric.NewGauge(metaGoroutines),
 		RunnableGoroutinesPerCPU: metric.NewGaugeFloat64(metaRunnableGoroutinesPerCPU),
 		GoAllocBytes:             metric.NewGauge(metaGoAllocBytes),
 		GoTotalBytes:             metric.NewGauge(metaGoTotalBytes),
 		CgoAllocBytes:            metric.NewGauge(metaCgoAllocBytes),
 		CgoTotalBytes:            metric.NewGauge(metaCgoTotalBytes),
-		GcCount:                  metric.NewGauge(metaGCCount),
-		GcPauseNS:                metric.NewGauge(metaGCPauseNS),
+		GcCount:                  metric.NewCounter(metaGCCount),
+		GcPauseNS:                metric.NewCounter(metaGCPauseNS),
 		GcPausePercent:           metric.NewGaugeFloat64(metaGCPausePercent),
+		GcAssistNS:               metric.NewGauge(metaGCAssistNS),
 
-		CPUUserNS:              metric.NewGauge(metaCPUUserNS),
+		CPUUserNS:              metric.NewCounter(metaCPUUserNS),
 		CPUUserPercent:         metric.NewGaugeFloat64(metaCPUUserPercent),
-		CPUSysNS:               metric.NewGauge(metaCPUSysNS),
+		CPUSysNS:               metric.NewCounter(metaCPUSysNS),
 		CPUSysPercent:          metric.NewGaugeFloat64(metaCPUSysPercent),
 		CPUCombinedPercentNorm: metric.NewGaugeFloat64(metaCPUCombinedPercentNorm),
-		CPUNowNS:               metric.NewGauge(metaCPUNowNS),
+		CPUNowNS:               metric.NewCounter(metaCPUNowNS),
 
 		HostCPUCombinedPercentNorm: metric.NewGaugeFloat64(metaHostCPUCombinedPercentNorm),
 
 		RSSBytes:               metric.NewGauge(metaRSSBytes),
 		TotalMemBytes:          metric.NewGauge(metaTotalMemBytes),
-		HostDiskReadBytes:      metric.NewGauge(metaHostDiskReadBytes),
-		HostDiskReadCount:      metric.NewGauge(metaHostDiskReadCount),
-		HostDiskReadTime:       metric.NewGauge(metaHostDiskReadTime),
-		HostDiskWriteBytes:     metric.NewGauge(metaHostDiskWriteBytes),
-		HostDiskWriteCount:     metric.NewGauge(metaHostDiskWriteCount),
-		HostDiskWriteTime:      metric.NewGauge(metaHostDiskWriteTime),
-		HostDiskIOTime:         metric.NewGauge(metaHostDiskIOTime),
-		HostDiskWeightedIOTime: metric.NewGauge(metaHostDiskWeightedIOTime),
+		HostDiskReadBytes:      metric.NewCounter(metaHostDiskReadBytes),
+		HostDiskReadCount:      metric.NewCounter(metaHostDiskReadCount),
+		HostDiskReadTime:       metric.NewCounter(metaHostDiskReadTime),
+		HostDiskWriteBytes:     metric.NewCounter(metaHostDiskWriteBytes),
+		HostDiskWriteCount:     metric.NewCounter(metaHostDiskWriteCount),
+		HostDiskWriteTime:      metric.NewCounter(metaHostDiskWriteTime),
+		HostDiskIOTime:         metric.NewCounter(metaHostDiskIOTime),
+		HostDiskWeightedIOTime: metric.NewCounter(metaHostDiskWeightedIOTime),
 		IopsInProgress:         metric.NewGauge(metaHostIopsInProgress),
-		HostNetRecvBytes:       metric.NewGauge(metaHostNetRecvBytes),
-		HostNetRecvPackets:     metric.NewGauge(metaHostNetRecvPackets),
-		HostNetRecvErr:         metric.NewGauge(metaHostNetRecvErr),
-		HostNetRecvDrop:        metric.NewGauge(metaHostNetRecvDrop),
-		HostNetSendBytes:       metric.NewGauge(metaHostNetSendBytes),
-		HostNetSendPackets:     metric.NewGauge(metaHostNetSendPackets),
-		HostNetSendErr:         metric.NewGauge(metaHostNetSendErr),
-		HostNetSendDrop:        metric.NewGauge(metaHostNetSendDrop),
+		HostNetRecvBytes:       metric.NewCounter(metaHostNetRecvBytes),
+		HostNetRecvPackets:     metric.NewCounter(metaHostNetRecvPackets),
+		HostNetRecvErr:         metric.NewCounter(metaHostNetRecvErr),
+		HostNetRecvDrop:        metric.NewCounter(metaHostNetRecvDrop),
+		HostNetSendBytes:       metric.NewCounter(metaHostNetSendBytes),
+		HostNetSendPackets:     metric.NewCounter(metaHostNetSendPackets),
+		HostNetSendErr:         metric.NewCounter(metaHostNetSendErr),
+		HostNetSendDrop:        metric.NewCounter(metaHostNetSendDrop),
 		FDOpen:                 metric.NewGauge(metaFDOpen),
 		FDSoftLimit:            metric.NewGauge(metaFDSoftLimit),
-		Uptime:                 metric.NewGauge(metaUptime),
+		Uptime:                 metric.NewCounter(metaUptime),
 		BuildTimestamp:         buildTimestamp,
 	}
 	rsr.last.disk = rsr.initialDiskCounters
@@ -515,6 +602,8 @@ func (rsr *RuntimeStatSampler) SampleEnvironment(
 	gc := &debug.GCStats{}
 	debug.ReadGCStats(gc)
 
+	rsr.goRuntimeSampler.sampleRuntimeMetrics()
+
 	numCgoCall := runtime.NumCgoCall()
 	numGoroutine := runtime.NumGoroutine()
 
@@ -528,15 +617,15 @@ func (rsr *RuntimeStatSampler) SampleEnvironment(
 	if err != nil {
 		log.Ops.Errorf(ctx, "unable to get process CPU usage: %v", err)
 	}
-	cpuCapacity, err := getCPUCapacity()
-	if err != nil {
-		log.Ops.Errorf(ctx, "unable to get CPU capacity: %v", err)
-	}
+	cpuCapacity := getCPUCapacity()
 	cpuUsageStats, err := cpu.Times(false /* percpu */)
 	if err != nil {
 		log.Ops.Errorf(ctx, "unable to get system CPU usage: %v", err)
 	}
-	cpuUsage := cpuUsageStats[0]
+	var cpuUsage cpu.TimesStat
+	if len(cpuUsageStats) > 0 {
+		cpuUsage = cpuUsageStats[0]
+	}
 	numHostCPUs, err := cpu.Counts(true /* logical */)
 	if err != nil {
 		log.Ops.Errorf(ctx, "unable to get system CPU details: %v", err)
@@ -618,6 +707,8 @@ func (rsr *RuntimeStatSampler) SampleEnvironment(
 	combinedNormalizedHostPerc := (hostSrate + hostUrate) / float64(numHostCPUs)
 	gcPauseRatio := float64(uint64(gc.PauseTotal)-rsr.last.gcPauseTime) / dur
 	runnableSum := goschedstats.CumulativeNormalizedRunnableGoroutines()
+	gcAssistSeconds := rsr.goRuntimeSampler.float64(runtimeMetricGCAssist)
+	gcAssistNS := int64(gcAssistSeconds * 1e9)
 	// The number of runnable goroutines per CPU is a count, but it can vary
 	// quickly. We don't just want to get a current snapshot of it, we want the
 	// average value since the last sampling.
@@ -671,6 +762,7 @@ func (rsr *RuntimeStatSampler) SampleEnvironment(
 	rsr.GcCount.Update(gc.NumGC)
 	rsr.GcPauseNS.Update(int64(gc.PauseTotal))
 	rsr.GcPausePercent.Update(gcPauseRatio)
+	rsr.GcAssistNS.Update(gcAssistNS)
 
 	rsr.CPUUserNS.Update(procUtime)
 	rsr.CPUUserPercent.Update(procUrate)
@@ -842,19 +934,20 @@ func GetProcCPUTime(ctx context.Context) (userTimeMillis, sysTimeMillis int64, e
 // getCPUCapacity returns the number of logical CPU processors available for
 // use by the process. The capacity accounts for cgroup constraints, GOMAXPROCS
 // and the number of host processors.
-func getCPUCapacity() (float64, error) {
+func getCPUCapacity() float64 {
 	numProcs := float64(runtime.GOMAXPROCS(0 /* read only */))
 	cgroupCPU, err := cgroups.GetCgroupCPU()
 	if err != nil {
-		// Return the GOMAXPROCS value if unable to read the cgroup settings, in
-		// practice this is not likely to occur.
-		return numProcs, err
+		// Return the GOMAXPROCS value if unable to read the cgroup settings. This
+		// can happen if cockroach is not running inside a CPU cgroup, which is a
+		// supported deployment mode. We could log here, but we don't to avoid spam.
+		return numProcs
 	}
 	cpuShare := cgroupCPU.CPUShares()
 	// Take the minimum of the CPU shares and the GOMAXPROCS value. The most CPU
 	// the process could use is the lesser of the two.
 	if cpuShare > numProcs {
-		return numProcs, nil
+		return numProcs
 	}
-	return cpuShare, nil
+	return cpuShare
 }

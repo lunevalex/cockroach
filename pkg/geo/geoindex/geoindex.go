@@ -1,12 +1,7 @@
 // Copyright 2020 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package geoindex
 
@@ -688,8 +683,8 @@ func (b *stringBuilderWithWrap) doWrap() {
 }
 
 // DefaultS2Config returns the default S2Config to initialize.
-func DefaultS2Config() *geopb.S2Config {
-	return &geopb.S2Config{
+func DefaultS2Config() *S2Config {
+	return &S2Config{
 		MinLevel: 0,
 		MaxLevel: 30,
 		LevelMod: 1,

@@ -1,12 +1,7 @@
 // Copyright 2018 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package install
 
@@ -116,8 +111,8 @@ func (e *expander) maybeExpandMap(
 // instance is provided, the first instance is assumed.
 func extractVirtualClusterInfo(matches []string) (string, int, error) {
 	// Defaults if the passed in group match is empty.
-	virtualClusterName := SystemInterfaceName
-	sqlInstance := 0
+	var virtualClusterName string
+	var sqlInstance int
 
 	// Extract the cluster name and instance matches.
 	trim := func(s string) string {
@@ -140,7 +135,7 @@ func extractVirtualClusterInfo(matches []string) (string, int, error) {
 	return virtualClusterName, sqlInstance, nil
 }
 
-// maybeExpandPgURL is an expanderFunc for {pgurl:<nodeSpec>}
+// maybeExpandPgURL is an expanderFunc for {pgurl:<nodeSpec>[:virtualCluster[:sqlInstance]]}
 func (e *expander) maybeExpandPgURL(
 	ctx context.Context, l *logger.Logger, c *SyncedCluster, s string,
 ) (string, bool, error) {

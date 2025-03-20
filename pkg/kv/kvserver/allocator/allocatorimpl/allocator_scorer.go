@@ -1,12 +1,7 @@
 // Copyright 2016 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package allocatorimpl
 
@@ -25,7 +20,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/settings"
 	"github.com/cockroachdb/cockroach/pkg/util/admission/admissionpb"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
-	"github.com/cockroachdb/redact"
 )
 
 const (
@@ -85,7 +79,7 @@ const (
 	// DefaultLeaseIOOverloadShedThreshold is used to shed leases from stores
 	// with an IO overload score greater than the this threshold. This is
 	// typically used in conjunction with IOOverloadMeanThreshold below.
-	DefaultLeaseIOOverloadShedThreshold = 0.5
+	DefaultLeaseIOOverloadShedThreshold = 0.9
 
 	// IOOverloadMeanThreshold is the percentage above the mean after which a
 	// store could be conisdered IO overload if also exceeding the absolute IO
@@ -196,7 +190,7 @@ var LeaseIOOverloadShedThreshold = settings.RegisterFloatSetting(
 	"kv.allocator.lease_shed_io_overload_threshold",
 	"a store will shed its leases and receive no new leases when its "+
 		"IO overload score is above this value and "+
-		"`kv.allocator.lease_io_overload_threshold_enforcement` is `shed`",
+		"`kv.allocator.io_overload_threshold_enforcement_leases` is `shed`",
 	DefaultLeaseIOOverloadShedThreshold,
 )
 
@@ -706,24 +700,18 @@ type candidate struct {
 }
 
 func (c candidate) String() string {
-	return redact.StringWithoutMarkers(c)
-}
-
-// SafeFormat implements the redact.SafeFormatter interface.
-func (c candidate) SafeFormat(w redact.SafePrinter, _ rune) {
-	w.Printf("s%d, valid:%t, fulldisk:%t, necessary:%t, "+
+	str := fmt.Sprintf("s%d, valid:%t, fulldisk:%t, necessary:%t, "+
 		"voterNecessary:%t, diversity:%.2f, ioOverloaded: %t, ioOverload: %.2f, "+
 		"converges:%d, balance:%d, hasNonVoter:%t, rangeCount:%d, queriesPerSecond:%.2f",
 		c.store.StoreID, c.valid, c.fullDisk, c.necessary, c.voterNecessary,
 		c.diversityScore, c.ioOverloaded, c.ioOverloadScore, c.convergesScore,
 		c.balanceScore, c.hasNonVoter, c.rangeCount, c.store.Capacity.QueriesPerSecond)
 	if c.details != "" {
-		w.Printf(", details:(%s)", c.details)
+		return fmt.Sprintf("%s, details:(%s)", str, c.details)
 	}
+	return str
 }
 
-// compactString returns a compact represntation of the candidate. Note this
-// method is currently only used to populate the range log via details.
 func (c candidate) compactString() string {
 	var buf bytes.Buffer
 	fmt.Fprintf(&buf, "s%d", c.store.StoreID)
@@ -844,23 +832,17 @@ func (c candidate) compare(o candidate) float64 {
 type candidateList []candidate
 
 func (cl candidateList) String() string {
-	return redact.StringWithoutMarkers(cl)
-}
-
-// SafeFormat implements the redact.SafeFormatter interface.
-func (cl candidateList) SafeFormat(w redact.SafePrinter, r rune) {
 	if len(cl) == 0 {
-		w.Printf("[]")
-		return
+		return "[]"
 	}
-	var buf redact.StringBuilder
-	buf.SafeRune('[')
+	var buffer bytes.Buffer
+	buffer.WriteRune('[')
 	for _, c := range cl {
-		buf.SafeRune('\n')
-		buf.Print(c)
+		buffer.WriteRune('\n')
+		buffer.WriteString(c.String())
 	}
-	buf.SafeRune(']')
-	w.Print(buf)
+	buffer.WriteRune(']')
+	return buffer.String()
 }
 
 // byScore implements sort.Interface to sort by scores.

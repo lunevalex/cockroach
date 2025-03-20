@@ -1,12 +1,7 @@
 // Copyright 2021 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package cluster
 
@@ -17,6 +12,7 @@ import (
 
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/option"
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/spec"
+	"github.com/cockroachdb/cockroach/pkg/roachprod"
 	"github.com/cockroachdb/cockroach/pkg/roachprod/install"
 	"github.com/cockroachdb/cockroach/pkg/roachprod/logger"
 	"github.com/cockroachdb/cockroach/pkg/roachprod/prometheus"
@@ -61,13 +57,17 @@ type Cluster interface {
 	Stop(ctx context.Context, l *logger.Logger, stopOpts option.StopOpts, opts ...option.Option)
 	SignalE(ctx context.Context, l *logger.Logger, sig int, opts ...option.Option) error
 	Signal(ctx context.Context, l *logger.Logger, sig int, opts ...option.Option)
-	StopCockroachGracefullyOnNode(ctx context.Context, l *logger.Logger, node int) error
 	NewMonitor(context.Context, ...option.Option) Monitor
 
 	// Starting virtual clusters.
 
-	StartServiceForVirtualClusterE(ctx context.Context, l *logger.Logger, externalNodes option.NodeListOption, startOpts option.StartOpts, settings install.ClusterSettings, opts ...option.Option) error
-	StartServiceForVirtualCluster(ctx context.Context, l *logger.Logger, externalNodes option.NodeListOption, startOpts option.StartOpts, settings install.ClusterSettings, opts ...option.Option)
+	StartServiceForVirtualClusterE(ctx context.Context, l *logger.Logger, startOpts option.StartOpts, settings install.ClusterSettings) error
+	StartServiceForVirtualCluster(ctx context.Context, l *logger.Logger, startOpts option.StartOpts, settings install.ClusterSettings)
+
+	// Stopping virtual clusters.
+
+	StopServiceForVirtualClusterE(ctx context.Context, l *logger.Logger, stopOpts option.StopOpts) error
+	StopServiceForVirtualCluster(ctx context.Context, l *logger.Logger, stopOpts option.StopOpts)
 
 	// Hostnames and IP addresses of the nodes.
 
@@ -79,8 +79,8 @@ type Cluster interface {
 
 	// SQL connection strings.
 
-	InternalPGUrl(ctx context.Context, l *logger.Logger, node option.NodeListOption, tenant string, sqlInstance int) ([]string, error)
-	ExternalPGUrl(ctx context.Context, l *logger.Logger, node option.NodeListOption, tenant string, sqlInstance int) ([]string, error)
+	InternalPGUrl(ctx context.Context, l *logger.Logger, node option.NodeListOption, opts roachprod.PGURLOptions) ([]string, error)
+	ExternalPGUrl(ctx context.Context, l *logger.Logger, node option.NodeListOption, opts roachprod.PGURLOptions) ([]string, error)
 
 	// SQL clients to nodes.
 
@@ -95,34 +95,25 @@ type Cluster interface {
 
 	// Running commands on nodes.
 
-	// RunWithDetails runs a command on the specified nodes (option.WithNodes) and
-	// returns results details and an error. The returned error is only for a
-	// major failure in roachprod run command so the caller needs to check for
-	// individual node errors in `[]install.RunResultDetails`.
+	// RunWithDetails runs a command on the specified nodes and returns results details and an error.
+	// The returned error is only for a major failure in roachprod run command so the caller needs
+	// to check for individual node errors in `[]install.RunResultDetails`.
 	// Use it when you need output details such as stdout or stderr, or remote exit status.
-	// See install.RunOptions for more details on available options.
-	RunWithDetails(ctx context.Context, testLogger *logger.Logger, options install.RunOptions, args ...string) ([]install.RunResultDetails, error)
+	RunWithDetails(ctx context.Context, testLogger *logger.Logger, nodes option.NodeListOption, args ...string) ([]install.RunResultDetails, error)
 
-	// Run is just like RunE, except it is fatal on errors.
+	// Run is fatal on errors.
 	// Use it when an error means the test should fail.
-	// See RunE for more details on the options and specifying nodes to run on.
-	Run(ctx context.Context, options install.RunOptions, args ...string)
+	Run(ctx context.Context, node option.NodeListOption, args ...string)
 
-	// RunE runs a command on the given nodes, specified via `RunOptions.Nodes`,
-	// and returns an error. Use it when you need to run a command and only care
-	// if it ran successfully or not. With default options, it will run the
-	// command on all nodes.
-	//
-	// If a subset of nodes is desired, use the `option.WithNodes` function to
-	// specify the nodes. See `install.RunOptions` for more details on the
-	// options.
-	RunE(ctx context.Context, options install.RunOptions, args ...string) error
+	// RunE runs a command on the specified nodes and returns an error.
+	// Use it when you need to run a command and only care if it ran successfully or not.
+	RunE(ctx context.Context, node option.NodeListOption, args ...string) error
 
 	// RunWithDetailsSingleNode is just like RunWithDetails but used when 1) operating
 	// on a single node AND 2) an error from roachprod itself would be treated the same way
 	// you treat an error from the command. This makes error checking easier / friendlier
 	// and helps us avoid code replication.
-	RunWithDetailsSingleNode(ctx context.Context, testLogger *logger.Logger, options install.RunOptions, args ...string) (install.RunResultDetails, error)
+	RunWithDetailsSingleNode(ctx context.Context, testLogger *logger.Logger, nodes option.NodeListOption, args ...string) (install.RunResultDetails, error)
 
 	// Metadata about the provisioned nodes.
 
@@ -137,8 +128,8 @@ type Cluster interface {
 
 	// Deleting CockroachDB data and logs on nodes.
 
-	WipeE(ctx context.Context, l *logger.Logger, preserveCerts bool, opts ...option.Option) error
-	Wipe(ctx context.Context, preserveCerts bool, opts ...option.Option)
+	WipeE(ctx context.Context, l *logger.Logger, opts ...option.Option) error
+	Wipe(ctx context.Context, opts ...option.Option)
 
 	// DNS
 
@@ -195,7 +186,4 @@ type Cluster interface {
 	// per-node, but this could be changed. Another assumption is that all
 	// volumes are created identically.
 	ApplySnapshots(ctx context.Context, snapshots []vm.VolumeSnapshot) error
-
-	// GetPreemptedVMs gets any VMs that were part of the cluster but preempted by cloud vendor.
-	GetPreemptedVMs(ctx context.Context, l *logger.Logger) ([]vm.PreemptedVM, error)
 }

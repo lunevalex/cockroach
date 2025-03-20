@@ -16,11 +16,8 @@ go_test(
     name = "dumpstore_test",
     size = "small",
     srcs = ["dumpstore_test.go"],
+    args = ["-test.timeout=55s"],
     embed = [":dumpstore"],
-    exec_properties = select({
-        "//build/toolchains:is_heavy": {"Pool": "heavy"},
-        "//conditions:default": {"Pool": "default"},
-    }),
     deps = [
         "@com_github_stretchr_testify//assert",
         "@com_github_stretchr_testify//require",

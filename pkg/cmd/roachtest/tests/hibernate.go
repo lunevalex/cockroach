@@ -1,12 +1,7 @@
 // Copyright 2018 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package tests
 
@@ -94,9 +89,10 @@ func registerHibernate(r registry.Registry, opt hibernateOptions) {
 		}
 		node := c.Node(1)
 		t.Status("setting up cockroach")
-		startOpts := option.DefaultStartOptsInMemory()
+		startOpts := option.NewStartOpts(sqlClientsInMemoryDB)
 		startOpts.RoachprodOpts.SQLPort = config.DefaultSQLPort
-		c.Start(ctx, t.L(), startOpts, install.MakeClusterSettings(), c.All())
+		// Hibernate uses a hardcoded connection string with ssl disabled.
+		c.Start(ctx, t.L(), startOpts, install.MakeClusterSettings(install.SecureOption(false)), c.All())
 
 		if opt.dbSetupFunc != nil {
 			opt.dbSetupFunc(ctx, t, c)
@@ -193,7 +189,7 @@ func registerHibernate(r registry.Registry, opt hibernateOptions) {
 		// Note that this will take upwards of 3 hours.
 		// Also note that this is expected to return an error, since the test suite
 		// will fail. And it is safe to swallow it here.
-		_ = c.RunE(ctx, option.WithNodes(node), opt.testCmd)
+		_ = c.RunE(ctx, node, opt.testCmd)
 
 		t.Status("collecting the test results")
 		// Copy all of the test results to the cockroach logs directory to be
@@ -248,6 +244,8 @@ func registerHibernate(r registry.Registry, opt hibernateOptions) {
 	}
 
 	r.Add(registry.TestSpec{
+		Skip:             `https://github.com/cockroachdb/cockroach/issues/127206#issuecomment-2234146075`,
+		SkipDetails:      `a test dependency was pulled from the upstream package repository`,
 		Name:             opt.testName,
 		Owner:            registry.OwnerSQLFoundations,
 		Cluster:          r.MakeClusterSpec(1),

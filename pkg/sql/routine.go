@@ -1,12 +1,7 @@
 // Copyright 2022 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package sql
 
@@ -485,8 +480,8 @@ func (g *routineGenerator) newCursorHelper(plan *planComponents) (*plpgsqlCursor
 // plpgsqlCursorHelper wraps a row container in order to feed the results of
 // executing a SQL statement to a SQL cursor. Note that the SQL statement is not
 // lazily executed; its entire result is written to the container.
-// TODO(#111479): while the row container can spill to disk, we should default
-// to lazy execution for cursors for performance reasons.
+// TODO(drewk): while the row container can spill to disk, we should default to
+// lazy execution for cursors for performance reasons.
 type plpgsqlCursorHelper struct {
 	ctx         context.Context
 	cursorName  tree.Name
@@ -530,15 +525,16 @@ var _ isql.Rows = &plpgsqlCursorHelper{}
 
 // Next implements the isql.Rows interface.
 func (h *plpgsqlCursorHelper) Next(_ context.Context) (bool, error) {
-	var err error
-	h.lastRow, err = h.iter.Next()
-	if err != nil {
+	row, err := h.iter.Next()
+	if err != nil || row == nil {
 		return false, err
 	}
-	if h.lastRow != nil {
-		h.rowsAffected++
-	}
-	return h.lastRow != nil, nil
+	// Shallow-copy the row to ensure that it is safe to hold on to after Next()
+	// and Close() calls - see the isql.Rows interface.
+	h.lastRow = make(tree.Datums, len(row))
+	copy(h.lastRow, row)
+	h.rowsAffected++
+	return true, nil
 }
 
 // Cur implements the isql.Rows interface.

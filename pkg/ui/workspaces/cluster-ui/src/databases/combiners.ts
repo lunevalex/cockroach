@@ -1,17 +1,15 @@
 // Copyright 2023 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
-import { DatabasesListResponse, SqlExecutionErrorMessage } from "../api";
+import { DatabasesListResponse, TableNameParts } from "../api";
 import { DatabasesPageDataDatabase } from "../databasesPage";
 import {
+  Nodes,
+  Stores,
   buildIndexStatToRecommendationsMap,
+  getNodeIdsFromStoreIds,
   getNodesByRegionString,
   normalizePrivileges,
   normalizeRoles,
@@ -38,6 +36,8 @@ interface DerivedDatabaseDetailsParams {
   spanStats: Record<string, DatabaseDetailsSpanStatsState>;
   nodeRegions: Record<string, string>;
   isTenant: boolean;
+  /** A list of node statuses so that store ids can be mapped to nodes. */
+  nodeStatuses: cockroach.server.status.statuspb.INodeStatus[];
 }
 
 export const deriveDatabaseDetailsMemoized = createSelector(
@@ -46,12 +46,14 @@ export const deriveDatabaseDetailsMemoized = createSelector(
   (params: DerivedDatabaseDetailsParams) => params.spanStats,
   (params: DerivedDatabaseDetailsParams) => params.nodeRegions,
   (params: DerivedDatabaseDetailsParams) => params.isTenant,
+  (params: DerivedDatabaseDetailsParams) => params.nodeStatuses,
   (
     dbListResp,
     databaseDetails,
     spanStats,
     nodeRegions,
     isTenant,
+    nodeStatuses,
   ): DatabasesPageDataDatabase[] => {
     const databases = dbListResp?.databases ?? [];
     return databases.map(dbName => {
@@ -61,9 +63,9 @@ export const deriveDatabaseDetailsMemoized = createSelector(
         dbName,
         dbDetails,
         spanStatsForDB,
-        dbListResp.error,
         nodeRegions,
         isTenant,
+        nodeStatuses,
       );
     });
   },
@@ -73,12 +75,20 @@ const deriveDatabaseDetails = (
   database: string,
   dbDetails: DatabaseDetailsState,
   spanStats: DatabaseDetailsSpanStatsState,
-  dbListError: SqlExecutionErrorMessage,
   nodeRegionsByID: Record<string, string>,
   isTenant: boolean,
+  nodeStatuses: cockroach.server.status.statuspb.INodeStatus[],
 ): DatabasesPageDataDatabase => {
   const dbStats = dbDetails?.data?.results.stats;
-  const nodes = dbStats?.replicaData.replicas || [];
+  /** List of store IDs for the current cluster. All of the values in the
+   * `*replicas` columns correspond to store IDs. */
+  const stores: Stores = {
+    kind: "store",
+    ids: dbStats?.replicaData.storeIDs || [],
+  };
+  /** List of node IDs for the current cluster. */
+  const nodes = getNodeIdsFromStoreIds(stores, nodeStatuses);
+
   const nodesByRegionString = getNodesByRegionString(
     nodes,
     nodeRegionsByID,
@@ -99,7 +109,7 @@ const deriveDatabaseDetails = (
     name: database,
     spanStats: spanStats?.data?.results.spanStats,
     tables: dbDetails?.data?.results.tablesResp,
-    nodes: nodes,
+    nodes: nodes.ids,
     nodesByRegionString,
     numIndexRecommendations,
   };
@@ -107,10 +117,12 @@ const deriveDatabaseDetails = (
 
 interface DerivedTableDetailsParams {
   dbName: string;
-  tables: string[];
+  tables: TableNameParts[];
   tableDetails: Record<string, TableDetailsState>;
   nodeRegions: Record<string, string>;
   isTenant: boolean;
+  /** A list of node statuses so that store ids can be mapped to nodes. */
+  nodeStatuses: cockroach.server.status.statuspb.INodeStatus[];
 }
 
 export const deriveTableDetailsMemoized = createSelector(
@@ -119,27 +131,39 @@ export const deriveTableDetailsMemoized = createSelector(
   (params: DerivedTableDetailsParams) => params.tableDetails,
   (params: DerivedTableDetailsParams) => params.nodeRegions,
   (params: DerivedTableDetailsParams) => params.isTenant,
+  (params: DerivedTableDetailsParams) => params.nodeStatuses,
   (
     dbName,
     tables,
     tableDetails,
     nodeRegions,
     isTenant,
+    nodeStatuses,
   ): DatabaseDetailsPageDataTable[] => {
     tables = tables || [];
     return tables.map(table => {
-      const tableID = generateTableID(dbName, table);
+      const tableID = generateTableID(
+        dbName,
+        table.qualifiedNameWithSchemaAndTable,
+      );
       const details = tableDetails[tableID];
-      return deriveDatabaseTableDetails(table, details, nodeRegions, isTenant);
+      return deriveDatabaseTableDetails(
+        table,
+        details,
+        nodeRegions,
+        isTenant,
+        nodeStatuses,
+      );
     });
   },
 );
 
 const deriveDatabaseTableDetails = (
-  table: string,
+  table: TableNameParts,
   details: TableDetailsState,
   nodeRegions: Record<string, string>,
   isTenant: boolean,
+  nodeStatuses: cockroach.server.status.statuspb.INodeStatus[],
 ): DatabaseDetailsPageDataTable => {
   const results = details?.data?.results;
   const grants = results?.grantsResp.grants ?? [];
@@ -147,9 +171,14 @@ const deriveDatabaseTableDetails = (
   const normalizedPrivileges = normalizePrivileges(
     [].concat(...grants.map(grant => grant.privileges)),
   );
-  const nodes = results?.stats.replicaData.nodeIDs || [];
+  const stores: Stores = {
+    kind: "store",
+    ids: results?.stats.replicaData.storeIDs || [],
+  };
+  const nodes: Nodes = getNodeIdsFromStoreIds(stores, nodeStatuses);
   return {
     name: table,
+    qualifiedDisplayName: `${table.schema}.${table.table}`,
     loading: !!details?.inFlight,
     loaded: !!details?.valid,
     requestError: details?.lastError,
@@ -164,7 +193,7 @@ const deriveDatabaseTableDetails = (
       statsLastUpdated: results?.heuristicsDetails,
       indexStatRecs: results?.stats.indexStats,
       spanStats: results?.stats.spanStats,
-      nodes: nodes,
+      nodes: nodes.ids,
       nodesByRegionString: getNodesByRegionString(nodes, nodeRegions, isTenant),
     },
   };
@@ -174,13 +203,21 @@ interface DerivedTablePageDetailsParams {
   details: TableDetailsState;
   nodeRegions: Record<string, string>;
   isTenant: boolean;
+  /** A list of node statuses so that store ids can be mapped to nodes. */
+  nodeStatuses: cockroach.server.status.statuspb.INodeStatus[];
 }
 
 export const deriveTablePageDetailsMemoized = createSelector(
   (params: DerivedTablePageDetailsParams) => params.details,
   (params: DerivedTablePageDetailsParams) => params.nodeRegions,
   (params: DerivedTablePageDetailsParams) => params.isTenant,
-  (details, nodeRegions, isTenant): DatabaseTablePageDataDetails => {
+  (params: DerivedTablePageDetailsParams) => params.nodeStatuses,
+  (
+    details,
+    nodeRegions,
+    isTenant,
+    nodeStatuses,
+  ): DatabaseTablePageDataDetails => {
     const results = details?.data?.results;
     const grants = results?.grantsResp.grants || [];
     const normalizedGrants =
@@ -188,7 +225,13 @@ export const deriveTablePageDetailsMemoized = createSelector(
         user: grant.user,
         privileges: normalizePrivileges(grant.privileges),
       })) || [];
-    const nodes = results?.stats.replicaData.nodeIDs || [];
+
+    const stores: Stores = {
+      kind: "store",
+      ids: results?.stats.replicaData.storeIDs || [],
+    };
+    const nodes = getNodeIdsFromStoreIds(stores, nodeStatuses);
+
     return {
       loading: !!details?.inFlight,
       loaded: !!details?.valid,

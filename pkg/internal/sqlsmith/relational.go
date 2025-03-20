@@ -1,12 +1,7 @@
 // Copyright 2019 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package sqlsmith
 
@@ -789,9 +784,8 @@ func makeSelect(s *Smither) (tree.Statement, bool) {
 		order := make(tree.OrderBy, len(refs))
 		for i, r := range refs {
 			var expr tree.Expr = r.item
-			// PostGIS cannot order box2d types, so we cast to string so the
-			// order is deterministic.
-			if s.postgres && r.typ.Family() == types.Box2DFamily {
+			if !s.isOrderable(r.typ) {
+				// Cast to string so the order is deterministic.
 				expr = &tree.CastExpr{Expr: r.item, Type: types.String}
 			}
 			order[i] = &tree.Order{
@@ -834,11 +828,24 @@ func (s *Smither) makeSelect(desiredTypes []*types.T, refs colRefs) (*tree.Selec
 		return nil, nil, ok
 	}
 
+	var orderBy tree.OrderBy
+	limit := makeLimit(s)
+	if limit != nil && s.disableNondeterministicLimits {
+		// The ORDER BY clause must be fully specified with all select list columns
+		// in order to make a LIMIT clause deterministic.
+		orderBy, ok = s.makeOrderByWithAllCols(orderByRefs.extend(selectRefs...))
+		if !ok {
+			return nil, nil, false
+		}
+	} else {
+		orderBy = s.makeOrderBy(orderByRefs)
+	}
+
 	stmt := tree.Select{
 		Select:  clause,
 		With:    withStmt,
-		OrderBy: s.makeOrderBy(orderByRefs),
-		Limit:   makeLimit(s),
+		OrderBy: orderBy,
+		Limit:   limit,
 	}
 
 	return &stmt, selectRefs, true
@@ -1078,7 +1085,7 @@ func (s *Smither) makeCreateFunc() (cf *tree.CreateRoutine, ok bool) {
 
 	stmt := &tree.CreateRoutine{
 		Name:       name,
-		ReturnType: &rtype,
+		ReturnType: rtype,
 		Params:     params,
 		Options:    opts,
 	}
@@ -1124,8 +1131,8 @@ func (s *Smither) makeDelete(refs colRefs) (*tree.Delete, []*tableRef, bool) {
 	var using tree.TableExprs
 	// With 50% probably add another table into the USING clause.
 	for s.coin() {
-		t, _, tRef, c, ok := s.getSchemaTable()
-		if !ok {
+		t, _, tRef, c, ok2 := s.getSchemaTable()
+		if !ok2 {
 			break
 		}
 		hasJoinTable = true
@@ -1134,12 +1141,25 @@ func (s *Smither) makeDelete(refs colRefs) (*tree.Delete, []*tableRef, bool) {
 		cols = append(cols, c...)
 	}
 
+	var orderBy tree.OrderBy
+	limit := makeLimit(s)
+	if limit != nil && s.disableNondeterministicLimits {
+		// The ORDER BY clause must be fully specified with all columns in order to
+		// make a LIMIT clause deterministic.
+		orderBy, ok = s.makeOrderByWithAllCols(cols)
+		if !ok {
+			return nil, nil, false
+		}
+	} else {
+		orderBy = s.makeOrderBy(cols)
+	}
+
 	del := &tree.Delete{
 		Table:     table,
 		Where:     s.makeWhere(cols, hasJoinTable),
-		OrderBy:   s.makeOrderBy(cols),
+		OrderBy:   orderBy,
 		Using:     using,
-		Limit:     makeLimit(s),
+		Limit:     limit,
 		Returning: &tree.NoReturningClause{},
 	}
 	if del.Limit == nil {
@@ -1190,8 +1210,8 @@ func (s *Smither) makeUpdate(refs colRefs) (*tree.Update, []*tableRef, bool) {
 	var from tree.TableExprs
 	// With 50% probably add another table into the FROM clause.
 	for s.coin() {
-		t, _, tRef, c, ok := s.getSchemaTable()
-		if !ok {
+		t, _, tRef, c, ok2 := s.getSchemaTable()
+		if !ok2 {
 			break
 		}
 		hasJoinTable = true
@@ -1200,12 +1220,25 @@ func (s *Smither) makeUpdate(refs colRefs) (*tree.Update, []*tableRef, bool) {
 		cols = append(cols, c...)
 	}
 
+	var orderBy tree.OrderBy
+	limit := makeLimit(s)
+	if limit != nil && s.disableNondeterministicLimits {
+		// The ORDER BY clause must be fully specified with all columns in order to
+		// make a LIMIT clause deterministic.
+		orderBy, ok = s.makeOrderByWithAllCols(cols)
+		if !ok {
+			return nil, nil, false
+		}
+	} else {
+		orderBy = s.makeOrderBy(cols)
+	}
+
 	update := &tree.Update{
 		Table:     table,
 		From:      from,
 		Where:     s.makeWhere(cols, hasJoinTable),
-		OrderBy:   s.makeOrderBy(cols),
-		Limit:     makeLimit(s),
+		OrderBy:   orderBy,
+		Limit:     limit,
 		Returning: &tree.NoReturningClause{},
 	}
 	colByName := make(map[tree.Name]*tree.ColumnTableDef)
@@ -1554,6 +1587,20 @@ func (s *Smither) makeHaving(refs colRefs) *tree.Where {
 	return nil
 }
 
+func (s *Smither) isOrderable(typ *types.T) bool {
+	if s.postgres {
+		// PostGIS cannot order box2d types.
+		return typ.Family() != types.Box2DFamily
+	}
+	switch typ.Family() {
+	case types.TSQueryFamily, types.TSVectorFamily:
+		// We can't order by these types - see #92165.
+		return false
+	default:
+		return true
+	}
+}
+
 func (s *Smither) makeOrderBy(refs colRefs) tree.OrderBy {
 	if len(refs) == 0 {
 		return nil
@@ -1561,12 +1608,7 @@ func (s *Smither) makeOrderBy(refs colRefs) tree.OrderBy {
 	var ob tree.OrderBy
 	for s.coin() {
 		ref := refs[s.rnd.Intn(len(refs))]
-		// We don't support order by jsonb columns.
-		if ref.typ.Family() == types.JsonFamily {
-			continue
-		}
-		// PostGIS cannot order box2d types.
-		if s.postgres && ref.typ.Family() == types.Box2DFamily {
+		if !s.isOrderable(ref.typ) {
 			continue
 		}
 		ob = append(ob, &tree.Order{
@@ -1576,6 +1618,40 @@ func (s *Smither) makeOrderBy(refs colRefs) tree.OrderBy {
 		})
 	}
 	return ob
+}
+
+// makeOrderByWithAllCols returns the ORDER BY that includes all reference
+// columns in random order. If at least one of the columns is not orderable,
+// then ok=false is returned.
+func (s *Smither) makeOrderByWithAllCols(refs colRefs) (_ tree.OrderBy, ok bool) {
+	if len(refs) == 0 {
+		return nil, true
+	}
+	var ob tree.OrderBy
+	for _, ref := range refs {
+		if !s.isOrderable(ref.typ) {
+			return nil, false
+		}
+		if ref.typ.Family() == types.CollatedStringFamily {
+			// Some collated strings are equal, yet they differ when comparing
+			// them directly as strings (e.g. e'\x00':::STRING COLLATE en_US
+			// vs e'\x01':::STRING COLLATE en_US), which makes some queries
+			// produce non-deterministic results even with all columns in the
+			// ORDER BY clause. Fixing how we check the expected output is not
+			// easy, so we simply reject stmts that require collated strings to
+			// be in the ORDER BY clause.
+			return nil, false
+		}
+		ob = append(ob, &tree.Order{
+			Expr:       ref.item,
+			Direction:  s.randDirection(),
+			NullsOrder: s.randNullsOrder(),
+		})
+	}
+	s.rnd.Shuffle(len(ob), func(i, j int) {
+		ob[i], ob[j] = ob[j], ob[i]
+	})
+	return ob, true
 }
 
 func makeLimit(s *Smither) *tree.Limit {

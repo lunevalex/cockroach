@@ -1,12 +1,7 @@
 // Copyright 2020 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package tests
 
@@ -18,7 +13,6 @@ import (
 
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/cluster"
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/option"
-	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/roachtestutil"
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/roachtestutil/clusterupgrade"
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/test"
 	"github.com/cockroachdb/cockroach/pkg/roachprod/install"
@@ -135,12 +129,8 @@ func preloadDataStep(target int) versionStep {
 		// Load data into cluster to ensure we have a large enough number of replicas
 		// to move on decommissioning.
 		c := u.c
-		pgurl, err := roachtestutil.DefaultPGUrl(ctx, c, t.L(), c.Nodes(1))
-		if err != nil {
-			t.Fatal(err)
-		}
-		c.Run(ctx, option.WithNodes(c.Node(target)),
-			`./cockroach workload fixtures import tpcc --warehouses=100`, pgurl)
+		c.Run(ctx, c.Node(target),
+			`./cockroach workload fixtures import tpcc --warehouses=100 {pgurl:1}`)
 		db := c.Conn(ctx, t.L(), target)
 		defer db.Close()
 		if err := WaitFor3XReplication(ctx, t, db); err != nil {
@@ -155,8 +145,8 @@ func preloadDataStep(target int) versionStep {
 func partialDecommissionStep(target, from int, binaryVersion *clusterupgrade.Version) versionStep {
 	return func(ctx context.Context, t test.Test, u *versionUpgradeTest) {
 		c := u.c
-		c.Run(ctx, option.WithNodes(c.Node(from)), clusterupgrade.CockroachPathForVersion(t, binaryVersion), "node", "decommission",
-			"--wait=none", "--insecure", strconv.Itoa(target), "--port", fmt.Sprintf("{pgport:%d}", from))
+		c.Run(ctx, c.Node(from), clusterupgrade.CockroachPathForVersion(t, binaryVersion), "node", "decommission",
+			"--wait=none", strconv.Itoa(target), "--port", fmt.Sprintf("{pgport:%d}", from), fmt.Sprintf("--certs-dir=%s", install.CockroachNodeCertsDir))
 	}
 }
 
@@ -166,8 +156,8 @@ func partialDecommissionStep(target, from int, binaryVersion *clusterupgrade.Ver
 func recommissionAllStep(from int, binaryVersion *clusterupgrade.Version) versionStep {
 	return func(ctx context.Context, t test.Test, u *versionUpgradeTest) {
 		c := u.c
-		c.Run(ctx, option.WithNodes(c.Node(from)), clusterupgrade.CockroachPathForVersion(t, binaryVersion), "node", "recommission",
-			"--insecure", c.All().NodeIDsString(), "--port", fmt.Sprintf("{pgport:%d}", from))
+		c.Run(ctx, c.Node(from), clusterupgrade.CockroachPathForVersion(t, binaryVersion), "node", "recommission",
+			c.All().NodeIDsString(), "--port", fmt.Sprintf("{pgport:%d}", from), fmt.Sprintf("--certs-dir=%s", install.CockroachNodeCertsDir))
 	}
 }
 
@@ -176,12 +166,8 @@ func recommissionAllStep(from int, binaryVersion *clusterupgrade.Version) versio
 func fullyDecommissionStep(target, from int, binaryVersion *clusterupgrade.Version) versionStep {
 	return func(ctx context.Context, t test.Test, u *versionUpgradeTest) {
 		c := u.c
-		pgurl, err := roachtestutil.DefaultPGUrl(ctx, c, t.L(), c.Node(from))
-		if err != nil {
-			t.Fatal(err)
-		}
-		c.Run(ctx, option.WithNodes(c.Node(from)), clusterupgrade.CockroachPathForVersion(t, binaryVersion), "node", "decommission",
-			"--wait=all", "--insecure", strconv.Itoa(target), fmt.Sprintf("--url=%s", pgurl))
+		c.Run(ctx, c.Node(from), clusterupgrade.CockroachPathForVersion(t, binaryVersion), "node", "decommission",
+			"--wait=all", strconv.Itoa(target), "--port={pgport:1}", fmt.Sprintf("--certs-dir=%s", install.CockroachNodeCertsDir))
 
 		// If we are decommissioning a target node from the same node, the drain
 		// step will be skipped. In this case, we should not consider the step done

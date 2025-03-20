@@ -1,19 +1,13 @@
 // Copyright 2020 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package skip
 
 import (
 	"flag"
 	"fmt"
-	"os"
 	"strings"
 	"testing"
 
@@ -207,16 +201,6 @@ func UnderBench() bool {
 	// test executable with `-test.bench 1`.
 	f := flag.Lookup("test.bench")
 	return f != nil && f.Value.String() != ""
-}
-
-// UnderRemoteExecution skips the given test under remote test execution.
-func UnderRemoteExecutionWithIssue(t SkippableTest, githubIssueID int, args ...interface{}) {
-	t.Helper()
-	isRemote := os.Getenv("REMOTE_EXEC")
-	if len(isRemote) > 0 {
-		maybeSkip(t, withIssue("disabled under race", githubIssueID), args...)
-	}
-
 }
 
 func testConfig() string {

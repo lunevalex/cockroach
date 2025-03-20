@@ -1,17 +1,11 @@
 // Copyright 2019 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package storage
 
 import (
-	"context"
 	"fmt"
 
 	"github.com/cockroachdb/cockroach/pkg/kv/kvpb"
@@ -170,17 +164,13 @@ type MVCCIncrementalIterOptions struct {
 	RangeKeyMaskingBelow hlc.Timestamp
 
 	IntentPolicy MVCCIncrementalIterIntentPolicy
-
-	// ReadCategory is used to map to a user-understandable category string, for
-	// stats aggregation and metrics, and a Pebble-understandable QoS.
-	ReadCategory ReadCategory
 }
 
 // NewMVCCIncrementalIterator creates an MVCCIncrementalIterator with the
 // specified reader and options. The timestamp hint range should not be more
 // restrictive than the start and end time range.
 func NewMVCCIncrementalIterator(
-	ctx context.Context, reader Reader, opts MVCCIncrementalIterOptions,
+	reader Reader, opts MVCCIncrementalIterOptions,
 ) (*MVCCIncrementalIterator, error) {
 	// Default to MaxTimestamp for EndTime, since the code assumes it is set.
 	if opts.EndTime.IsEmpty() {
@@ -201,12 +191,11 @@ func NewMVCCIncrementalIterator(
 	if useTBI {
 		// An iterator without the timestamp hints is created to ensure that the
 		// iterator visits every required version of every key that has changed.
-		iter, err = reader.NewMVCCIterator(ctx, MVCCKeyAndIntentsIterKind, IterOptions{
+		iter, err = reader.NewMVCCIterator(MVCCKeyAndIntentsIterKind, IterOptions{
 			KeyTypes:             opts.KeyTypes,
 			LowerBound:           opts.StartKey,
 			UpperBound:           opts.EndKey,
 			RangeKeyMaskingBelow: opts.RangeKeyMaskingBelow,
-			ReadCategory:         opts.ReadCategory,
 		})
 		if err != nil {
 			return nil, err
@@ -220,7 +209,7 @@ func NewMVCCIncrementalIterator(
 		if tbiRangeKeyMasking.LessEq(opts.StartTime) && opts.KeyTypes == IterKeyTypePointsAndRanges {
 			tbiRangeKeyMasking = opts.StartTime.Next()
 		}
-		timeBoundIter, err = reader.NewMVCCIterator(ctx, MVCCKeyIterKind, IterOptions{
+		timeBoundIter, err = reader.NewMVCCIterator(MVCCKeyIterKind, IterOptions{
 			KeyTypes:   opts.KeyTypes,
 			LowerBound: opts.StartKey,
 			UpperBound: opts.EndKey,
@@ -229,19 +218,17 @@ func NewMVCCIncrementalIterator(
 			MinTimestamp:         opts.StartTime.Next(),
 			MaxTimestamp:         opts.EndTime,
 			RangeKeyMaskingBelow: tbiRangeKeyMasking,
-			ReadCategory:         opts.ReadCategory,
 		})
 		if err != nil {
 			iter.Close()
 			return nil, err
 		}
 	} else {
-		iter, err = reader.NewMVCCIterator(ctx, MVCCKeyAndIntentsIterKind, IterOptions{
+		iter, err = reader.NewMVCCIterator(MVCCKeyAndIntentsIterKind, IterOptions{
 			KeyTypes:             opts.KeyTypes,
 			LowerBound:           opts.StartKey,
 			UpperBound:           opts.EndKey,
 			RangeKeyMaskingBelow: opts.RangeKeyMaskingBelow,
-			ReadCategory:         opts.ReadCategory,
 		})
 		if err != nil {
 			return nil, err

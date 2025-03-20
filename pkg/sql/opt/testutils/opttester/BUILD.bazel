@@ -46,6 +46,7 @@ go_library(
         "//pkg/sql/sem/eval",
         "//pkg/sql/sem/tree",
         "//pkg/sql/sem/volatility",
+        "//pkg/sql/sessiondatapb",
         "//pkg/sql/stats",
         "//pkg/testutils/datapathutils",
         "//pkg/testutils/floatcmp",
@@ -60,6 +61,7 @@ go_library(
         "@com_github_cockroachdb_datadriven//:datadriven",
         "@com_github_cockroachdb_errors//:errors",
         "@com_github_cockroachdb_errors//oserror",
+        "@com_github_dustin_go_humanize//:go-humanize",
         "@com_github_pmezard_go_difflib//difflib",
     ],
 )
@@ -68,11 +70,8 @@ go_test(
     name = "opttester_test",
     size = "small",
     srcs = ["opt_tester_test.go"],
+    args = ["-test.timeout=55s"],
     data = glob(["testdata/**"]),
-    exec_properties = select({
-        "//build/toolchains:is_heavy": {"Pool": "heavy"},
-        "//conditions:default": {"Pool": "default"},
-    }),
     deps = [
         ":opttester",
         "//pkg/sql/opt/memo",

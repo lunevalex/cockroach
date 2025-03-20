@@ -1,12 +1,7 @@
 // Copyright 2023 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package tests
 
@@ -38,7 +33,7 @@ func registerDisaggRebalance(r registry.Registry) {
 		Timeout:           1 * time.Hour,
 		Run: func(ctx context.Context, t test.Test, c cluster.Cluster) {
 			s3dir := fmt.Sprintf("s3://%s/disagg-rebalance/%s?AUTH=implicit", testutils.BackupTestingBucketLongTTL(), c.Name())
-			startOpts := option.DefaultStartOptsNoBackups()
+			startOpts := option.NewStartOpts(option.NoBackupSchedule)
 			startOpts.RoachprodOpts.ExtraArgs = append(startOpts.RoachprodOpts.ExtraArgs, fmt.Sprintf("--experimental-shared-storage=%s", s3dir))
 			c.Start(ctx, t.L(), startOpts, install.MakeClusterSettings(), c.Range(1, 3))
 
@@ -52,7 +47,7 @@ func registerDisaggRebalance(r registry.Registry) {
 			)
 			m := c.NewMonitor(ctx, c.Range(1, 3))
 			m.Go(func(ctx context.Context) error {
-				return c.RunE(ctx, option.WithNodes(c.Node(1)), cmd)
+				return c.RunE(ctx, c.Node(1), cmd)
 			})
 			m.Wait()
 
@@ -66,7 +61,7 @@ func registerDisaggRebalance(r registry.Registry) {
 					warehouses,
 				)
 
-				return c.RunE(ctx, option.WithNodes(c.Node(1)), cmd)
+				return c.RunE(ctx, c.Node(1), cmd)
 			})
 
 			select {

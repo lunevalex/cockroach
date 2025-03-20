@@ -27,9 +27,23 @@ BEGIN; SELECT 1; SELECT 2; COMMIT;
 	"PlanGist": "AgICAgYC",
 	"SkippedQueries": 1,
 	"Statement": "SELECT ‹1›",
-	"StatementFingerprintID": 16085855936700856000,
+	"StatementFingerprintID": "16085855936700855359",
 	"StmtPosInTxn": 1,
 	"Tag": "SELECT",
+	"User": "root"
+}
+{
+	"ApplicationName": "telemetry-logging-datadriven",
+	"Committed": true,
+	"EventType": "sampled_transaction",
+	"NumRows": 2,
+	"RowsRead": 0,
+	"RowsWritten": 0,
+	"StatementFingerprintIDs": [
+		"16085855936700855359",
+		"16085855936700855359"
+	],
+	"TransactionFingerprintID": "14263644654231036319",
 	"User": "root"
 }
 
@@ -46,9 +60,22 @@ SELECT 5;
 	"PlanGist": "AgICAgYC",
 	"SkippedQueries": 2,
 	"Statement": "SELECT ‹5›",
-	"StatementFingerprintID": 16085855936700856000,
+	"StatementFingerprintID": "16085855936700855347",
 	"StmtPosInTxn": 1,
 	"Tag": "SELECT",
+	"User": "root"
+}
+{
+	"ApplicationName": "telemetry-logging-datadriven",
+	"Committed": true,
+	"EventType": "sampled_transaction",
+	"NumRows": 1,
+	"RowsRead": 0,
+	"RowsWritten": 0,
+	"StatementFingerprintIDs": [
+		"16085855936700855347"
+	],
+	"TransactionFingerprintID": "8097417102642119660",
 	"User": "root"
 }
 
@@ -69,7 +96,7 @@ BEGIN; SELECT 1; SELECT 2; SELECT 3; SELECT 4; COMMIT;
 	"PlanGist": "AgICAgYC",
 	"SkippedQueries": 1,
 	"Statement": "SELECT ‹1›",
-	"StatementFingerprintID": 16085855936700856000,
+	"StatementFingerprintID": "16085855936700855359",
 	"StmtPosInTxn": 1,
 	"Tag": "SELECT",
 	"User": "root"
@@ -83,7 +110,7 @@ BEGIN; SELECT 1; SELECT 2; SELECT 3; SELECT 4; COMMIT;
 	"OutputRowsEstimate": 1,
 	"PlanGist": "AgICAgYC",
 	"Statement": "SELECT ‹2›",
-	"StatementFingerprintID": 16085855936700856000,
+	"StatementFingerprintID": "16085855936700855359",
 	"StmtPosInTxn": 2,
 	"Tag": "SELECT",
 	"User": "root"
@@ -97,9 +124,26 @@ BEGIN; SELECT 1; SELECT 2; SELECT 3; SELECT 4; COMMIT;
 	"OutputRowsEstimate": 1,
 	"PlanGist": "AgICAgYC",
 	"Statement": "SELECT ‹3›",
-	"StatementFingerprintID": 16085855936700856000,
+	"StatementFingerprintID": "16085855936700855359",
 	"StmtPosInTxn": 3,
 	"Tag": "SELECT",
+	"User": "root"
+}
+{
+	"ApplicationName": "telemetry-logging-datadriven",
+	"Committed": true,
+	"EventType": "sampled_transaction",
+	"NumRows": 4,
+	"RowsRead": 0,
+	"RowsWritten": 0,
+	"SkippedTransactions": 1,
+	"StatementFingerprintIDs": [
+		"16085855936700855359",
+		"16085855936700855359",
+		"16085855936700855359",
+		"16085855936700855359"
+	],
+	"TransactionFingerprintID": "63991751604173225",
 	"User": "root"
 }
 
@@ -120,7 +164,7 @@ BEGIN; SELECT 1; SELECT 2; SELECT 3; SELECT 4; COMMIT;
 	"PlanGist": "AgICAgYC",
 	"SkippedQueries": 1,
 	"Statement": "SELECT ‹1›",
-	"StatementFingerprintID": 16085855936700856000,
+	"StatementFingerprintID": "16085855936700855359",
 	"StmtPosInTxn": 1,
 	"Tag": "SELECT",
 	"User": "root"
@@ -134,7 +178,7 @@ BEGIN; SELECT 1; SELECT 2; SELECT 3; SELECT 4; COMMIT;
 	"OutputRowsEstimate": 1,
 	"PlanGist": "AgICAgYC",
 	"Statement": "SELECT ‹2›",
-	"StatementFingerprintID": 16085855936700856000,
+	"StatementFingerprintID": "16085855936700855359",
 	"StmtPosInTxn": 2,
 	"Tag": "SELECT",
 	"User": "root"
@@ -148,7 +192,7 @@ BEGIN; SELECT 1; SELECT 2; SELECT 3; SELECT 4; COMMIT;
 	"OutputRowsEstimate": 1,
 	"PlanGist": "AgICAgYC",
 	"Statement": "SELECT ‹3›",
-	"StatementFingerprintID": 16085855936700856000,
+	"StatementFingerprintID": "16085855936700855359",
 	"StmtPosInTxn": 3,
 	"Tag": "SELECT",
 	"User": "root"
@@ -162,8 +206,25 @@ BEGIN; SELECT 1; SELECT 2; SELECT 3; SELECT 4; COMMIT;
 	"OutputRowsEstimate": 1,
 	"PlanGist": "AgICAgYC",
 	"Statement": "SELECT ‹4›",
-	"StatementFingerprintID": 16085855936700856000,
+	"StatementFingerprintID": "16085855936700855359",
 	"StmtPosInTxn": 4,
 	"Tag": "SELECT",
+	"User": "root"
+}
+{
+	"ApplicationName": "telemetry-logging-datadriven",
+	"Committed": true,
+	"EventType": "sampled_transaction",
+	"NumRows": 4,
+	"RowsRead": 0,
+	"RowsWritten": 0,
+	"SkippedTransactions": 1,
+	"StatementFingerprintIDs": [
+		"16085855936700855359",
+		"16085855936700855359",
+		"16085855936700855359",
+		"16085855936700855359"
+	],
+	"TransactionFingerprintID": "63991751604173225",
 	"User": "root"
 }

@@ -1,12 +1,7 @@
 // Copyright 2023 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package scexec
 
@@ -30,7 +25,7 @@ type deferredState struct {
 	databaseRoleSettingsToDelete []databaseRoleSettingToDelete
 	schemaChangerJob             *jobs.Record
 	schemaChangerJobUpdates      map[jobspb.JobID]schemaChangerJobUpdate
-	scheduleIDsToDelete          []jobspb.ScheduleID
+	scheduleIDsToDelete          []int64
 	statsToRefresh               catalog.DescriptorIDSet
 	indexesToSplitAndScatter     []indexesToSplitAndScatter
 	gcJobs
@@ -71,7 +66,7 @@ func (s *deferredState) AddIndexForMaybeSplitAndScatter(
 		})
 }
 
-func (s *deferredState) DeleteSchedule(scheduleID jobspb.ScheduleID) {
+func (s *deferredState) DeleteSchedule(scheduleID int64) {
 	s.scheduleIDsToDelete = append(s.scheduleIDsToDelete, scheduleID)
 }
 
@@ -171,7 +166,7 @@ func (s *deferredState) exec(
 	q StatsRefreshQueue,
 	iss IndexSpanSplitter,
 ) error {
-	dbZoneConfigsToDelete, gcJobRecords := s.gcJobs.makeRecords(tjr.MakeJobID)
+	dbZoneConfigsToDelete, gcJobRecords := s.gcJobs.makeRecords(tjr.MakeJobID, !tjr.UseLegacyGCJob(ctx))
 	// Any databases being GCed should have an entry even if none of its tables
 	// are being dropped. This entry will be used to generate the GC jobs below.
 	for _, id := range dbZoneConfigsToDelete.Ordered() {

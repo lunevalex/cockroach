@@ -1,12 +1,7 @@
 // Copyright 2020 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package kvnemesis
 
@@ -56,12 +51,6 @@ func (op Operation) Result() *Result {
 	case *BatchOperation:
 		return &o.Result
 	case *ClosureTxnOperation:
-		return &o.Result
-	case *SavepointCreateOperation:
-		return &o.Result
-	case *SavepointReleaseOperation:
-		return &o.Result
-	case *SavepointRollbackOperation:
 		return &o.Result
 	default:
 		panic(errors.AssertionFailedf(`unknown operation: %T %v`, o, o))
@@ -204,12 +193,6 @@ func (op Operation) format(w *strings.Builder, fctx formatCtx) {
 		if o.Txn != nil {
 			fmt.Fprintf(w, "\n%s// ^-- txnpb:(%s)", fctx.indent, o.Txn)
 		}
-	case *SavepointCreateOperation:
-		o.format(w, fctx)
-	case *SavepointReleaseOperation:
-		o.format(w, fctx)
-	case *SavepointRollbackOperation:
-		o.format(w, fctx)
 	default:
 		fmt.Fprintf(w, "%v", op.GetValue())
 	}
@@ -400,21 +383,6 @@ func (op TransferLeaseOperation) format(w *strings.Builder, fctx formatCtx) {
 
 func (op ChangeZoneOperation) format(w *strings.Builder, fctx formatCtx) {
 	fmt.Fprintf(w, `env.UpdateZoneConfig(ctx, %s)`, op.Type)
-	op.Result.format(w)
-}
-
-func (op SavepointCreateOperation) format(w *strings.Builder, fctx formatCtx) {
-	fmt.Fprintf(w, `%s.CreateSavepoint(ctx, %d)`, fctx.receiver, int(op.ID))
-	op.Result.format(w)
-}
-
-func (op SavepointReleaseOperation) format(w *strings.Builder, fctx formatCtx) {
-	fmt.Fprintf(w, `%s.ReleaseSavepoint(ctx, %d)`, fctx.receiver, int(op.ID))
-	op.Result.format(w)
-}
-
-func (op SavepointRollbackOperation) format(w *strings.Builder, fctx formatCtx) {
-	fmt.Fprintf(w, `%s.RollbackSavepoint(ctx, %d)`, fctx.receiver, int(op.ID))
 	op.Result.format(w)
 }
 

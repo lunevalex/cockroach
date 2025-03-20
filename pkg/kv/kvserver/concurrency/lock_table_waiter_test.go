@@ -1,12 +1,7 @@
 // Copyright 2020 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package concurrency
 
@@ -88,7 +83,7 @@ func (g *mockLockTableGuard) CheckOptimisticNoConflicts(*lockspanset.LockSpanSet
 	return true
 }
 func (g *mockLockTableGuard) IsKeyLockedByConflictingTxn(
-	context.Context, roachpb.Key, lock.Strength,
+	roachpb.Key, lock.Strength,
 ) (bool, *enginepb.TxnMeta, error) {
 	panic("unimplemented")
 }
@@ -143,85 +138,92 @@ func TestLockTableWaiterWithTxn(t *testing.T) {
 	defer log.Scope(t).Close(t)
 	ctx := context.Background()
 
-	uncertaintyLimit := hlc.Timestamp{WallTime: 15}
-	makeReq := func() Request {
-		txn := makeTxnProto("request")
-		txn.GlobalUncertaintyLimit = uncertaintyLimit
-		ba := &kvpb.BatchRequest{}
-		ba.Txn = &txn
-		ba.Timestamp = txn.ReadTimestamp
-		return Request{
-			Txn:       &txn,
-			Timestamp: ba.Timestamp,
-			BaFmt:     ba,
+	testutils.RunTrueAndFalse(t, "synthetic", func(t *testing.T, synthetic bool) {
+		uncertaintyLimit := hlc.Timestamp{WallTime: 15}
+		makeReq := func() Request {
+			txn := makeTxnProto("request")
+			txn.GlobalUncertaintyLimit = uncertaintyLimit
+			if synthetic {
+				txn.ReadTimestamp = txn.ReadTimestamp.WithSynthetic(true)
+			}
+			return Request{
+				Txn:       &txn,
+				Timestamp: txn.ReadTimestamp,
+			}
 		}
-	}
 
-	expPushTS := func() hlc.Timestamp {
-		// The waiter uses the local clock to bound its push timestamp, with the
-		// assumption that it will be able to use its local uncertainty limit to
-		// ignore the intent. For more, see lockTableWaiterImpl.pushHeader.
-		//
-		// NOTE: lockTableWaiterTestClock < uncertaintyLimit
-		return lockTableWaiterTestClock
-	}
+		expPushTS := func() hlc.Timestamp {
+			// If the waiter has a synthetic timestamp, it pushes all the way up to
+			// its global uncertainty limit, because it won't be able to use a local
+			// uncertainty limit to ignore a synthetic intent. If the waiter does not
+			// have a synthetic timestamp, it uses the local clock to bound its push
+			// timestamp, with the assumption that it will be able to use its local
+			// uncertainty limit to ignore a non-synthetic intent. For more, see
+			// lockTableWaiterImpl.pushHeader.
+			if synthetic {
+				return uncertaintyLimit.WithSynthetic(true)
+			}
+			// NOTE: lockTableWaiterTestClock < uncertaintyLimit
+			return lockTableWaiterTestClock
+		}
 
-	t.Run("state", func(t *testing.T) {
-		t.Run("waitFor", func(t *testing.T) {
-			testWaitPush(t, waitFor, makeReq, expPushTS())
+		t.Run("state", func(t *testing.T) {
+			t.Run("waitFor", func(t *testing.T) {
+				testWaitPush(t, waitFor, makeReq, expPushTS())
+			})
+
+			t.Run("waitForDistinguished", func(t *testing.T) {
+				testWaitPush(t, waitForDistinguished, makeReq, expPushTS())
+			})
+
+			t.Run("waitElsewhere", func(t *testing.T) {
+				testWaitPush(t, waitElsewhere, makeReq, expPushTS())
+			})
+
+			t.Run("waitSelf", func(t *testing.T) {
+				testWaitNoopUntilDone(t, waitSelf, makeReq)
+			})
+
+			t.Run("waitQueueMaxLengthExceeded", func(t *testing.T) {
+				testErrorWaitPush(t, waitQueueMaxLengthExceeded, makeReq, dontExpectPush, reasonWaitQueueMaxLengthExceeded)
+			})
+
+			t.Run("doneWaiting", func(t *testing.T) {
+				w, _, g, _ := setupLockTableWaiterTest()
+				defer w.stopper.Stop(ctx)
+
+				g.state = waitingState{kind: doneWaiting}
+				g.notify()
+
+				err := w.WaitOn(ctx, makeReq(), g)
+				require.Nil(t, err)
+			})
 		})
 
-		t.Run("waitForDistinguished", func(t *testing.T) {
-			testWaitPush(t, waitForDistinguished, makeReq, expPushTS())
-		})
-
-		t.Run("waitElsewhere", func(t *testing.T) {
-			testWaitPush(t, waitElsewhere, makeReq, expPushTS())
-		})
-
-		t.Run("waitSelf", func(t *testing.T) {
-			testWaitNoopUntilDone(t, waitSelf, makeReq)
-		})
-
-		t.Run("waitQueueMaxLengthExceeded", func(t *testing.T) {
-			testErrorWaitPush(t, waitQueueMaxLengthExceeded, makeReq, dontExpectPush, reasonWaitQueueMaxLengthExceeded)
-		})
-
-		t.Run("doneWaiting", func(t *testing.T) {
+		t.Run("ctx done", func(t *testing.T) {
 			w, _, g, _ := setupLockTableWaiterTest()
 			defer w.stopper.Stop(ctx)
 
-			g.state = waitingState{kind: doneWaiting}
-			g.notify()
+			ctxWithCancel, cancel := context.WithCancel(ctx)
+			go cancel()
+
+			err := w.WaitOn(ctxWithCancel, makeReq(), g)
+			require.NotNil(t, err)
+			require.Equal(t, context.Canceled.Error(), err.GoError().Error())
+		})
+
+		t.Run("stopper quiesce", func(t *testing.T) {
+			w, _, g, _ := setupLockTableWaiterTest()
+			defer w.stopper.Stop(ctx)
+
+			go func() {
+				w.stopper.Quiesce(ctx)
+			}()
 
 			err := w.WaitOn(ctx, makeReq(), g)
-			require.Nil(t, err)
+			require.NotNil(t, err)
+			require.IsType(t, &kvpb.NodeUnavailableError{}, err.GetDetail())
 		})
-	})
-
-	t.Run("ctx done", func(t *testing.T) {
-		w, _, g, _ := setupLockTableWaiterTest()
-		defer w.stopper.Stop(ctx)
-
-		ctxWithCancel, cancel := context.WithCancel(ctx)
-		go cancel()
-
-		err := w.WaitOn(ctxWithCancel, makeReq(), g)
-		require.NotNil(t, err)
-		require.Equal(t, context.Canceled.Error(), err.GoError().Error())
-	})
-
-	t.Run("stopper quiesce", func(t *testing.T) {
-		w, _, g, _ := setupLockTableWaiterTest()
-		defer w.stopper.Stop(ctx)
-
-		go func() {
-			w.stopper.Quiesce(ctx)
-		}()
-
-		err := w.WaitOn(ctx, makeReq(), g)
-		require.NotNil(t, err)
-		require.IsType(t, &kvpb.NodeUnavailableError{}, err.GetDetail())
 	})
 }
 
@@ -234,13 +236,9 @@ func TestLockTableWaiterWithNonTxn(t *testing.T) {
 
 	reqHeaderTS := hlc.Timestamp{WallTime: 10}
 	makeReq := func() Request {
-		ba := &kvpb.BatchRequest{}
-		ba.Timestamp = reqHeaderTS
-		ba.UserPriority = roachpb.NormalUserPriority
 		return Request{
-			Timestamp:      ba.Timestamp,
-			NonTxnPriority: ba.UserPriority,
-			BaFmt:          ba,
+			Timestamp:      reqHeaderTS,
+			NonTxnPriority: roachpb.NormalUserPriority,
 		}
 	}
 
@@ -438,15 +436,10 @@ func TestLockTableWaiterWithErrorWaitPolicy(t *testing.T) {
 	makeReq := func() Request {
 		txn := makeTxnProto("request")
 		txn.GlobalUncertaintyLimit = uncertaintyLimit
-		ba := &kvpb.BatchRequest{}
-		ba.Txn = &txn
-		ba.Timestamp = txn.ReadTimestamp
-		ba.WaitPolicy = lock.WaitPolicy_Error
 		return Request{
 			Txn:        &txn,
-			Timestamp:  ba.Timestamp,
-			WaitPolicy: ba.WaitPolicy,
-			BaFmt:      ba,
+			Timestamp:  txn.ReadTimestamp,
+			WaitPolicy: lock.WaitPolicy_Error,
 		}
 	}
 	makeHighPriReq := func() Request {
@@ -610,26 +603,17 @@ func TestLockTableWaiterWithLockTimeout(t *testing.T) {
 		const lockTimeout = 1 * time.Millisecond
 		makeReq := func() Request {
 			txn := makeTxnProto("request")
-			ba := &kvpb.BatchRequest{}
-			ba.Txn = &txn
-			ba.Timestamp = txn.ReadTimestamp
-			ba.LockTimeout = lockTimeout
 			return Request{
-				Txn:         ba.Txn,
-				Timestamp:   ba.Timestamp,
-				LockTimeout: ba.LockTimeout,
-				BaFmt:       ba,
+				Txn:         &txn,
+				Timestamp:   txn.ReadTimestamp,
+				LockTimeout: lockTimeout,
 			}
 		}
 		if !txn {
 			makeReq = func() Request {
-				ba := &kvpb.BatchRequest{}
-				ba.Timestamp = hlc.Timestamp{WallTime: 10}
-				ba.LockTimeout = lockTimeout
 				return Request{
-					Timestamp:   ba.Timestamp,
-					LockTimeout: ba.LockTimeout,
-					BaFmt:       ba,
+					Timestamp:   hlc.Timestamp{WallTime: 10},
+					LockTimeout: lockTimeout,
 				}
 			}
 		}
@@ -804,13 +788,9 @@ func TestLockTableWaiterIntentResolverError(t *testing.T) {
 	err2 := kvpb.NewErrorf("error2")
 
 	txn := makeTxnProto("request")
-	ba := &kvpb.BatchRequest{}
-	ba.Txn = &txn
-	ba.Timestamp = txn.ReadTimestamp
 	req := Request{
-		Txn:       ba.Txn,
-		Timestamp: ba.Timestamp,
-		BaFmt:     ba,
+		Txn:       &txn,
+		Timestamp: txn.ReadTimestamp,
 	}
 
 	// Test with both synchronous and asynchronous pushes.
@@ -864,13 +844,9 @@ func TestLockTableWaiterDeferredIntentResolverError(t *testing.T) {
 	defer w.stopper.Stop(ctx)
 
 	txn := makeTxnProto("request")
-	ba := &kvpb.BatchRequest{}
-	ba.Txn = &txn
-	ba.Timestamp = txn.ReadTimestamp
 	req := Request{
-		Txn:       ba.Txn,
-		Timestamp: ba.Timestamp,
-		BaFmt:     ba,
+		Txn:       &txn,
+		Timestamp: txn.ReadTimestamp,
 	}
 	keyA := roachpb.Key("keyA")
 	pusheeTxn := makeTxnProto("pushee")

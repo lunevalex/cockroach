@@ -1,12 +1,7 @@
 // Copyright 2022 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 import { fetchDataJSON } from "./fetchData";
 import { getLogger } from "../util";
@@ -19,7 +14,6 @@ export type SqlExecutionRequest = {
   database?: string; // Defaults to system
   max_result_size?: number; // Default 10kib
   separate_txns?: boolean;
-  use_obs_service?: boolean; // Flag to use Observability Service. Default is false.
 };
 
 export type SqlStatement = {
@@ -178,6 +172,7 @@ const UPGRADE_RELATED_ERRORS = [
 ];
 
 export function isUpgradeError(message: string): boolean {
+  if (message == null) return false;
   return UPGRADE_RELATED_ERRORS.some(err => message.search(err) !== -1);
 }
 
@@ -196,6 +191,10 @@ export function isUpgradeError(message: string): boolean {
  * @param message
  */
 export function sqlApiErrorMessage(message: string): string {
+  if (!message) {
+    return "";
+  }
+
   if (isUpgradeError(message)) {
     return "This page may not be available during an upgrade.";
   }
@@ -211,7 +210,6 @@ export function sqlApiErrorMessage(message: string): string {
 export function createSqlExecutionRequest(
   dbName: string,
   statements: SqlStatement[],
-  useObsService?: boolean,
 ): SqlExecutionRequest {
   return {
     execute: true,
@@ -219,7 +217,6 @@ export function createSqlExecutionRequest(
     database: dbName,
     max_result_size: LARGE_RESULT_SIZE,
     timeout: LONG_TIMEOUT,
-    use_obs_service: useObsService || false,
   };
 }
 

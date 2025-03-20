@@ -1,12 +1,7 @@
 // Copyright 2021 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package testcat
 
@@ -70,7 +65,7 @@ func (tc *Catalog) ResolveType(
 			labels := make([]string, 0, tab.ColumnCount())
 			for i, n := 0, tab.ColumnCount(); i < n; i++ {
 				col := tab.Column(i)
-				if col.Kind() == cat.Ordinary {
+				if col.Kind() == cat.Ordinary && col.Visibility() == cat.Visible {
 					contents = append(contents, col.DatumType())
 					labels = append(labels, string(col.ColName()))
 				}

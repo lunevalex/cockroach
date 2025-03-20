@@ -1,12 +1,7 @@
 // Copyright 2018 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package tests
 
@@ -21,7 +16,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/clusterstats"
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/option"
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/registry"
-	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/roachtestutil"
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/spec"
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/test"
 	"github.com/cockroachdb/cockroach/pkg/roachprod/install"
@@ -42,23 +36,18 @@ func registerAllocator(r registry.Registry) {
 		nodes := c.Spec().NodeCount - 1
 
 		// Don't start scheduled backups in this perf sensitive test that reports to roachperf
-		startOpts := option.DefaultStartOptsNoBackups()
+		startOpts := option.NewStartOpts(option.NoBackupSchedule)
 		startOpts.RoachprodOpts.ExtraArgs = []string{"--vmodule=store_rebalancer=5,allocator=5,allocator_scorer=5,replicate_queue=5"}
 		c.Start(ctx, t.L(), startOpts, install.MakeClusterSettings(), c.Range(1, start))
 		db := c.Conn(ctx, t.L(), 1)
 		defer db.Close()
 
-		pgurl, err := roachtestutil.DefaultPGUrl(ctx, c, t.L(), c.Nodes(1))
-		if err != nil {
-			t.Fatal(err)
-		}
-
 		m := c.NewMonitor(ctx, c.Range(1, start))
 		m.Go(func(ctx context.Context) error {
 			t.Status("loading fixture")
 			if err := c.RunE(
-				ctx, option.WithNodes(c.Node(1)),
-				"./cockroach", "workload", "fixtures", "import", "tpch", "--scale-factor", "10", pgurl,
+				ctx, c.Node(1),
+				"./cockroach", "workload", "fixtures", "import", "tpch", "--scale-factor", "10", "{pgurl:1}",
 			); err != nil {
 				t.Fatal(err)
 			}
@@ -73,7 +62,7 @@ func registerAllocator(r registry.Registry) {
 			WithCluster(clusNodes.InstallNodes()).
 			WithPrometheusNode(promNode.InstallNodes()[0])
 
-		err = c.StartGrafana(ctx, t.L(), cfg)
+		err := c.StartGrafana(ctx, t.L(), cfg)
 		require.NoError(t, err)
 
 		cleanupFunc := func() {
@@ -91,7 +80,7 @@ func registerAllocator(r registry.Registry) {
 
 		// Start the remaining nodes to kick off upreplication/rebalancing.
 		c.Start(ctx, t.L(), startOpts, install.MakeClusterSettings(), c.Range(start+1, nodes))
-		c.Run(ctx, option.WithNodes(c.Node(1)), fmt.Sprintf("./cockroach workload init kv --drop '%s'", pgurl))
+		c.Run(ctx, c.Node(1), "./cockroach workload init kv --drop {pgurl:1}")
 		for node := 1; node <= nodes; node++ {
 			node := node
 			// TODO(dan): Ideally, the test would fail if this queryload failed,
@@ -103,7 +92,7 @@ func registerAllocator(r registry.Registry) {
 					t.Fatal(err)
 				}
 				defer l.Close()
-				_ = c.RunE(ctx, option.WithNodes(c.Node(node)), cmd)
+				_ = c.RunE(ctx, c.Node(node), cmd)
 			}()
 		}
 
@@ -457,13 +446,9 @@ FROM crdb_internal.kv_store_status
 		t.Fatalf("expected 0 mis-replicated ranges, but found %d", n)
 	}
 
-	pgurl, err := roachtestutil.DefaultPGUrl(ctx, c, t.L(), c.Nodes(1))
-	if err != nil {
-		t.Fatal(err)
-	}
 	decom := func(id int) {
-		c.Run(ctx, option.WithNodes(c.Node(1)),
-			fmt.Sprintf("./cockroach node decommission --insecure --url=%s --wait=none %d", pgurl, id))
+		c.Run(ctx, c.Node(1),
+			fmt.Sprintf("./cockroach node decommission --certs-dir=%s --port={pgport%s} --wait=none %d", install.CockroachNodeCertsDir, c.Node(id), id))
 	}
 
 	// Decommission a node. The ranges should down-replicate to 7 replicas.

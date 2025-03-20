@@ -1,12 +1,7 @@
 // Copyright 2021 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package tracker
 
@@ -81,6 +76,11 @@ type Tracker interface {
 	// The returned timestamp might be smaller than the lowest timestamp ever
 	// inserted into the set. Implementations are allowed to round timestamps
 	// down.
+	//
+	// Synthetic timestamps: The Tracker doesn't necessarily track synthetic /
+	// physical timestamps precisely; the only guarantee implementations need to
+	// make is that, if no synthethic timestamp is inserted into the tracked set
+	// for a while, eventually the LowerBound value will not be synthetic.
 	LowerBound(context.Context) hlc.Timestamp
 
 	// Count returns the current size of the tracked set.

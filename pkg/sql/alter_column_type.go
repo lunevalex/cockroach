@@ -1,12 +1,7 @@
 // Copyright 2020 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package sql
 
@@ -336,18 +331,6 @@ func alterColumnTypeGeneral(
 			SyntaxMode: tree.CastShort,
 		}
 		inverseExpr = tree.Serialize(&oldColComputeExpr)
-
-		// Validate that the column can be automatically cast to toType without explicit casting.
-		if validCast := cast.ValidCast(col.GetType(), toType, cast.ContextAssignment); !validCast {
-			return errors.WithHintf(
-				pgerror.Newf(
-					pgcode.DatatypeMismatch,
-					"column %q cannot be cast automatically to type %s",
-					col.GetName(),
-					toType.SQLString(),
-				), "You might need to specify \"USING %s\".", s,
-			)
-		}
 	}
 	// Create the default expression for the new column.
 	hasDefault := col.HasDefault()

@@ -1,12 +1,7 @@
 // Copyright 2020 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package azure
 
@@ -26,7 +21,8 @@ type azureStartupArgs struct {
 	AttachedDiskLun *int   // Use attached disk, with specified LUN; Use local ssd if nil.
 	// TODO(DarrylWong): In the future, when all tests are run on Ubuntu 22.04, we can remove this check and default true.
 	// See: https://github.com/cockroachdb/cockroach/issues/112112
-	IsUbuntu22 bool // Allow RSA SHA1 to be used and create tcpdump symlink.
+	IsUbuntu22           bool   // Allow RSA SHA1 to be used and create tcpdump symlink.
+	DisksInitializedFile string // File to touch when disks are initialized.
 }
 
 const azureStartupTemplate = `#!/bin/bash
@@ -114,7 +110,11 @@ sed -i'~' 's/enabled=1/enabled=0/' /etc/default/apport
 sed -i'~' '/.*kernel\\.core_pattern.*/c\\' /etc/sysctl.conf
 echo "kernel.core_pattern=$CORE_PATTERN" >> /etc/sysctl.conf
 sysctl --system  # reload sysctl settings
-touch /mnt/data1/.roachprod-initialized
+
+sudo sed -i 's/#LoginGraceTime .*/LoginGraceTime 0/g' /etc/ssh/sshd_config
+sudo service ssh restart
+
+touch {{ .DisksInitializedFile }}
 `
 
 // evalStartupTemplate evaluates startup template defined above and returns

@@ -1,12 +1,7 @@
 // Copyright 2014 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package gossip
 
@@ -184,7 +179,7 @@ func TestClientGossip(t *testing.T) {
 	local, _ := startGossip(clusterID, 1, stopper, t, metric.NewRegistry())
 	remote, _ := startGossip(clusterID, 2, stopper, t, metric.NewRegistry())
 	disconnected := make(chan *client, 1)
-	c := newClient(log.MakeTestingAmbientCtxWithNewTracer(), remote.GetNodeAddr(), makeMetrics())
+	c := newClient(log.MakeTestingAmbientCtxWithNewTracer(), remote.GetNodeAddr(), roachpb.Locality{}, makeMetrics())
 
 	defer func() {
 		stopper.Stop(ctx)
@@ -236,7 +231,7 @@ func TestClientGossipMetrics(t *testing.T) {
 	gossipSucceedsSoon(
 		t, stopper, clusterID, make(chan *client, 2),
 		map[*client]*Gossip{
-			newClient(log.MakeTestingAmbientCtxWithNewTracer(), local.GetNodeAddr(), remote.nodeMetrics): remote,
+			newClient(log.MakeTestingAmbientCtxWithNewTracer(), local.GetNodeAddr(), roachpb.Locality{}, remote.nodeMetrics): remote,
 		},
 		func() error {
 			// Infos/Bytes Sent/Received should not be zero.
@@ -294,7 +289,7 @@ func TestClientNodeID(t *testing.T) {
 	// Use an insecure context. We're talking to tcp socket which are not in the certs.
 	rpcContext := rpc.NewInsecureTestingContextWithClusterID(ctx, clock, stopper, clusterID)
 
-	c := newClient(log.MakeTestingAmbientCtxWithNewTracer(), &remote.nodeAddr, makeMetrics())
+	c := newClient(log.MakeTestingAmbientCtxWithNewTracer(), &remote.nodeAddr, roachpb.Locality{}, makeMetrics())
 	disconnected <- c
 
 	defer func() {
@@ -341,7 +336,7 @@ func TestClientDisconnectLoopback(t *testing.T) {
 	local, localCtx := startGossip(uuid.Nil, 1, stopper, t, metric.NewRegistry())
 	local.mu.Lock()
 	lAddr := local.mu.is.NodeAddr
-	local.startClientLocked(lAddr, localCtx)
+	local.startClientLocked(lAddr, roachpb.Locality{}, localCtx)
 	local.mu.Unlock()
 	local.manage(localCtx)
 	testutils.SucceedsSoon(t, func() error {
@@ -387,7 +382,7 @@ func TestClientDisconnectRedundant(t *testing.T) {
 			// Restart the client connection in the loop. It might have failed due to
 			// a heartbeat time.
 			local.mu.Lock()
-			local.startClientLocked(rAddr, localCtx)
+			local.startClientLocked(rAddr, roachpb.Locality{}, localCtx)
 			local.mu.Unlock()
 			return fmt.Errorf("unable to find local to remote client")
 		}
@@ -398,7 +393,7 @@ func TestClientDisconnectRedundant(t *testing.T) {
 	// Start a remote to local client. This client will get removed as being
 	// redundant as there is already a connection between the two nodes.
 	remote.mu.Lock()
-	remote.startClientLocked(lAddr, remoteCtx)
+	remote.startClientLocked(lAddr, roachpb.Locality{}, remoteCtx)
 	remote.mu.Unlock()
 
 	testutils.SucceedsSoon(t, func() error {
@@ -433,8 +428,8 @@ func TestClientDisallowMultipleConns(t *testing.T) {
 	// Start two clients from local to remote. RPC client cache is
 	// disabled via the context, so we'll start two different outgoing
 	// connections.
-	local.startClientLocked(rAddr, localCtx)
-	local.startClientLocked(rAddr, localCtx)
+	local.startClientLocked(rAddr, roachpb.Locality{}, localCtx)
+	local.startClientLocked(rAddr, roachpb.Locality{}, localCtx)
 	local.mu.Unlock()
 	remote.mu.Unlock()
 	local.manage(localCtx)
@@ -516,7 +511,7 @@ func TestClientForwardUnresolved(t *testing.T) {
 	local, _ := startGossip(uuid.Nil, nodeID, stopper, t, metric.NewRegistry())
 	addr := local.GetNodeAddr()
 
-	client := newClient(log.MakeTestingAmbientCtxWithNewTracer(), addr, makeMetrics()) // never started
+	client := newClient(log.MakeTestingAmbientCtxWithNewTracer(), addr, roachpb.Locality{}, makeMetrics()) // never started
 
 	newAddr := util.UnresolvedAddr{
 		NetworkField: "tcp",

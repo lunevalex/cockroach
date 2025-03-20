@@ -1,17 +1,11 @@
 // Copyright 2022 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package storageutils
 
 import (
-	"context"
 	"testing"
 
 	"github.com/cockroachdb/cockroach/pkg/storage"
@@ -28,8 +22,7 @@ func MVCCGetRaw(t *testing.T, r storage.Reader, key storage.MVCCKey) []byte {
 // MVCCGetRawWithError is like MVCCGetRaw, but returns an error rather than
 // failing the test.
 func MVCCGetRawWithError(t *testing.T, r storage.Reader, key storage.MVCCKey) ([]byte, error) {
-	iter, err := r.NewMVCCIterator(
-		context.Background(), storage.MVCCKeyAndIntentsIterKind, storage.IterOptions{Prefix: true})
+	iter, err := r.NewMVCCIterator(storage.MVCCKeyAndIntentsIterKind, storage.IterOptions{Prefix: true})
 	if err != nil {
 		return nil, err
 	}

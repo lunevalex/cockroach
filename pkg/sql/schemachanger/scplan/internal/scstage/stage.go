@@ -1,12 +1,7 @@
 // Copyright 2021 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package scstage
 
@@ -247,6 +242,8 @@ func validateStageSubgraph(ts scpb.TargetState, stage Stage, g *scgraph.Graph) e
 			// marked as no-op or is the next in the queue.
 			if len(queue) > 0 && oe == queue[0] {
 				queue = queue[1:]
+			} else if !g.IsNoOp(oe) {
+				continue
 			}
 
 			current[i] = oe.To()

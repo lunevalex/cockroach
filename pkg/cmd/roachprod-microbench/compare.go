@@ -1,12 +1,7 @@
 // Copyright 2022 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package main
 
@@ -76,7 +71,7 @@ func newCompare(config compareConfig) (*compare, error) {
 func defaultCompareConfig() compareConfig {
 	return compareConfig{
 		slackUser:    "microbench",
-		slackChannel: "perf-ops",
+		slackChannel: "aptt-community-service-team",
 	}
 }
 
@@ -124,7 +119,7 @@ func (c *compare) publishToGoogleSheets(
 		}
 		url, err := c.service.CreateSheet(c.ctx, sheetName, *metricMap, "old", "new")
 		if err != nil {
-			return nil, errors.Wrapf(err, "failed to create sheet for %s", pkgGroup)
+			return nil, err
 		}
 		log.Printf("Generated sheet for %s: %s\n", sheetName, url)
 		sheets[pkgGroup] = url

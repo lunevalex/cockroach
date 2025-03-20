@@ -1,12 +1,7 @@
 // Copyright 2023 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package sql
 
@@ -14,7 +9,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/jobs"
 	"github.com/cockroachdb/cockroach/pkg/jobs/jobspb"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog"
-	"github.com/cockroachdb/cockroach/pkg/sql/regions"
 	"github.com/cockroachdb/errors"
 )
 
@@ -32,19 +26,11 @@ func (ex *connExecutor) waitOneVersionForNewVersionDescriptorsWithoutJobs(
 	if err != nil {
 		return err
 	}
-	// If no schema change occurred, then nothing needs to be done here.
-	if len(withNewVersion) == 0 {
-		return nil
-	}
-	cachedRegions, err := regions.NewCachedDatabaseRegions(ex.Ctx(), ex.server.cfg.DB, ex.server.cfg.LeaseManager)
-	if err != nil {
-		return err
-	}
 	for _, idVersion := range withNewVersion {
 		if descIDsInJobs.Contains(idVersion.ID) {
 			continue
 		}
-		if _, err := WaitToUpdateLeases(ex.Ctx(), ex.planner.LeaseMgr(), cachedRegions, idVersion.ID); err != nil {
+		if _, err := WaitToUpdateLeases(ex.Ctx(), ex.planner.LeaseMgr(), idVersion.ID); err != nil {
 			// In most cases (normal schema changes), deleted descriptor should have
 			// been handled by jobs. So, normally we won't hit into the situation of
 			// wait for one version of a deleted descriptor. However, we need catch

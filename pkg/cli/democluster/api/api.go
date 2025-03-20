@@ -1,12 +1,7 @@
 // Copyright 2021 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package democlusterapi
 
@@ -25,9 +20,6 @@ type DemoCluster interface {
 	// If verbose is specified, more URLs are printed.
 	// Listing is printed to 'w'. Errors/warnings are printed to 'ew'.
 	ListDemoNodes(w, ew io.Writer, justOne, verbose bool)
-
-	// ExpandShortDemoURLs expands `demo://` in a string URLs to `postgres://...`.
-	ExpandShortDemoURLs(string) string
 
 	// AddNode creates a new node with the given locality string.
 	AddNode(ctx context.Context, localityString string) (newNodeID int32, err error)

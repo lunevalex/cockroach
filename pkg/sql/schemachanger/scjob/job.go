@@ -1,12 +1,7 @@
 // Copyright 2021 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package scjob
 
@@ -17,6 +12,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/jobs/jobspb"
 	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
 	"github.com/cockroachdb/cockroach/pkg/sql"
+	"github.com/cockroachdb/cockroach/pkg/sql/catalog"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/descs"
 	"github.com/cockroachdb/cockroach/pkg/sql/descmetadata"
 	"github.com/cockroachdb/cockroach/pkg/sql/isql"
@@ -24,6 +20,8 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/schemachanger/scexec"
 	"github.com/cockroachdb/cockroach/pkg/sql/schemachanger/scrun"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
+	"github.com/cockroachdb/cockroach/pkg/util/timeutil"
+	"github.com/cockroachdb/errors"
 )
 
 func init() {
@@ -50,6 +48,13 @@ func (n *newSchemaChangeResumer) OnFailOrCancel(
 ) error {
 	execCtx := execCtxI.(sql.JobExecContext)
 	execCfg := execCtx.ExecCfg()
+	// Permanent error has been hit, so there is no rollback
+	// from here. Only if the status is reverting will these be
+	// treated as fatal.
+	if jobs.IsPermanentJobError(err) && n.job.Status() == jobs.StatusReverting {
+		log.Warningf(ctx, "schema change will not rollback; permanent error detected: %v", err)
+		return nil
+	}
 	n.rollbackCause = err
 
 	// Clean up any protected timestamps as a last resort, in case the job
@@ -115,16 +120,24 @@ func (n *newSchemaChangeResumer) run(ctx context.Context, execCtxI interface{}) 
 		return nil
 	}
 
+	startTime := timeutil.FromUnixMicros(payload.StartedMicros)
 	err := scrun.RunSchemaChangesInJob(
 		ctx,
 		execCfg.DeclarativeSchemaChangerTestingKnobs,
 		deps,
 		n.job.ID(),
+		startTime,
 		payload.DescriptorIDs,
 		n.rollbackCause,
 	)
 	// Return permanent errors back, otherwise we will try to retry
 	if sql.IsPermanentSchemaChangeError(err) {
+		// If a descriptor can't be found, we additionally mark the error as a
+		// permanent job error, so that non-cancelable jobs don't get retried. If a
+		// descriptor has gone missing, it isn't likely to come back.
+		if errors.IsAny(err, catalog.ErrDescriptorNotFound, catalog.ErrDescriptorDropped, catalog.ErrReferencedDescriptorNotFound) {
+			return jobs.MarkAsPermanentJobError(err)
+		}
 		return err
 	}
 	if err != nil {

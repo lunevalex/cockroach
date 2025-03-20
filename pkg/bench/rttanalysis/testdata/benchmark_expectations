@@ -15,9 +15,9 @@ exp,benchmark
 8,AlterTableConfigureZone/alter_table_configure_zone_5_replicas
 8,AlterTableConfigureZone/alter_table_configure_zone_7_replicas_
 8,AlterTableConfigureZone/alter_table_configure_zone_ranges
-18,AlterTableDropColumn/alter_table_drop_1_column
-18,AlterTableDropColumn/alter_table_drop_2_columns
-18,AlterTableDropColumn/alter_table_drop_3_columns
+23,AlterTableDropColumn/alter_table_drop_1_column
+23,AlterTableDropColumn/alter_table_drop_2_columns
+23,AlterTableDropColumn/alter_table_drop_3_columns
 15,AlterTableDropConstraint/alter_table_drop_1_check_constraint
 15,AlterTableDropConstraint/alter_table_drop_2_check_constraints
 15,AlterTableDropConstraint/alter_table_drop_3_check_constraints
@@ -61,8 +61,8 @@ exp,benchmark
 23,Grant/grant_all_on_3_tables
 19,GrantRole/grant_1_role
 25,GrantRole/grant_2_roles
+3,Jobs/show_job
 3,ORMQueries/activerecord_type_introspection_query
-0,ORMQueries/asyncpg_types
 0,ORMQueries/column_descriptions_json_agg
 4,ORMQueries/django_column_introspection_1_table
 4,ORMQueries/django_column_introspection_4_tables
@@ -114,5 +114,5 @@ exp,benchmark
 3,UDFResolution/select_from_udf
 1,VirtualTableQueries/select_crdb_internal.invalid_objects_with_1_fk
 1,VirtualTableQueries/select_crdb_internal.tables_with_1_fk
-9,VirtualTableQueries/virtual_table_cache_with_point_lookups
+3,VirtualTableQueries/virtual_table_cache_with_point_lookups
 15,VirtualTableQueries/virtual_table_cache_with_schema_change

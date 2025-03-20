@@ -1,12 +1,7 @@
 // Copyright 2015 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package pgwire
 
@@ -20,7 +15,6 @@ import (
 	"time"
 
 	"github.com/cockroachdb/cockroach/pkg/base"
-	"github.com/cockroachdb/cockroach/pkg/obs"
 	"github.com/cockroachdb/cockroach/pkg/server/serverpb"
 	"github.com/cockroachdb/cockroach/pkg/server/telemetry"
 	"github.com/cockroachdb/cockroach/pkg/settings"
@@ -42,6 +36,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/log/eventpb"
 	"github.com/cockroachdb/cockroach/pkg/util/log/logpb"
 	"github.com/cockroachdb/cockroach/pkg/util/metric"
+	"github.com/cockroachdb/cockroach/pkg/util/metric/aggmetric"
 	"github.com/cockroachdb/cockroach/pkg/util/mon"
 	"github.com/cockroachdb/cockroach/pkg/util/netutil"
 	"github.com/cockroachdb/cockroach/pkg/util/stop"
@@ -51,6 +46,7 @@ import (
 	"github.com/cockroachdb/errors"
 	"github.com/cockroachdb/logtags"
 	"github.com/cockroachdb/redact"
+	io_prometheus_client "github.com/prometheus/client_model/go"
 	"go.opentelemetry.io/otel/attribute"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -80,14 +76,18 @@ var connResultsBufferSize = settings.RegisterByteSizeSetting(
 var logConnAuth = settings.RegisterBoolSetting(
 	settings.ApplicationLevel,
 	sql.ConnAuditingClusterSettingName,
-	"if set, log SQL client connect and disconnect events (note: may hinder performance on loaded nodes)",
+	"if set, log SQL client connect and disconnect events to the SESSIONS log channel "+
+		"(note: may hinder performance on loaded nodes)",
 	false,
 	settings.WithPublic)
 
-var logSessionAuth = settings.RegisterBoolSetting(
+var logVerboseSessionAuth = settings.RegisterBoolSetting(
 	settings.ApplicationLevel,
 	sql.AuthAuditingClusterSettingName,
-	"if set, log SQL session login/disconnection events (note: may hinder performance on loaded nodes)",
+	"if set, log verbose SQL session authentication events to the SESSIONS log channel "+
+		"(note: may hinder performance on loaded nodes). "+
+		"Session start and end events are always logged regardless of this setting; "+
+		"disable the SESSIONS log channel to suppress them.",
 	false,
 	settings.WithPublic)
 
@@ -166,6 +166,13 @@ var (
 		Measurement: "Requests",
 		Unit:        metric.Unit_COUNT,
 	}
+	MetaPGWirePipelineCount = metric.Metadata{
+		Name:        "sql.pgwire.pipeline.count",
+		Help:        "Number of pgwire commands received by the server that have not yet begun processing",
+		Measurement: "Commands",
+		Unit:        metric.Unit_COUNT,
+		MetricType:  io_prometheus_client.MetricType_GAUGE,
+	}
 )
 
 const (
@@ -186,8 +193,11 @@ const (
 )
 
 // cancelMaxWait is the amount of time a draining server gives to sessions to
-// react to cancellation and return before a forceful shutdown.
-const cancelMaxWait = 1 * time.Second
+// react to cancellation and return before a forceful shutdown. It is natural to
+// set it to twice the maximum duration that a conn may be oblivious to having
+// had its context canceled. If it takes much longer than that, the connection
+// is not reacting as expected to cancellation.
+const cancelMaxWait = 2 * readTimeout
 
 // baseSQLMemoryBudget is the amount of memory pre-allocated in each connection.
 var baseSQLMemoryBudget = envutil.EnvOrDefaultInt64("COCKROACH_BASE_SQL_MEMORY_BUDGET",
@@ -216,6 +226,8 @@ type Server struct {
 
 	tenantMetrics *tenantSpecificMetrics
 
+	destinationMetrics destinationAggMetrics
+
 	mu struct {
 		syncutil.Mutex
 		// connCancelMap entries represent connections started when the server
@@ -232,6 +244,9 @@ type Server struct {
 		// SQL connections, e.g. when the draining process enters the phase whose
 		// duration is specified by the server.shutdown.connections.timeout.
 		rejectNewConnections bool
+
+		// destinations tracks the metrics for each destination.
+		destinations map[string]*destinationMetrics
 	}
 
 	auth struct {
@@ -255,14 +270,45 @@ type Server struct {
 	testingAuthLogEnabled syncutil.AtomicBool
 }
 
+// destMetrics returns the destination metrics for the given connection given
+// the current cidr mapping. For performance we cache a metrics object on the
+// connection. but we need to check if it is still valid. If its invalid, we
+// call lookup and update the cache.
+func (s *Server) destMetrics(ctx context.Context, c *conn) *destinationMetrics {
+	dm := c.curDestMetrics.Load()
+	if dm != nil && !dm.invalid.Load() {
+		return dm
+	}
+	dm = s.lookup(ctx, c.conn)
+	c.curDestMetrics.Store(dm)
+	return dm
+}
+
+type destinationAggMetrics struct {
+	BytesInCount  *aggmetric.AggCounter
+	BytesOutCount *aggmetric.AggCounter
+}
+
+// destinationMetrics is the set of metrics to a specific destination. A
+// destination can be defined based on a CIDR block. The invalid flag is used to
+// protect against CIDR mapping changes. When the CIDR mapping changes, the
+// destination metrics are invalidated and a new struct is created.
+type destinationMetrics struct {
+	// NB: The transition from valid to invalid is one way.
+	invalid atomic.Bool
+	// The counters should never be accessed directly, only through the
+	// functions.
+	BytesInCount  *aggmetric.Counter
+	BytesOutCount *aggmetric.Counter
+}
+
 // tenantSpecificMetrics is the set of metrics for a pgwire server
 // bound to a specific tenant.
 type tenantSpecificMetrics struct {
-	BytesInCount                *metric.Counter
-	BytesOutCount               *metric.Counter
 	Conns                       *metric.Gauge
 	NewConns                    *metric.Counter
 	ConnsWaitingToHash          *metric.Gauge
+	PGWirePipelineCount         *metric.Gauge
 	ConnLatency                 metric.IHistogram
 	ConnFailures                *metric.Counter
 	PGWireCancelTotalCount      *metric.Counter
@@ -276,11 +322,10 @@ func newTenantSpecificMetrics(
 	sqlMemMetrics sql.MemoryMetrics, histogramWindow time.Duration,
 ) *tenantSpecificMetrics {
 	return &tenantSpecificMetrics{
-		BytesInCount:       metric.NewCounter(MetaBytesIn),
-		BytesOutCount:      metric.NewCounter(MetaBytesOut),
-		Conns:              metric.NewGauge(MetaConns),
-		NewConns:           metric.NewCounter(MetaNewConns),
-		ConnsWaitingToHash: metric.NewGauge(MetaConnsWaitingToHash),
+		Conns:               metric.NewGauge(MetaConns),
+		NewConns:            metric.NewCounter(MetaNewConns),
+		ConnsWaitingToHash:  metric.NewGauge(MetaConnsWaitingToHash),
+		PGWirePipelineCount: metric.NewGauge(MetaPGWirePipelineCount),
 		ConnLatency: metric.NewHistogram(metric.HistogramOptions{
 			Mode:         metric.HistogramModePreferHdrLatency,
 			Metadata:     MetaConnLatency,
@@ -316,7 +361,6 @@ func MakeServer(
 	sqlMemMetrics sql.MemoryMetrics,
 	parentMemoryMonitor *mon.BytesMonitor,
 	histogramWindow time.Duration,
-	eventsExporter obs.EventsExporterInterface,
 	executorConfig *sql.ExecutorConfig,
 ) *Server {
 	ctx := ambientCtx.AnnotateCtx(context.Background())
@@ -326,6 +370,10 @@ func MakeServer(
 		execCfg:    executorConfig,
 
 		tenantMetrics: newTenantSpecificMetrics(sqlMemMetrics, histogramWindow),
+		destinationMetrics: destinationAggMetrics{
+			BytesInCount:  aggmetric.NewCounter(MetaBytesIn, "remote"),
+			BytesOutCount: aggmetric.NewCounter(MetaBytesOut, "remote"),
+		},
 	}
 	server.sqlMemoryPool = mon.NewMonitor("sql",
 		mon.MemoryResource,
@@ -339,7 +387,7 @@ func MakeServer(
 		nil, /* maxHist */
 		0, noteworthySQLMemoryUsageBytes, st)
 	server.sqlMemoryPool.StartNoReserved(ctx, parentMemoryMonitor)
-	server.SQLServer = sql.NewServer(executorConfig, server.sqlMemoryPool, eventsExporter)
+	server.SQLServer = sql.NewServer(executorConfig, server.sqlMemoryPool)
 
 	server.tenantSpecificConnMonitor = mon.NewMonitor("conn",
 		mon.MemoryResource,
@@ -350,7 +398,9 @@ func MakeServer(
 
 	server.mu.Lock()
 	server.mu.connCancelMap = make(cancelChanMap)
+	server.mu.destinations = make(map[string]*destinationMetrics)
 	server.mu.Unlock()
+	executorConfig.CidrLookup.SetOnChange(server.onCidrChange)
 
 	connAuthConf.SetOnChange(&st.SV, func(ctx context.Context) {
 		loadLocalHBAConfigUponRemoteSettingChange(ctx, server, st)
@@ -364,7 +414,7 @@ func MakeServer(
 
 // BytesOut returns the total number of bytes transmitted from this server.
 func (s *Server) BytesOut() uint64 {
-	return uint64(s.tenantMetrics.BytesOutCount.Count())
+	return uint64(s.destinationMetrics.BytesOutCount.Count())
 }
 
 // Match returns true if rd appears to be a Postgres connection.
@@ -398,6 +448,7 @@ func (s *Server) IsDraining() bool {
 func (s *Server) Metrics() []interface{} {
 	return []interface{}{
 		s.tenantMetrics,
+		s.destinationMetrics,
 		&s.SQLServer.Metrics.StartedStatementCounters,
 		&s.SQLServer.Metrics.ExecutedStatementCounters,
 		&s.SQLServer.Metrics.EngineMetrics,
@@ -497,11 +548,24 @@ func (s *Server) WaitForSQLConnsToClose(
 	s.setRejectNewConnectionsLocked(true)
 	s.mu.Unlock()
 
+	connectionTimeoutEvent := &eventpb.NodeShutdownConnectionTimeout{
+		CommonNodeEventDetails: eventpb.CommonNodeEventDetails{
+			NodeID: int32(s.execCfg.NodeInfo.NodeID.SQLInstanceID()),
+		},
+		Detail:        redact.SafeString("draining SQL queries after waiting for server.shutdown.connections.timeout"),
+		TimeoutMillis: uint32(connectionWait.Milliseconds()),
+	}
+
 	if connectionWait == 0 {
+		numOpenConns := s.GetConnCancelMapLen()
+		if numOpenConns > 0 {
+			connectionTimeoutEvent.ConnectionsRemaining = uint32(numOpenConns)
+			log.StructuredEvent(ctx, connectionTimeoutEvent)
+		}
 		return nil
 	}
 
-	log.Ops.Info(ctx, "waiting for clients to close existing SQL connections")
+	log.Ops.Infof(ctx, "waiting for clients to close %d existing SQL connections", s.GetConnCancelMapLen())
 
 	timer := time.NewTimer(connectionWait)
 	defer timer.Stop()
@@ -512,11 +576,8 @@ func (s *Server) WaitForSQLConnsToClose(
 	select {
 	// Connection wait times out.
 	case <-time.After(connectionWait):
-		log.Ops.Warningf(ctx,
-			"%d connections remain after waiting %s; proceeding to drain SQL connections",
-			s.GetConnCancelMapLen(),
-			connectionWait,
-		)
+		connectionTimeoutEvent.ConnectionsRemaining = uint32(s.GetConnCancelMapLen())
+		log.StructuredEvent(ctx, connectionTimeoutEvent)
 	case <-allConnsDone:
 	case <-ctx.Done():
 		return ctx.Err()
@@ -617,7 +678,15 @@ func (s *Server) drainImpl(
 	// Wait for connections to finish up their queries for the duration of queryWait.
 	select {
 	case <-time.After(queryWait):
-		log.Ops.Warningf(ctx, "canceling all sessions after waiting %s", queryWait)
+		transactionTimeoutEvent := &eventpb.NodeShutdownTransactionTimeout{
+			CommonNodeEventDetails: eventpb.CommonNodeEventDetails{
+				NodeID: int32(s.execCfg.NodeInfo.NodeID.SQLInstanceID()),
+			},
+			Detail:               redact.SafeString("forcibly closing SQL connections after waiting for server.shutdown.transactions.timeout"),
+			ConnectionsRemaining: uint32(s.GetConnCancelMapLen()),
+			TimeoutMillis:        uint32(queryWait.Milliseconds()),
+		}
+		log.StructuredEvent(ctx, transactionTimeoutEvent)
 	case <-allConnsDone:
 	case <-ctx.Done():
 		return ctx.Err()
@@ -764,14 +833,12 @@ func (s *Server) ServeConn(
 
 	sArgs, err := finalizeClientParameters(ctx, preServeStatus.clientParameters, &st.SV)
 	if err != nil {
-		preServeStatus.Reserved.Close(ctx)
 		return s.sendErr(ctx, st, conn, err)
 	}
 
 	// Transfer the memory account into this tenant.
-	tenantReserved, err := s.tenantSpecificConnMonitor.TransferAccount(ctx, &preServeStatus.Reserved)
+	tenantReserved, err := s.tenantSpecificConnMonitor.TransferAccount(ctx, preServeStatus.Reserved)
 	if err != nil {
-		preServeStatus.Reserved.Close(ctx)
 		return s.sendErr(ctx, st, conn, err)
 	}
 
@@ -828,6 +895,48 @@ func (s *Server) ServeConn(
 	return nil
 }
 
+// onCidrChange is called when the cluster setting for the CIDR lookup table
+// changes. We invalidate all existing metric mappings as it is possible that
+// they changed. On each connection, the next call to lookup will recompute the
+// current mapping for that connection.
+func (s *Server) onCidrChange(ctx context.Context) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, dest := range s.mu.destinations {
+		dest.invalid.Store(true)
+	}
+}
+
+// lookup returns the destination metrics for a given connection.
+func (s *Server) lookup(ctx context.Context, netConn net.Conn) *destinationMetrics {
+	ip := net.IPv4zero
+	if addr, ok := netConn.RemoteAddr().(*net.TCPAddr); ok {
+		ip = addr.IP
+	}
+	destination := s.execCfg.CidrLookup.LookupIP(ip)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if ret, ok := s.mu.destinations[destination]; ok {
+		// If there is an existing invalid entry, create a new valid entry. All
+		// the existing connections will still reference the old entry, but will
+		// get updated when they next attempt to use it. Note that we can't call
+		// AddChild again for the same destination name.
+		if ret.invalid.Load() {
+			ret = &destinationMetrics{
+				BytesInCount:  ret.BytesInCount,
+				BytesOutCount: ret.BytesOutCount,
+			}
+		}
+		return ret
+	}
+	ret := &destinationMetrics{
+		BytesInCount:  s.destinationMetrics.BytesInCount.AddChild(destination),
+		BytesOutCount: s.destinationMetrics.BytesOutCount.AddChild(destination),
+	}
+	s.mu.destinations[destination] = ret
+	return ret
+}
+
 func (s *Server) newConn(
 	ctx context.Context,
 	cancelConn context.CancelFunc,
@@ -851,11 +960,13 @@ func (s *Server) newConn(
 		readBuf:               pgwirebase.MakeReadBuffer(pgwirebase.ReadBufferOptionWithClusterSettings(sv)),
 		alwaysLogAuthActivity: s.testingAuthLogEnabled.Get(),
 	}
+	c.destMetrics = func() *destinationMetrics { return s.destMetrics(ctx, c) }
 	c.stmtBuf.Init()
+	c.stmtBuf.PipelineCount = s.tenantMetrics.PGWirePipelineCount
 	c.res.released = true
 	c.writerState.fi.buf = &c.writerState.buf
 	c.writerState.fi.lastFlushed = -1
-	c.msgBuilder.init(s.tenantMetrics.BytesOutCount)
+	c.msgBuilder.init(func(i int64) { c.destMetrics().BytesOutCount.Inc(i) })
 	c.errWriter.sv = sv
 	c.errWriter.msgBuilder = &c.msgBuilder
 
@@ -948,35 +1059,25 @@ func (s *Server) serveImpl(
 
 	sqlServer := s.SQLServer
 	inTestWithoutSQL := sqlServer == nil
-	if !inTestWithoutSQL {
-		sessionStart := timeutil.Now()
-		defer func() {
-			if c.authLogEnabled() {
-				endTime := timeutil.Now()
-				ev := &eventpb.ClientSessionEnd{
-					CommonEventDetails:      logpb.CommonEventDetails{Timestamp: endTime.UnixNano()},
-					CommonConnectionDetails: authOpt.connDetails,
-					Duration:                endTime.Sub(sessionStart).Nanoseconds(),
-				}
-				log.StructuredEvent(ctx, ev)
-			}
-		}()
-	}
 
 	// NOTE: We're going to write a few messages to the connection in this method,
 	// for the handshake. After that, all writes are done async, in the
 	// startWriter() goroutine.
-
-	// the authPipe below logs authentication messages iff its auth
-	// logger is non-nil. We define this here.
-	logAuthn := !inTestWithoutSQL && c.authLogEnabled()
 
 	// We'll build an authPipe to communicate with the authentication process.
 	systemIdentity := c.sessionArgs.SystemIdentity
 	if systemIdentity.Undefined() {
 		systemIdentity = c.sessionArgs.User
 	}
-	authPipe := newAuthPipe(c, logAuthn, authOpt, systemIdentity)
+	logVerboseAuthn := !inTestWithoutSQL && c.verboseAuthLogEnabled()
+	authPipe := newAuthPipe(c, logVerboseAuthn, authOpt, systemIdentity)
+
+	if !inTestWithoutSQL {
+		defer func() {
+			endTime := timeutil.Now()
+			authPipe.LogSessionEnd(ctx, endTime)
+		}()
+	}
 
 	// procWg waits for the command processor to return.
 	var procWg sync.WaitGroup
@@ -1011,7 +1112,7 @@ func (s *Server) serveImpl(
 	} else {
 		// sqlServer == nil means we are in a local test. In this case
 		// we only need the minimum to make pgx happy.
-		defer reserved.Close(ctx)
+		defer reserved.Clear(ctx)
 		var err error
 		for param, value := range testingStatusReportParams {
 			err = c.bufferParamStatus(param, value)
@@ -1041,7 +1142,7 @@ func (s *Server) serveImpl(
 	for {
 		breakLoop, isSimpleQuery, err := func() (bool, bool, error) {
 			typ, n, err := c.readBuf.ReadTypedMsg(&c.rd)
-			c.metrics.BytesInCount.Inc(int64(n))
+			s.destMetrics(ctx, c).BytesInCount.Inc(int64(n))
 			if err == nil {
 				if knobs := s.execCfg.PGWireTestingKnobs; knobs != nil {
 					if afterReadMsgTestingKnob := knobs.AfterReadMsgTestingKnob; afterReadMsgTestingKnob != nil {
@@ -1056,7 +1157,7 @@ func (s *Server) serveImpl(
 
 					// Slurp the remaining bytes.
 					slurpN, slurpErr := c.readBuf.SlurpBytes(&c.rd, pgwirebase.GetMessageTooBigSize(err))
-					c.metrics.BytesInCount.Inc(int64(slurpN))
+					s.destMetrics(ctx, c).BytesInCount.Inc(int64(slurpN))
 					if slurpErr != nil {
 						return false, isSimpleQuery, errors.Wrap(slurpErr, "pgwire: error slurping remaining bytes")
 					}
@@ -1402,8 +1503,10 @@ func (s *Server) sendErr(
 	ctx context.Context, st *cluster.Settings, conn net.Conn, err error,
 ) error {
 	w := errWriter{
-		sv:         &st.SV,
-		msgBuilder: newWriteBuffer(s.tenantMetrics.BytesOutCount),
+		sv: &st.SV,
+		msgBuilder: newWriteBuffer(func(n int64) {
+			s.lookup(ctx, conn).BytesOutCount.Inc(n)
+		}),
 	}
 	// We could, but do not, report server-side network errors while
 	// trying to send the client error. This is because clients that

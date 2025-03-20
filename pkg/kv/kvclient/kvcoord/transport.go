@@ -1,12 +1,7 @@
 // Copyright 2016 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package kvcoord
 
@@ -49,7 +44,9 @@ type SendOptions struct {
 //
 // The caller is responsible for ordering the replicas in the slice according to
 // the order in which the should be tried.
-type TransportFactory func(SendOptions, ReplicaSlice) (Transport, error)
+type TransportFactory func(
+	SendOptions, *nodedialer.Dialer, ReplicaSlice,
+) (Transport, error)
 
 // Transport objects can send RPCs to one or more replicas of a range.
 // All calls to Transport methods are made from a single thread, so
@@ -317,7 +314,9 @@ func (h *byHealth) Less(i, j int) bool {
 // Transport. This is useful for tests that want to use DistSender
 // without a full RPC stack.
 func SenderTransportFactory(tracer *tracing.Tracer, sender kv.Sender) TransportFactory {
-	return func(_ SendOptions, replicas ReplicaSlice) (Transport, error) {
+	return func(
+		_ SendOptions, _ *nodedialer.Dialer, replicas ReplicaSlice,
+	) (Transport, error) {
 		// Always send to the first replica.
 		replica := replicas[0].ReplicaDescriptor
 		return &senderTransport{tracer, sender, replica, false}, nil

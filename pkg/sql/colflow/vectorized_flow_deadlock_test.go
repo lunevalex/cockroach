@@ -1,12 +1,7 @@
 // Copyright 2022 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package colflow_test
 
@@ -19,8 +14,8 @@ import (
 
 	"github.com/cockroachdb/cockroach/pkg/base"
 	"github.com/cockroachdb/cockroach/pkg/sql/execinfra"
-	"github.com/cockroachdb/cockroach/pkg/testutils/serverutils"
 	"github.com/cockroachdb/cockroach/pkg/testutils/skip"
+	"github.com/cockroachdb/cockroach/pkg/testutils/testcluster"
 	"github.com/cockroachdb/cockroach/pkg/util/cancelchecker"
 	"github.com/cockroachdb/cockroach/pkg/util/envutil"
 	"github.com/cockroachdb/cockroach/pkg/util/leaktest"
@@ -47,9 +42,10 @@ func TestVectorizedFlowDeadlocksWhenSpilling(t *testing.T) {
 			VecFDsToAcquire: vecFDsLimit,
 		}},
 	}
+	tc := testcluster.StartTestCluster(t, 1, base.TestClusterArgs{ServerArgs: serverArgs})
 	ctx := context.Background()
-	s, conn, _ := serverutils.StartServer(t, serverArgs)
-	defer s.Stopper().Stop(ctx)
+	defer tc.Stopper().Stop(ctx)
+	conn := tc.Conns[0]
 
 	_, err := conn.ExecContext(ctx, "CREATE TABLE t (a, b) AS SELECT i, i FROM generate_series(1, 10000) AS g(i)")
 	require.NoError(t, err)
@@ -61,7 +57,7 @@ func TestVectorizedFlowDeadlocksWhenSpilling(t *testing.T) {
 	_, err = conn.ExecContext(ctx, "SET CLUSTER SETTING sql.distsql.acquire_vec_fds.max_retries = 1")
 	require.NoError(t, err)
 
-	queryCtx, queryCtxCancel := context.WithDeadline(ctx, timeutil.Now().Add(time.Minute))
+	queryCtx, queryCtxCancel := context.WithDeadline(ctx, timeutil.Now().Add(10*time.Second))
 	defer queryCtxCancel()
 	// Run a query with a hash joiner feeding into a hash aggregator, with both
 	// operators spilling to disk. We expect that the hash aggregator won't be
@@ -73,5 +69,5 @@ func TestVectorizedFlowDeadlocksWhenSpilling(t *testing.T) {
 	// We expect an error that is different from the query cancellation (which
 	// is what SQL layer returns on a context cancellation).
 	require.NotNil(t, err)
-	require.False(t, strings.Contains(err.Error(), cancelchecker.QueryCanceledError.Error()), err)
+	require.False(t, strings.Contains(err.Error(), cancelchecker.QueryCanceledError.Error()))
 }

@@ -1,12 +1,7 @@
 // Copyright 2017 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package sql
 
@@ -31,6 +26,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/colfetcher"
 	"github.com/cockroachdb/cockroach/pkg/sql/delegate"
 	"github.com/cockroachdb/cockroach/pkg/sql/execinfra"
+	"github.com/cockroachdb/cockroach/pkg/sql/gpq"
 	"github.com/cockroachdb/cockroach/pkg/sql/lex"
 	"github.com/cockroachdb/cockroach/pkg/sql/paramparse"
 	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/pgcode"
@@ -203,9 +199,7 @@ var varGen = map[string]sessionVar{
 			m.SetAvoidBuffering(b)
 			return nil
 		},
-		GlobalDefault: func(sv *settings.Values) string {
-			return "false"
-		},
+		GlobalDefault: globalFalse,
 	},
 
 	// See https://www.postgresql.org/docs/10/static/runtime-config-client.html
@@ -401,7 +395,7 @@ var varGen = map[string]sessionVar{
 
 	// See https://www.postgresql.org/docs/10/static/runtime-config-client.html#GUC-DEFAULT-TRANSACTION-ISOLATION
 	`default_transaction_isolation`: {
-		Set: func(_ context.Context, m sessionDataMutator, s string) error {
+		Set: func(ctx context.Context, m sessionDataMutator, s string) error {
 			allowReadCommitted := allowReadCommittedIsolation.Get(&m.settings.SV)
 			allowSnapshot := allowSnapshotIsolation.Get(&m.settings.SV)
 			var allowedValues = []string{"serializable"}
@@ -412,20 +406,38 @@ var varGen = map[string]sessionVar{
 				allowedValues = append(allowedValues, "read committed")
 			}
 			level, ok := tree.IsolationLevelMap[strings.ToLower(s)]
+			originalLevel := level
+			upgraded := false
 			if !ok {
 				return newVarValueError(`default_transaction_isolation`, s, allowedValues...)
 			}
 			switch level {
-			case tree.ReadUncommittedIsolation, tree.ReadCommittedIsolation:
+			case tree.ReadUncommittedIsolation:
+				upgraded = true
+				fallthrough
+			case tree.ReadCommittedIsolation:
 				level = tree.SerializableIsolation
 				if allowReadCommitted {
 					level = tree.ReadCommittedIsolation
+				} else {
+					upgraded = true
 				}
-			case tree.RepeatableReadIsolation, tree.SnapshotIsolation:
+			case tree.RepeatableReadIsolation:
+				upgraded = true
+				fallthrough
+			case tree.SnapshotIsolation:
 				level = tree.SerializableIsolation
 				if allowSnapshot {
 					level = tree.SnapshotIsolation
+				} else {
+					upgraded = true
 				}
+			}
+			if upgraded {
+				if f := m.upgradedIsolationLevel; f != nil {
+					f()
+				}
+				telemetry.Inc(sqltelemetry.IsolationLevelUpgradedCounter(ctx, originalLevel))
 			}
 			m.SetDefaultTransactionIsolationLevel(level)
 			return nil
@@ -556,7 +568,7 @@ var varGen = map[string]sessionVar{
 		Set: func(_ context.Context, m sessionDataMutator, s string) error {
 			mode, ok := sessiondatapb.DistSQLExecModeFromString(s)
 			if !ok {
-				return newVarValueError(`distsql`, s, "on", "off", "auto", "always", "2.0-auto", "2.0-off")
+				return newVarValueError(`distsql`, s, "on", "off", "auto", "always")
 			}
 			m.SetDistSQLMode(mode)
 			return nil
@@ -624,6 +636,23 @@ var varGen = map[string]sessionVar{
 		},
 		Get: func(evalCtx *extendedEvalContext, _ *kv.Txn) (string, error) {
 			return formatBoolAsPostgresSetting(evalCtx.SessionData().PartiallyDistributedPlansDisabled), nil
+		},
+		GlobalDefault: globalFalse,
+	},
+
+	// CockroachDB extension.
+	`disable_vec_union_eager_cancellation`: {
+		GetStringVal: makePostgresBoolGetStringValFn(`disable_vec_union_eager_cancellation`),
+		Set: func(_ context.Context, m sessionDataMutator, s string) error {
+			b, err := paramparse.ParseBoolVar("disable_vec_union_eager_cancellation", s)
+			if err != nil {
+				return err
+			}
+			m.SetDisableVecUnionEagerCancellation(b)
+			return nil
+		},
+		Get: func(evalCtx *extendedEvalContext, _ *kv.Txn) (string, error) {
+			return formatBoolAsPostgresSetting(evalCtx.SessionData().DisableVecUnionEagerCancellation), nil
 		},
 		GlobalDefault: globalFalse,
 	},
@@ -760,9 +789,7 @@ var varGen = map[string]sessionVar{
 		Get: func(evalCtx *extendedEvalContext, _ *kv.Txn) (string, error) {
 			return "on", nil
 		},
-		GlobalDefault: func(sv *settings.Values) string {
-			return "on"
-		},
+		GlobalDefault: globalTrue,
 	},
 
 	// CockroachDB extension.
@@ -858,23 +885,6 @@ var varGen = map[string]sessionVar{
 			return formatBoolAsPostgresSetting(evalCtx.SessionData().OptimizerUseNotVisibleIndexes), nil
 		},
 		GlobalDefault: globalFalse,
-	},
-
-	// CockroachDB extension.
-	`optimizer_merge_joins_enabled`: {
-		GetStringVal: makePostgresBoolGetStringValFn(`optimizer_merge_joins_enabled`),
-		Set: func(_ context.Context, m sessionDataMutator, s string) error {
-			b, err := paramparse.ParseBoolVar("optimizer_merge_joins_enabled", s)
-			if err != nil {
-				return err
-			}
-			m.SetOptimizerMergeJoinsEnabled(b)
-			return nil
-		},
-		Get: func(evalCtx *extendedEvalContext, _ *kv.Txn) (string, error) {
-			return formatBoolAsPostgresSetting(evalCtx.SessionData().OptimizerMergeJoinsEnabled), nil
-		},
-		GlobalDefault: globalTrue,
 	},
 
 	// CockroachDB extension.
@@ -1028,10 +1038,9 @@ var varGen = map[string]sessionVar{
 		Set: func(ctx context.Context, m sessionDataMutator, s string) error {
 			styleVal, ok := duration.IntervalStyle_value[strings.ToUpper(s)]
 			if !ok {
-				validIntervalStyles := make([]string, 0, len(duration.IntervalStyle_name))
-				for k := 0; k < len(duration.IntervalStyle_name); k++ {
-					name := duration.IntervalStyle_name[int32(k)]
-					validIntervalStyles = append(validIntervalStyles, strings.ToLower(name))
+				validIntervalStyles := make([]string, 0, len(duration.IntervalStyle_value))
+				for k := range duration.IntervalStyle_value {
+					validIntervalStyles = append(validIntervalStyles, strings.ToLower(k))
 				}
 				return newVarValueError(`IntervalStyle`, s, validIntervalStyles...)
 			}
@@ -1302,7 +1311,7 @@ var varGen = map[string]sessionVar{
 			}
 			if f < 0 || f > 1 {
 				return pgerror.Newf(pgcode.InvalidParameterValue,
-					"%.2f is out of range for similarity_threshold", f)
+					"%f is out of range for similarity_threshold")
 			}
 			m.SetTrigramSimilarityThreshold(f)
 			return nil
@@ -1334,7 +1343,7 @@ var varGen = map[string]sessionVar{
 			return strconv.FormatInt(ms, 10), nil
 		},
 		GlobalDefault: func(sv *settings.Values) string {
-			return strconv.FormatInt(0, 10)
+			return "0s"
 		},
 	},
 
@@ -1443,12 +1452,15 @@ var varGen = map[string]sessionVar{
 		Get: func(evalCtx *extendedEvalContext, _ *kv.Txn) (string, error) {
 			return security.GetConfiguredPasswordHashMethod(&evalCtx.Settings.SV).String(), nil
 		},
-		SetWithPlanner: func(ctx context.Context, p *planner, local bool, val string) error {
-			method := security.GetConfiguredPasswordHashMethod(&p.ExecCfg().Settings.SV)
-			if val != method.String() {
+		Set: func(_ context.Context, m sessionDataMutator, s string) error {
+			method := security.GetConfiguredPasswordHashMethod(&m.settings.SV)
+			if s != method.String() {
 				return newCannotChangeParameterError("password_encryption")
 			}
 			return nil
+		},
+		GlobalDefault: func(sv *settings.Values) string {
+			return security.GetConfiguredPasswordHashMethod(sv).String()
 		},
 	},
 
@@ -1588,8 +1600,7 @@ var varGen = map[string]sessionVar{
 			if err != nil {
 				return err
 			}
-			m.SetReadOnly(b)
-			return nil
+			return m.SetReadOnly(b)
 		},
 		Get: func(evalCtx *extendedEvalContext, _ *kv.Txn) (string, error) {
 			return formatBoolAsPostgresSetting(evalCtx.TxnReadOnly), nil
@@ -1821,6 +1832,23 @@ var varGen = map[string]sessionVar{
 		GlobalDefault: func(sv *settings.Values) string {
 			return formatBoolAsPostgresSetting(disallowFullTableScans.Get(sv))
 		},
+	},
+
+	// CockroachDB extension.
+	`optimizer_apply_full_scan_penalty_to_virtual_tables`: {
+		GetStringVal: makePostgresBoolGetStringValFn(`optimizer_apply_full_scan_penalty_to_virtual_tables`),
+		Set: func(_ context.Context, m sessionDataMutator, s string) error {
+			b, err := paramparse.ParseBoolVar(`optimizer_apply_full_scan_penalty_to_virtual_tables`, s)
+			if err != nil {
+				return err
+			}
+			m.SetOptimizerApplyFullScanPenaltyToVirtualTables(b)
+			return nil
+		},
+		Get: func(evalCtx *extendedEvalContext, _ *kv.Txn) (string, error) {
+			return formatBoolAsPostgresSetting(evalCtx.SessionData().OptimizerApplyFullScanPenaltyToVirtualTables), nil
+		},
+		GlobalDefault: globalFalse,
 	},
 
 	// CockroachDB extension.
@@ -2212,7 +2240,7 @@ var varGen = map[string]sessionVar{
 			return formatBoolAsPostgresSetting(evalCtx.SessionData().ParallelizeMultiKeyLookupJoinsEnabled), nil
 		},
 		GlobalDefault: func(sv *settings.Values) string {
-			return rowexec.ParallelizeMultiKeyLookupJoinsEnabled.String(sv)
+			return formatBoolAsPostgresSetting(rowexec.ParallelizeMultiKeyLookupJoinsEnabled.Get(sv))
 		},
 	},
 
@@ -2232,7 +2260,9 @@ var varGen = map[string]sessionVar{
 		Get: func(evalCtx *extendedEvalContext, _ *kv.Txn) (string, error) {
 			return formatBoolAsPostgresSetting(evalCtx.SessionData().CostScansWithDefaultColSize), nil
 		},
-		GlobalDefault: globalFalse,
+		GlobalDefault: func(sv *settings.Values) string {
+			return formatBoolAsPostgresSetting(costScansWithDefaultColSize.Get(sv))
+		},
 	},
 
 	// CockroachDB extension.
@@ -2294,7 +2324,7 @@ var varGen = map[string]sessionVar{
 
 	// CockroachDB extension.
 	`copy_num_retries_per_batch`: {
-		GetStringVal: makePostgresBoolGetStringValFn(`copy_num_retries_per_batch`),
+		GetStringVal: makeIntGetStringValFn(`copy_num_retries_per_batch`),
 		Set: func(_ context.Context, m sessionDataMutator, s string) error {
 			b, err := strconv.ParseInt(s, 10, 64)
 			if err != nil {
@@ -3196,6 +3226,191 @@ var varGen = map[string]sessionVar{
 		GlobalDefault: func(sv *settings.Values) string {
 			return strconv.FormatInt(2, 10)
 		},
+	},
+
+	// CockroachDB extension.
+	`optimizer_use_virtual_computed_column_stats`: {
+		GetStringVal: makePostgresBoolGetStringValFn(`optimizer_use_virtual_computed_column_stats`),
+		Set: func(_ context.Context, m sessionDataMutator, s string) error {
+			b, err := paramparse.ParseBoolVar("optimizer_use_virtual_computed_column_stats", s)
+			if err != nil {
+				return err
+			}
+			m.SetOptimizerUseVirtualComputedColumnStats(b)
+			return nil
+		},
+		Get: func(evalCtx *extendedEvalContext, _ *kv.Txn) (string, error) {
+			return formatBoolAsPostgresSetting(evalCtx.SessionData().OptimizerUseVirtualComputedColumnStats), nil
+		},
+		GlobalDefault: globalFalse,
+	},
+
+	// CockroachDB extension.
+	`optimizer_use_trigram_similarity_optimization`: {
+		GetStringVal: makePostgresBoolGetStringValFn(`optimizer_use_trigram_similarity_optimization`),
+		Set: func(_ context.Context, m sessionDataMutator, s string) error {
+			b, err := paramparse.ParseBoolVar("optimizer_use_trigram_similarity_optimization", s)
+			if err != nil {
+				return err
+			}
+			m.SetOptimizerUseTrigramSimilarityOptimization(b)
+			return nil
+		},
+		Get: func(evalCtx *extendedEvalContext, _ *kv.Txn) (string, error) {
+			return formatBoolAsPostgresSetting(evalCtx.SessionData().OptimizerUseTrigramSimilarityOptimization), nil
+		},
+		GlobalDefault: globalFalse,
+	},
+
+	// CockroachDB extension.
+	`optimizer_use_improved_distinct_on_limit_hint_costing`: {
+		GetStringVal: makePostgresBoolGetStringValFn(`optimizer_use_improved_distinct_on_limit_hint_costing`),
+		Set: func(_ context.Context, m sessionDataMutator, s string) error {
+			b, err := paramparse.ParseBoolVar("optimizer_use_improved_distinct_on_limit_hint_costing", s)
+			if err != nil {
+				return err
+			}
+			m.SetOptimizerUseImprovedDistinctOnLimitHintCosting(b)
+			return nil
+		},
+		Get: func(evalCtx *extendedEvalContext, _ *kv.Txn) (string, error) {
+			return formatBoolAsPostgresSetting(evalCtx.SessionData().OptimizerUseImprovedDistinctOnLimitHintCosting), nil
+		},
+		GlobalDefault: globalFalse,
+	},
+
+	// CockroachDB extension.
+	`optimizer_use_improved_trigram_similarity_selectivity`: {
+		GetStringVal: makePostgresBoolGetStringValFn(`optimizer_use_improved_trigram_similarity_selectivity`),
+		Set: func(_ context.Context, m sessionDataMutator, s string) error {
+			b, err := paramparse.ParseBoolVar("optimizer_use_improved_trigram_similarity_selectivity", s)
+			if err != nil {
+				return err
+			}
+			m.SetOptimizerUseImprovedTrigramSimilaritySelectivity(b)
+			return nil
+		},
+		Get: func(evalCtx *extendedEvalContext, _ *kv.Txn) (string, error) {
+			return formatBoolAsPostgresSetting(evalCtx.SessionData().OptimizerUseImprovedTrigramSimilaritySelectivity), nil
+		},
+		GlobalDefault: globalFalse,
+	},
+
+	// CockroachDB extension.
+	`optimizer_use_improved_zigzag_join_costing`: {
+		GetStringVal: makePostgresBoolGetStringValFn(`optimizer_use_improved_zigzag_join_costing`),
+		Set: func(_ context.Context, m sessionDataMutator, s string) error {
+			b, err := paramparse.ParseBoolVar("optimizer_use_improved_zigzag_join_costing", s)
+			if err != nil {
+				return err
+			}
+			m.SetOptimizerUseImprovedZigzagJoinCosting(b)
+			return nil
+		},
+		Get: func(evalCtx *extendedEvalContext, _ *kv.Txn) (string, error) {
+			return formatBoolAsPostgresSetting(evalCtx.SessionData().OptimizerUseImprovedZigzagJoinCosting), nil
+		},
+		GlobalDefault: globalFalse,
+	},
+
+	// CockroachDB extension.
+	`optimizer_use_improved_multi_column_selectivity_estimate`: {
+		GetStringVal: makePostgresBoolGetStringValFn(`optimizer_use_improved_multi_column_selectivity_estimate`),
+		Set: func(_ context.Context, m sessionDataMutator, s string) error {
+			b, err := paramparse.ParseBoolVar("optimizer_use_improved_multi_column_selectivity_estimate", s)
+			if err != nil {
+				return err
+			}
+			m.SetOptimizerUseImprovedMultiColumnSelectivityEstimate(b)
+			return nil
+		},
+		Get: func(evalCtx *extendedEvalContext, _ *kv.Txn) (string, error) {
+			return formatBoolAsPostgresSetting(evalCtx.SessionData().OptimizerUseImprovedMultiColumnSelectivityEstimate), nil
+		},
+		GlobalDefault: globalFalse,
+	},
+
+	// CockroachDB extension.
+	`optimizer_prove_implication_with_virtual_computed_columns`: {
+		GetStringVal: makePostgresBoolGetStringValFn(`optimizer_prove_implication_with_virtual_computed_columns`),
+		Set: func(_ context.Context, m sessionDataMutator, s string) error {
+			b, err := paramparse.ParseBoolVar("optimizer_prove_implication_with_virtual_computed_columns", s)
+			if err != nil {
+				return err
+			}
+			m.SetOptimizerProveImplicationWithVirtualComputedColumns(b)
+			return nil
+		},
+		Get: func(evalCtx *extendedEvalContext, _ *kv.Txn) (string, error) {
+			return formatBoolAsPostgresSetting(evalCtx.SessionData().OptimizerProveImplicationWithVirtualComputedColumns), nil
+		},
+		GlobalDefault: globalFalse,
+	},
+
+	// CockroachDB extension.
+	`optimizer_push_offset_into_index_join`: {
+		GetStringVal: makePostgresBoolGetStringValFn(`optimizer_push_offset_into_index_join`),
+		Set: func(_ context.Context, m sessionDataMutator, s string) error {
+			b, err := paramparse.ParseBoolVar("optimizer_push_offset_into_index_join", s)
+			if err != nil {
+				return err
+			}
+			m.SetOptimizerPushOffsetIntoIndexJoin(b)
+			return nil
+		},
+		Get: func(evalCtx *extendedEvalContext, _ *kv.Txn) (string, error) {
+			return formatBoolAsPostgresSetting(evalCtx.SessionData().OptimizerPushOffsetIntoIndexJoin), nil
+		},
+		GlobalDefault: globalFalse,
+	},
+
+	`plan_cache_mode`: {
+		SetWithPlanner: func(ctx context.Context, p *planner, local bool, s string) error {
+			mode, ok := sessiondatapb.PlanCacheModeFromString(s)
+			if !ok {
+				return newVarValueError(
+					`plan_cache_mode`,
+					s,
+					sessiondatapb.PlanCacheModeForceCustom.String(),
+					sessiondatapb.PlanCacheModeForceGeneric.String(),
+					sessiondatapb.PlanCacheModeAuto.String(),
+				)
+			}
+			if mode == sessiondatapb.PlanCacheModeForceGeneric ||
+				mode == sessiondatapb.PlanCacheModeAuto {
+				evalCtx := p.EvalContext()
+				if err := gpq.CheckClusterSupportsGenericQueryPlans(evalCtx.Settings, evalCtx.ClusterID); err != nil {
+					return err
+				}
+			}
+			return p.applyOnSessionDataMutators(ctx, local, func(m sessionDataMutator) error {
+				m.SetPlanCacheMode(mode)
+				return nil
+			})
+		},
+		Get: func(evalCtx *extendedEvalContext, _ *kv.Txn) (string, error) {
+			return evalCtx.SessionData().PlanCacheMode.String(), nil
+		},
+		GlobalDefault: func(sv *settings.Values) string {
+			return sessiondatapb.PlanCacheModeForceCustom.String()
+		},
+	},
+
+	// CockroachDB extension.
+	`legacy_varchar_typing`: {
+		GetStringVal: makePostgresBoolGetStringValFn(`legacy_varchar_typing`),
+		Set: func(_ context.Context, m sessionDataMutator, s string) error {
+			b, err := paramparse.ParseBoolVar("legacy_varchar_typing", s)
+			if err != nil {
+				return err
+			}
+			m.SetLegacyVarcharTyping(b)
+			return nil
+		},
+		Get: func(evalCtx *extendedEvalContext, _ *kv.Txn) (string, error) {
+			return formatBoolAsPostgresSetting(evalCtx.SessionData().LegacyVarcharTyping), nil
+		},
+		GlobalDefault: globalTrue,
 	},
 }
 

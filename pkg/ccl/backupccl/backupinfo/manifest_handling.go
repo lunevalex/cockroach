@@ -1,10 +1,7 @@
 // Copyright 2016 The Cockroach Authors.
 //
-// Licensed as a CockroachDB Enterprise file under the Cockroach Community
-// License (the "License"); you may not use this file except in compliance with
-// the License. You may obtain a copy of the License at
-//
-//     https://github.com/cockroachdb/cockroach/blob/master/licenses/CCL.txt
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package backupinfo
 
@@ -152,7 +149,7 @@ func ReadBackupManifestFromURI(
 		return backuppb.BackupManifest{}, 0, err
 	}
 	defer exportStore.Close()
-	return ReadBackupManifestFromStore(ctx, mem, exportStore, uri, encryption, kmsEnv)
+	return ReadBackupManifestFromStore(ctx, mem, exportStore, encryption, kmsEnv)
 }
 
 // ReadBackupManifestFromStore reads and unmarshalls a BackupManifest from the
@@ -161,7 +158,6 @@ func ReadBackupManifestFromStore(
 	ctx context.Context,
 	mem *mon.BoundAccount,
 	exportStore cloud.ExternalStorage,
-	storeURI string,
 	encryption *jobspb.BackupEncryptionOptions,
 	kmsEnv cloud.KMSEnv,
 ) (backuppb.BackupManifest, int64, error) {
@@ -214,7 +210,6 @@ func ReadBackupManifestFromStore(
 		}
 	}
 	manifest.Dir = exportStore.Conf()
-	manifest.Dir.URI = storeURI
 	return manifest, memSize, nil
 }
 
@@ -1557,26 +1552,17 @@ func GetBackupManifests(
 	return manifests, memMu.total, nil
 }
 
-// MakeBackupCodec returns the codec that was used to encode the keys in the
-// backup. We iterate over all the provided manifests and use the first
-// non-empty manifest to determine the codec. If all manifests are empty we
-// default to the system codec.
-func MakeBackupCodec(manifests []backuppb.BackupManifest) (keys.SQLCodec, error) {
+// MakeBackupCodec returns the codec that was used to encode the keys in the backup.
+func MakeBackupCodec(manifest backuppb.BackupManifest) (keys.SQLCodec, error) {
 	backupCodec := keys.SystemSQLCodec
-	for _, manifest := range manifests {
-		if len(manifest.Spans) == 0 {
-			continue
+	if len(manifest.Spans) != 0 && !manifest.HasTenants() {
+		// If there are no tenant targets, then the entire keyspace covered by
+		// Spans must lie in 1 tenant.
+		_, backupTenantID, err := keys.DecodeTenantPrefix(manifest.Spans[0].Key)
+		if err != nil {
+			return backupCodec, err
 		}
-
-		if !manifest.HasTenants() {
-			// If there are no tenant targets, then the entire keyspace covered by
-			// Spans must lie in 1 tenant.
-			_, backupTenantID, err := keys.DecodeTenantPrefix(manifest.Spans[0].Key)
-			if err != nil {
-				return backupCodec, err
-			}
-			backupCodec = keys.MakeSQLCodec(backupTenantID)
-		}
+		backupCodec = keys.MakeSQLCodec(backupTenantID)
 	}
 	return backupCodec, nil
 }

@@ -1,10 +1,7 @@
 // Copyright 2020 The Cockroach Authors.
 //
-// Licensed as a CockroachDB Enterprise file under the Cockroach Community
-// License (the "License"); you may not use this file except in compliance with
-// the License. You may obtain a copy of the License at
-//
-//     https://github.com/cockroachdb/cockroach/blob/master/licenses/CCL.txt
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package backupccl
 
@@ -60,7 +57,7 @@ const allSchedules = 0
 type execSchedulesFn = func(ctx context.Context, maxSchedules int64) error
 type testHelper struct {
 	iodir            string
-	server           serverutils.ApplicationLayerInterface
+	server           serverutils.TestServerInterface
 	env              *jobstest.JobSchedulerTestEnv
 	cfg              *scheduledjobs.JobExecutionConfig
 	sqlDB            *sqlutils.SQLRunner
@@ -111,7 +108,7 @@ func newTestHelper(t *testing.T) (*testHelper, func()) {
 	s, db, _ := serverutils.StartServer(t, args)
 	require.NotNil(t, th.cfg)
 	th.sqlDB = sqlutils.MakeSQLRunner(db)
-	th.server = s.ApplicationLayer()
+	th.server = s
 	th.sqlDB.Exec(t, `SET CLUSTER SETTING bulkio.backup.merge_file_buffer_size = '1MiB'`)
 	th.sqlDB.Exec(t, `SET CLUSTER SETTING kv.closed_timestamp.target_duration = '100ms'`) // speeds up test
 
@@ -132,7 +129,7 @@ func (h *testHelper) setOverrideAsOfClauseKnob(t *testing.T) {
 	}
 }
 
-func (h *testHelper) loadSchedule(t *testing.T, scheduleID jobspb.ScheduleID) *jobs.ScheduledJob {
+func (h *testHelper) loadSchedule(t *testing.T, scheduleID int64) *jobs.ScheduledJob {
 	t.Helper()
 
 	loaded, err := jobs.ScheduledJobDB(h.internalDB()).
@@ -146,7 +143,7 @@ func (h *testHelper) clearSchedules(t *testing.T) {
 	h.sqlDB.Exec(t, "DELETE FROM system.scheduled_jobs WHERE true")
 }
 
-func (h *testHelper) waitForSuccessfulScheduledJob(t *testing.T, scheduleID jobspb.ScheduleID) {
+func (h *testHelper) waitForSuccessfulScheduledJob(t *testing.T, scheduleID int64) {
 	query := "SELECT id FROM " + h.env.SystemJobsTableName() +
 		" WHERE status=$1 AND created_by_type=$2 AND created_by_id=$3"
 
@@ -160,7 +157,7 @@ func (h *testHelper) waitForSuccessfulScheduledJob(t *testing.T, scheduleID jobs
 }
 
 func (h *testHelper) waitForSuccessfulScheduledJobCount(
-	t *testing.T, scheduleID jobspb.ScheduleID, expectedCount int,
+	t *testing.T, scheduleID int64, expectedCount int,
 ) {
 	query := "SELECT count(*) FROM " + h.env.SystemJobsTableName() +
 		" WHERE status=$1 AND created_by_type=$2 AND created_by_id=$3"
@@ -283,57 +280,57 @@ CREATE TABLE other_db.t1(a int);
 		{
 			name:               "fully-qualified-table-name",
 			query:              "CREATE SCHEDULE FOR BACKUP mydb.public.t1 INTO $1 RECURRING '@hourly'",
-			expectedBackupStmt: "BACKUP TABLE mydb.public.t1 INTO '%s' WITH OPTIONS (detached)",
+			expectedBackupStmt: "BACKUP TABLE mydb.public.t1 INTO %s'%s' WITH OPTIONS (detached)",
 		},
 		{
 			name:               "schema-qualified-table-name",
 			query:              "CREATE SCHEDULE FOR BACKUP public.t1 INTO $1 RECURRING '@hourly'",
-			expectedBackupStmt: "BACKUP TABLE mydb.public.t1 INTO '%s' WITH OPTIONS (detached)",
+			expectedBackupStmt: "BACKUP TABLE mydb.public.t1 INTO %s'%s' WITH OPTIONS (detached)",
 		},
 		{
 			name:               "uds-qualified-table-name",
 			query:              "CREATE SCHEDULE FOR BACKUP myschema.mytbl INTO $1 RECURRING '@hourly'",
-			expectedBackupStmt: "BACKUP TABLE mydb.myschema.mytbl INTO '%s' WITH OPTIONS (detached)",
+			expectedBackupStmt: "BACKUP TABLE mydb.myschema.mytbl INTO %s'%s' WITH OPTIONS (detached)",
 		},
 		{
 			name:               "db-qualified-table-name",
 			query:              "CREATE SCHEDULE FOR BACKUP mydb.t1 INTO $1 RECURRING '@hourly'",
-			expectedBackupStmt: "BACKUP TABLE mydb.public.t1 INTO '%s' WITH OPTIONS (detached)",
+			expectedBackupStmt: "BACKUP TABLE mydb.public.t1 INTO %s'%s' WITH OPTIONS (detached)",
 		},
 		{
 			name:               "unqualified-table-name",
 			query:              "CREATE SCHEDULE FOR BACKUP t1 INTO $1 RECURRING '@hourly'",
-			expectedBackupStmt: "BACKUP TABLE mydb.public.t1 INTO '%s' WITH OPTIONS (detached)",
+			expectedBackupStmt: "BACKUP TABLE mydb.public.t1 INTO %s'%s' WITH OPTIONS (detached)",
 		},
 		{
 			name:               "unqualified-table-name-with-symbols",
 			query:              `CREATE SCHEDULE FOR BACKUP "my.tbl" INTO $1 RECURRING '@hourly'`,
-			expectedBackupStmt: `BACKUP TABLE mydb.public."my.tbl" INTO '%s' WITH OPTIONS (detached)`,
+			expectedBackupStmt: `BACKUP TABLE mydb.public."my.tbl" INTO %s'%s' WITH OPTIONS (detached)`,
 		},
 		{
 			name:               "table-names-from-different-db",
 			query:              "CREATE SCHEDULE FOR BACKUP t1, other_db.t1 INTO $1 RECURRING '@hourly'",
-			expectedBackupStmt: "BACKUP TABLE mydb.public.t1, other_db.public.t1 INTO '%s' WITH OPTIONS (detached)",
+			expectedBackupStmt: "BACKUP TABLE mydb.public.t1, other_db.public.t1 INTO %s'%s' WITH OPTIONS (detached)",
 		},
 		{
 			name:               "unqualified-all-tables-selectors",
 			query:              "CREATE SCHEDULE FOR BACKUP * INTO $1 RECURRING '@hourly'",
-			expectedBackupStmt: "BACKUP TABLE mydb.public.* INTO '%s' WITH OPTIONS (detached)",
+			expectedBackupStmt: "BACKUP TABLE mydb.public.* INTO %s'%s' WITH OPTIONS (detached)",
 		},
 		{
 			name:               "all-tables-selectors-with-user-defined-schema",
 			query:              "CREATE SCHEDULE FOR BACKUP myschema.* INTO $1 RECURRING '@hourly'",
-			expectedBackupStmt: "BACKUP TABLE mydb.myschema.* INTO '%s' WITH OPTIONS (detached)",
+			expectedBackupStmt: "BACKUP TABLE mydb.myschema.* INTO %s'%s' WITH OPTIONS (detached)",
 		},
 		{
 			name:               "partially-qualified-all-tables-selectors-with-different-db",
 			query:              "CREATE SCHEDULE FOR BACKUP other_db.* INTO $1 RECURRING '@hourly'",
-			expectedBackupStmt: "BACKUP TABLE other_db.public.* INTO '%s' WITH OPTIONS (detached)",
+			expectedBackupStmt: "BACKUP TABLE other_db.public.* INTO %s'%s' WITH OPTIONS (detached)",
 		},
 		{
 			name:               "fully-qualified-all-tables-selectors-with-multiple-dbs",
 			query:              "CREATE SCHEDULE FOR BACKUP *, other_db.* INTO $1 RECURRING '@hourly'",
-			expectedBackupStmt: "BACKUP TABLE mydb.public.*, other_db.public.* INTO '%s' WITH OPTIONS (detached)",
+			expectedBackupStmt: "BACKUP TABLE mydb.public.*, other_db.public.* INTO %s'%s' WITH OPTIONS (detached)",
 		},
 	}
 
@@ -346,9 +343,13 @@ CREATE TABLE other_db.t1(a int);
 			schedules, err := th.createBackupSchedule(t, tc.query, destination)
 			require.NoError(t, err)
 
-			for _, s := range schedules {
+			for i, s := range schedules {
+				var latest string
+				if i == 0 {
+					latest = "LATEST IN "
+				}
 				stmt := getScheduledBackupStatement(t, s.ExecutionArgs())
-				require.Equal(t, fmt.Sprintf(tc.expectedBackupStmt, destination), stmt)
+				require.Equal(t, fmt.Sprintf(tc.expectedBackupStmt, latest, destination), stmt, "schedule %d", i)
 			}
 		})
 	}
@@ -390,10 +391,20 @@ func TestSerializesScheduledBackupExecutionArgs(t *testing.T) {
 			user:  freeUser,
 			expectedSchedules: []expectedSchedule{
 				{
-					nameRe:     "BACKUP .+",
-					backupStmt: "BACKUP INTO 'nodelocal://1/backup?AWS_SECRET_ACCESS_KEY=neverappears' WITH OPTIONS (detached)",
-					shownStmt:  "BACKUP INTO 'nodelocal://1/backup?AWS_SECRET_ACCESS_KEY=redacted' WITH OPTIONS (detached)",
-					period:     time.Hour,
+					nameRe:                        "BACKUP .*",
+					backupStmt:                    "BACKUP INTO LATEST IN 'nodelocal://1/backup?AWS_SECRET_ACCESS_KEY=neverappears' WITH OPTIONS (detached)",
+					shownStmt:                     "BACKUP INTO LATEST IN 'nodelocal://1/backup?AWS_SECRET_ACCESS_KEY=redacted' WITH OPTIONS (detached)",
+					period:                        time.Hour,
+					paused:                        true,
+					chainProtectedTimestampRecord: true,
+				},
+				{
+					nameRe:                        "BACKUP .+",
+					backupStmt:                    "BACKUP INTO 'nodelocal://1/backup?AWS_SECRET_ACCESS_KEY=neverappears' WITH OPTIONS (detached)",
+					shownStmt:                     "BACKUP INTO 'nodelocal://1/backup?AWS_SECRET_ACCESS_KEY=redacted' WITH OPTIONS (detached)",
+					period:                        24 * time.Hour,
+					runsNow:                       true,
+					chainProtectedTimestampRecord: true,
 				},
 			},
 		},
@@ -403,9 +414,18 @@ func TestSerializesScheduledBackupExecutionArgs(t *testing.T) {
 			user:  freeUser,
 			expectedSchedules: []expectedSchedule{
 				{
-					nameRe:     "my-backup",
-					backupStmt: "BACKUP INTO 'nodelocal://1/backup' WITH OPTIONS (detached)",
-					period:     time.Hour,
+					nameRe:                        "my-backup",
+					backupStmt:                    "BACKUP INTO LATEST IN 'nodelocal://1/backup' WITH OPTIONS (detached)",
+					period:                        time.Hour,
+					paused:                        true,
+					chainProtectedTimestampRecord: true,
+				},
+				{
+					nameRe:                        "my-backup",
+					backupStmt:                    "BACKUP INTO 'nodelocal://1/backup' WITH OPTIONS (detached)",
+					period:                        24 * time.Hour,
+					runsNow:                       true,
+					chainProtectedTimestampRecord: true,
 				},
 			},
 		},
@@ -567,24 +587,6 @@ func TestSerializesScheduledBackupExecutionArgs(t *testing.T) {
 					chainProtectedTimestampRecord: true,
 				},
 			},
-		},
-		{
-			name:   "enterprise-license-required-for-incremental",
-			query:  "CREATE SCHEDULE FOR BACKUP INTO 'nodelocal://1/backup' RECURRING '@hourly' FULL BACKUP '@weekly'",
-			user:   freeUser,
-			errMsg: "use of BACKUP INTO LATEST requires an enterprise license",
-		},
-		{
-			name:   "enterprise-license-required-for-revision-history",
-			query:  "CREATE SCHEDULE FOR BACKUP INTO 'nodelocal://1/backup' WITH revision_history RECURRING '@hourly'",
-			user:   freeUser,
-			errMsg: "use of BACKUP with revision_history requires an enterprise license",
-		},
-		{
-			name:   "enterprise-license-required-for-encryption",
-			query:  "CREATE SCHEDULE FOR BACKUP INTO 'nodelocal://1/backup'  WITH encryption_passphrase = 'secret' RECURRING '@hourly'",
-			user:   freeUser,
-			errMsg: "use of BACKUP with encryption requires an enterprise license",
 		},
 		{
 			name:      "full-cluster-with-name-arg",
@@ -750,7 +752,7 @@ func TestSerializesScheduledBackupExecutionArgs(t *testing.T) {
 				if expectedSchedule.shownStmt != "" {
 					expectedShown = fmt.Sprintf("%q", expectedSchedule.shownStmt)
 				}
-				require.Equal(t, expectedShown, shownByID[int64(s.ScheduleID())])
+				require.Equal(t, expectedShown, shownByID[s.ScheduleID()])
 
 				frequency, err := s.Frequency()
 				require.NoError(t, err)
@@ -985,7 +987,7 @@ func TestCreateBackupScheduleRequiresAdminRole(t *testing.T) {
 	defer cleanup()
 
 	th.sqlDB.Exec(t, `CREATE USER testuser`)
-	testuser := th.server.SQLConn(t, serverutils.User("testuser"))
+	testuser := th.server.ApplicationLayer().SQLConn(t, serverutils.User("testuser"))
 
 	_, err := testuser.Exec("CREATE SCHEDULE FOR BACKUP INTO 'somewhere' RECURRING '@daily'")
 	require.Error(t, err)
@@ -1093,7 +1095,7 @@ CREATE TABLE t(a int);
 INSERT INTO t values (1), (10), (100);
 `)
 
-	advanceNextRun := func(t *testing.T, id jobspb.ScheduleID, delta time.Duration) {
+	advanceNextRun := func(t *testing.T, id int64, delta time.Duration) {
 		// Adjust next run by the specified delta (which maybe negative).
 		s := th.loadSchedule(t, id)
 		s.SetNextRun(th.env.Now().Add(delta))
@@ -1113,7 +1115,7 @@ INSERT INTO t values (1), (10), (100);
 
 	// Create backup schedules for this test.
 	// Returns schedule IDs for full and incremental schedules, plus a cleanup function.
-	createSchedules := func(t *testing.T, name string) (jobspb.ScheduleID, jobspb.ScheduleID, func()) {
+	createSchedules := func(t *testing.T, name string) (int64, int64, func()) {
 		schedules, err := th.createBackupSchedule(t,
 			"CREATE SCHEDULE FOR BACKUP INTO $1 RECURRING '*/5 * * * *'",
 			"nodelocal://1/backup/"+name)
@@ -1151,10 +1153,10 @@ INSERT INTO t values (1), (10), (100);
 
 	markOldAndSetSchedulesPolicy := func(
 		t *testing.T,
-		fullID, incID jobspb.ScheduleID,
+		fullID, incID int64,
 		onError jobspb.ScheduleDetails_ErrorHandlingBehavior,
 	) {
-		for _, id := range []jobspb.ScheduleID{fullID, incID} {
+		for _, id := range []int64{fullID, incID} {
 			// Pretend we were down for a year.
 			s := th.loadSchedule(t, id)
 			s.SetNextRun(s.NextRun().Add(-365 * 24 * time.Hour))
@@ -1177,7 +1179,7 @@ INSERT INTO t values (1), (10), (100);
 
 		// AOST way in the past causes backup planning to fail.  We don't need
 		// to wait for any jobs, and the schedules should now be paused.
-		for _, id := range []jobspb.ScheduleID{fullID, incID} {
+		for _, id := range []int64{fullID, incID} {
 			require.True(t, th.loadSchedule(t, id).IsPaused())
 		}
 	})
@@ -1200,7 +1202,7 @@ INSERT INTO t values (1), (10), (100);
 		// AOST way in the past causes backup planning to fail.  We don't need
 		// to wait for any jobs, and the schedule nextRun should be advanced
 		// a bit in the future.
-		for _, id := range []jobspb.ScheduleID{fullID, incID} {
+		for _, id := range []int64{fullID, incID} {
 			require.True(t, th.loadSchedule(t, id).NextRun().Sub(th.env.Now()) > 0)
 		}
 
@@ -1231,7 +1233,7 @@ INSERT INTO t values (1), (10), (100);
 		// AOST way in the past causes backup planning to fail.  We don't need
 		// to wait for any jobs, and the schedule nextRun should be advanced
 		// to the next scheduled recurrence.
-		for _, id := range []jobspb.ScheduleID{fullID, incID} {
+		for _, id := range []int64{fullID, incID} {
 			s := th.loadSchedule(t, id)
 			e, err := cron.ParseStandard(s.ScheduleExpr())
 			require.NoError(t, err)
@@ -1529,7 +1531,7 @@ func TestPauseScheduledBackupOnNewClusterID(t *testing.T) {
 	hostClusterID := full.ScheduleDetails().ClusterID
 	require.NotZero(t, hostClusterID)
 
-	updateClusterIDAndExecute := func(clusterID uuid.UUID, scheduleID jobspb.ScheduleID) {
+	updateClusterIDAndExecute := func(clusterID uuid.UUID, scheduleID int64) {
 		schedule := th.loadSchedule(t, scheduleID)
 		details := schedule.ScheduleDetails()
 		details.ClusterID = clusterID

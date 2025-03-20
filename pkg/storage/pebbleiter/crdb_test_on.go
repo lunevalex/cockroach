@@ -1,12 +1,7 @@
 // Copyright 2022 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 //go:build crdb_test && !crdb_test_off
 // +build crdb_test,!crdb_test_off
@@ -14,7 +9,6 @@
 package pebbleiter
 
 import (
-	"context"
 	"math/rand"
 	"time"
 
@@ -94,16 +88,6 @@ func (i *assertionIter) Clone(cloneOpts pebble.CloneOptions) (Iterator, error) {
 	return MaybeWrap(iter), nil
 }
 
-func (i *assertionIter) CloneWithContext(
-	ctx context.Context, cloneOpts pebble.CloneOptions,
-) (Iterator, error) {
-	iter, err := i.Iterator.CloneWithContext(ctx, cloneOpts)
-	if err != nil {
-		return nil, err
-	}
-	return MaybeWrap(iter), nil
-}
-
 func (i *assertionIter) Close() error {
 	if i.closed {
 		panic(errors.AssertionFailedf("pebble.Iterator already closed"))
@@ -143,7 +127,7 @@ func (i *assertionIter) RangeBounds() ([]byte, []byte) {
 		panic(errors.AssertionFailedf("RangeBounds() called on !Valid() pebble.Iterator"))
 	}
 	if _, hasRange := i.Iterator.HasPointAndRange(); !hasRange {
-		panic(errors.AssertionFailedf("RangeBounds() called on pebble.Iterator without range keys"))
+		return nil, nil
 	}
 	// See maybeSaveAndMangleRangeKeyBufs for where these are saved.
 	j := i.rangeKeyBufs.idx

@@ -1,12 +1,7 @@
 // Copyright 2014 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package rpc
 
@@ -101,7 +96,7 @@ func checkVersion(
 	minVersion := activeVersion.Version
 	if tenantID, isTenant := roachpb.ClientTenantFromContext(ctx); isTenant &&
 		!roachpb.IsSystemTenantID(tenantID.ToUint64()) {
-		minVersion = version.MinSupportedVersion()
+		minVersion = version.BinaryMinSupportedVersion()
 	}
 	if peerVersion.Less(minVersion) {
 		return errors.Errorf(
@@ -164,7 +159,7 @@ func (hs *HeartbeatService) Ping(ctx context.Context, request *PingRequest) (*Pi
 	response := PingResponse{
 		Pong:                           request.Ping,
 		ServerTime:                     hs.clock.Now().UnixNano(),
-		ServerVersion:                  hs.version.LatestVersion(),
+		ServerVersion:                  hs.version.BinaryVersion(),
 		ClusterName:                    hs.clusterName,
 		DisableClusterNameVerification: hs.disableClusterNameVerification,
 	}

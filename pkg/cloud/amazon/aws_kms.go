@@ -1,12 +1,7 @@
 // Copyright 2020 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package amazon
 
@@ -128,10 +123,7 @@ func MakeAWSKMS(ctx context.Context, uri string, env cloud.KMSEnv) (cloud.KMS, e
 	}
 
 	region := kmsURIParams.region
-	awsConfig := &aws.Config{
-		Credentials: credentials.NewStaticCredentials(kmsURIParams.accessKey,
-			kmsURIParams.secret, kmsURIParams.tempToken),
-	}
+	awsConfig := &aws.Config{}
 	awsConfig.Logger = newLogAdapter(ctx)
 	if kmsURIParams.verbose {
 		awsConfig.LogLevel = awsVerboseLogging
@@ -148,7 +140,7 @@ func MakeAWSKMS(ctx context.Context, uri string, env cloud.KMSEnv) (cloud.KMS, e
 			// situation is.
 			region = "default-region"
 		}
-		client, err := cloud.MakeHTTPClient(env.ClusterSettings())
+		client, err := cloud.MakeHTTPClient(env.ClusterSettings(), cloud.NilMetrics, "aws", "KMS", "")
 		if err != nil {
 			return nil, err
 		}
@@ -178,7 +170,8 @@ func MakeAWSKMS(ctx context.Context, uri string, env cloud.KMSEnv) (cloud.KMS, e
 				AWSSecretParam,
 			)
 		}
-		opts.Config.MergeIn(awsConfig)
+		awsConfig.Credentials = credentials.NewStaticCredentials(kmsURIParams.accessKey, kmsURIParams.secret, kmsURIParams.tempToken)
+
 	case cloud.AuthParamImplicit:
 		if env.KMSConfig().DisableImplicitCredentials {
 			return nil, errors.New(
@@ -188,6 +181,7 @@ func MakeAWSKMS(ctx context.Context, uri string, env cloud.KMSEnv) (cloud.KMS, e
 	default:
 		return nil, errors.Errorf("unsupported value %s for %s", kmsURIParams.auth, cloud.AuthParam)
 	}
+	opts.Config.MergeIn(awsConfig)
 
 	sess, err := session.NewSessionWithOptions(opts)
 	if err != nil {

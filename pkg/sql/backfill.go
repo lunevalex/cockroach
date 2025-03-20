@@ -1,12 +1,7 @@
 // Copyright 2015 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package sql
 
@@ -280,10 +275,10 @@ func (sc *SchemaChanger) runBackfill(ctx context.Context) error {
 				// that don't, so preserve the flag if its already been flipped.
 				needColumnBackfill = needColumnBackfill || catalog.ColumnNeedsBackfill(col)
 			} else if idx := m.AsIndex(); idx != nil {
+				addedIndexSpans = append(addedIndexSpans, tableDesc.IndexSpan(sc.execCfg.Codec, idx.GetID()))
 				if idx.IsTemporaryIndexForBackfill() {
 					temporaryIndexes = append(temporaryIndexes, idx.GetID())
 				} else {
-					addedIndexSpans = append(addedIndexSpans, tableDesc.IndexSpan(sc.execCfg.Codec, idx.GetID()))
 					addedIndexes = append(addedIndexes, idx.GetID())
 				}
 			} else if c := m.AsConstraintWithoutIndex(); c != nil {
@@ -969,8 +964,11 @@ func (sc *SchemaChanger) distIndexBackfill(
 
 	writeAsOf := sc.job.Details().(jobspb.SchemaChangeDetails).WriteTimestamp
 	if writeAsOf.IsEmpty() {
-		status := jobs.RunningStatus("scanning target index for in-progress transactions")
-		if err := sc.job.NoTxn().RunningStatus(ctx, status); err != nil {
+		if err := sc.job.NoTxn().RunningStatus(ctx, func(
+			_ context.Context, _ jobspb.Details,
+		) (jobs.RunningStatus, error) {
+			return jobs.RunningStatus("scanning target index for in-progress transactions"), nil
+		}); err != nil {
 			return errors.Wrapf(err, "failed to update running status of job %d", errors.Safe(sc.job.ID()))
 		}
 		writeAsOf = sc.clock.Now()
@@ -1009,7 +1007,11 @@ func (sc *SchemaChanger) distIndexBackfill(
 		}); err != nil {
 			return err
 		}
-		if err := sc.job.NoTxn().RunningStatus(ctx, RunningStatusBackfill); err != nil {
+		if err := sc.job.NoTxn().RunningStatus(ctx, func(
+			_ context.Context, _ jobspb.Details,
+		) (jobs.RunningStatus, error) {
+			return RunningStatusBackfill, nil
+		}); err != nil {
 			return errors.Wrapf(err, "failed to update running status of job %d", errors.Safe(sc.job.ID()))
 		}
 	} else {
@@ -1417,7 +1419,11 @@ func (sc *SchemaChanger) updateJobRunningStatus(
 			}
 		}
 		if updateJobRunningProgress && !tableDesc.Dropped() {
-			if err := sc.job.WithTxn(txn).RunningStatus(ctx, status); err != nil {
+			if err := sc.job.WithTxn(txn).RunningStatus(ctx, func(
+				ctx context.Context, details jobspb.Details,
+			) (jobs.RunningStatus, error) {
+				return status, nil
+			}); err != nil {
 				return errors.Wrapf(err, "failed to update running status of job %d", errors.Safe(sc.job.ID()))
 			}
 		}
@@ -2236,15 +2242,11 @@ func (sc *SchemaChanger) backfillIndexes(
 	writeAtRequestTimestamp := len(temporaryIndexes) != 0
 	log.Infof(ctx, "backfilling %d indexes: %v (writeAtRequestTimestamp: %v)", len(addingSpans), addingSpans, writeAtRequestTimestamp)
 
-	// Split off a new range for each new index span. But only do so for the
-	// system tenant. Secondary tenants do not have mandatory split points
-	// between tables or indexes.
-	if sc.execCfg.Codec.ForSystemTenant() {
-		expirationTime := sc.db.KV().Clock().Now().Add(time.Hour.Nanoseconds(), 0)
-		for _, span := range addingSpans {
-			if err := sc.db.KV().AdminSplit(ctx, span.Key, expirationTime); err != nil {
-				return err
-			}
+	// Split off a new range for each new index span.
+	expirationTime := sc.db.KV().Clock().Now().Add(time.Hour.Nanoseconds(), 0)
+	for _, span := range addingSpans {
+		if err := sc.db.KV().AdminSplit(ctx, span.Key, expirationTime); err != nil {
+			return err
 		}
 	}
 
@@ -2370,7 +2372,11 @@ func (sc *SchemaChanger) runStateMachineAfterTempIndexMerge(ctx context.Context)
 			return err
 		}
 		if sc.job != nil {
-			if err := sc.job.WithTxn(txn).RunningStatus(ctx, runStatus); err != nil {
+			if err := sc.job.WithTxn(txn).RunningStatus(ctx, func(
+				ctx context.Context, details jobspb.Details,
+			) (jobs.RunningStatus, error) {
+				return runStatus, nil
+			}); err != nil {
 				return errors.Wrap(err, "failed to update job status")
 			}
 		}
@@ -2395,6 +2401,9 @@ func (sc *SchemaChanger) truncateAndBackfillColumns(
 		uint64(columnBackfillUpdateChunkSizeThresholdBytes.Get(&sc.settings.SV)),
 		backfill.ColumnMutationFilter,
 	); err != nil {
+		if errors.HasType(err, &kvpb.InsufficientSpaceError{}) {
+			return jobs.MarkPauseRequestError(errors.UnwrapAll(err))
+		}
 		return err
 	}
 	log.Info(ctx, "finished clearing and backfilling columns")

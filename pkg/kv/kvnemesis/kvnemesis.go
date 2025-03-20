@@ -1,12 +1,7 @@
 // Copyright 2020 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package kvnemesis
 
@@ -22,7 +17,6 @@ import (
 	"sync/atomic"
 
 	"github.com/cockroachdb/cockroach/pkg/kv"
-	"github.com/cockroachdb/cockroach/pkg/testutils/datapathutils"
 	"github.com/cockroachdb/cockroach/pkg/util/ctxgroup"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/errors"
@@ -59,7 +53,7 @@ func l(ctx context.Context, basename string, format string, args ...interface{})
 	var logger Logger
 	logger, _ = ctx.Value(loggerKey{}).(Logger)
 	if logger == nil {
-		logger = &logLogger{dir: datapathutils.DebuggableTempDir()}
+		logger = &logLogger{dir: os.TempDir()}
 	}
 	logger.Helper()
 

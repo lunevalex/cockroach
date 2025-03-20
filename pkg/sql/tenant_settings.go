@@ -1,12 +1,7 @@
 // Copyright 2022 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package sql
 
@@ -62,7 +57,7 @@ func (p *planner) AlterTenantSetClusterSetting(
 		return nil, errors.Errorf("unknown cluster setting '%s'", name)
 	}
 	if nameStatus != settings.NameActive {
-		p.BufferClientNotice(ctx, settingNameDeprecationNotice(name, setting.Name()))
+		p.BufferClientNotice(ctx, settingAlternateNameNotice(name, setting.Name()))
 		name = setting.Name()
 	}
 	// Error out if we're trying to set a system-only variable.
@@ -183,7 +178,7 @@ func (p *planner) ShowTenantClusterSetting(
 		return nil, errors.Errorf("unknown setting: %q", name)
 	}
 	if nameStatus != settings.NameActive {
-		p.BufferClientNotice(ctx, settingNameDeprecationNotice(name, setting.Name()))
+		p.BufferClientNotice(ctx, settingAlternateNameNotice(name, setting.Name()))
 		name = setting.Name()
 	}
 
@@ -245,7 +240,7 @@ FROM
 				ctx, "get-tenant-setting-value", p.txn,
 				sessiondata.NoSessionDataOverride,
 				lookupEncodedTenantSetting,
-				setting.Name(), rec.ID)
+				setting.InternalKey(), rec.ID)
 			if err != nil {
 				return false, "", err
 			}

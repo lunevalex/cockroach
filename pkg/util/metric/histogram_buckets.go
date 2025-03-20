@@ -1,12 +1,7 @@
 // Copyright 2022 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package metric
 
@@ -61,21 +56,30 @@ var BatchProcessLatencyBuckets = staticBucketConfig{
 	distribution: Exponential,
 }
 
-var LongRunning60mLatencyBuckets = staticBucketConfig{
-	category:     "LongRunning60mLatencyBuckets",
-	min:          500e6,  // 500ms
+var ChangefeedBatchLatencyBuckets = staticBucketConfig{
+	category:     "ChangefeedBatchLatencyBuckets",
+	min:          5e6,   // 5ms
+	max:          600e9, // 10m
+	count:        60,
+	units:        LATENCY,
+	distribution: Exponential,
+}
+
+var ChangefeedPipelineLatencyBuckets = staticBucketConfig{
+	category:     "ChangefeedPipelineLatencyBuckets",
+	min:          5e6,    // 5ms
 	max:          3600e9, // 1h
 	count:        60,
 	units:        LATENCY,
 	distribution: Exponential,
 }
 
-var DataCount16MBuckets = staticBucketConfig{
-	category:     "DataCount16MBuckets",
-	min:          1,
-	max:          16e6,
-	count:        24,
-	units:        COUNT,
+var LongRunning60mLatencyBuckets = staticBucketConfig{
+	category:     "LongRunning60mLatencyBuckets",
+	min:          500e6,  // 500ms
+	max:          3600e9, // 1h
+	count:        60,
+	units:        LATENCY,
 	distribution: Exponential,
 }
 
@@ -133,7 +137,7 @@ var Percent100Buckets = staticBucketConfig{
 }
 
 var StaticBucketConfigs = []staticBucketConfig{IOLatencyBuckets,
-	BatchProcessLatencyBuckets, LongRunning60mLatencyBuckets, DataCount16MBuckets,
+	BatchProcessLatencyBuckets, LongRunning60mLatencyBuckets,
 	DataSize16MBBuckets, MemoryUsage64MBBuckets, ReplicaCPUTimeBuckets,
 	ReplicaBatchRequestCountBuckets, Count1KBuckets, Percent100Buckets}
 

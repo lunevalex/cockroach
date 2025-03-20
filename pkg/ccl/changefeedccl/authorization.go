@@ -1,10 +1,7 @@
 // Copyright 2022 The Cockroach Authors.
 //
-// Licensed as a CockroachDB Enterprise file under the Cockroach Community
-// License (the "License"); you may not use this file except in compliance with
-// the License. You may obtain a copy of the License at
-//
-//     https://github.com/cockroachdb/cockroach/blob/master/licenses/CCL.txt
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package changefeedccl
 
@@ -31,19 +28,22 @@ func checkPrivilegesForDescriptor(
 	ctx context.Context, p sql.PlanHookState, desc catalog.Descriptor,
 ) (hasSelect bool, hasChangefeed bool, err error) {
 	if desc.GetObjectType() != privilege.Table {
-		return false, false, errors.AssertionFailedf("expected descriptor %d to be a table descriptor, found: %s ", desc.GetID(), desc.GetObjectType())
+		return false, false, errors.AssertionFailedf("expected descriptor %d to be a table descriptor. instead found: %s ", desc.GetID(), desc.GetObjectType())
 	}
 
-	hasSelect, err = p.HasPrivilege(ctx, desc, privilege.SELECT, p.User())
-	if err != nil {
-		return false, false, err
+	hasSelect, hasChangefeed = true, true
+	if err = p.CheckPrivilege(ctx, desc, privilege.SELECT); err != nil {
+		if !sql.IsInsufficientPrivilegeError(err) {
+			return false, false, err
+		}
+		hasSelect = false
 	}
-
-	hasChangefeed, err = p.HasPrivilege(ctx, desc, privilege.CHANGEFEED, p.User())
-	if err != nil {
-		return false, false, err
+	if err = p.CheckPrivilege(ctx, desc, privilege.CHANGEFEED); err != nil {
+		if !sql.IsInsufficientPrivilegeError(err) {
+			return false, false, err
+		}
+		hasChangefeed = false
 	}
-
 	return hasSelect, hasChangefeed, nil
 }
 

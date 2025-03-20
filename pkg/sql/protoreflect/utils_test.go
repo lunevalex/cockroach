@@ -1,12 +1,7 @@
 // Copyright 2020 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package protoreflect_test
 
@@ -16,7 +11,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/cockroachdb/cockroach/pkg/geo/geopb"
+	"github.com/cockroachdb/cockroach/pkg/geo/geoindex"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/catenumpb"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/descpb"
 	"github.com/cockroachdb/cockroach/pkg/sql/protoreflect"
@@ -70,12 +65,12 @@ func TestMessageToJSONBRoundTrip(t *testing.T) {
 				Unique:              true,
 				KeyColumnNames:      []string{"foo", "bar", "buz"},
 				KeyColumnDirections: []catenumpb.IndexColumn_Direction{catenumpb.IndexColumn_ASC},
-				GeoConfig: geopb.Config{
-					S2Geography: &geopb.S2GeographyConfig{S2Config: &geopb.S2Config{
+				GeoConfig: geoindex.Config{
+					S2Geography: &geoindex.S2GeographyConfig{S2Config: &geoindex.S2Config{
 						MinLevel: 123,
 						MaxLevel: 321,
 					}},
-					S2Geometry: &geopb.S2GeometryConfig{
+					S2Geometry: &geoindex.S2GeometryConfig{
 						MinX: 567,
 						MaxX: 765,
 					},

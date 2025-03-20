@@ -1,12 +1,7 @@
 // Copyright 2017 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package cluster
 
@@ -136,55 +131,41 @@ func MakeClusterSettings() *Settings {
 	return s
 }
 
-// MakeTestingClusterSettings returns a Settings object that is initialized with
-// the latest version.
+// MakeTestingClusterSettings returns a Settings object that has its binary and
+// minimum supported versions set to the baked in binary version. It also
+// initializes the cluster version setting to the binary version.
 //
 // It is typically used for testing or one-off situations in which a Settings
 // object is needed, but cluster settings don't play a crucial role.
 func MakeTestingClusterSettings() *Settings {
 	return MakeTestingClusterSettingsWithVersions(
-		clusterversion.Latest.Version(),
-		clusterversion.Latest.Version(),
+		clusterversion.TestingBinaryVersion,
+		clusterversion.TestingBinaryVersion,
 		true /* initializeVersion */)
 }
 
 // MakeTestingClusterSettingsWithVersions returns a Settings object that has its
-// latest and minimum supported versions set to the provided versions.
+// binary and minimum supported versions set to the provided versions.
+// It also can also initialize the cluster version setting to the specified
+// binaryVersion.
 //
-// It can optionally initialize the cluster version setting to the specified
-// latestVersion.
-//
-// It is typically used in tests that want to override the binary's latest and
+// It is typically used in tests that want to override the default binary and
 // minimum supported versions.
 func MakeTestingClusterSettingsWithVersions(
-	latestVersion, minSupportedVersion roachpb.Version, initializeVersion bool,
+	binaryVersion, binaryMinSupportedVersion roachpb.Version, initializeVersion bool,
 ) *Settings {
 	s := &Settings{}
 
 	sv := &s.SV
 	s.Version = clusterversion.MakeVersionHandleWithOverride(
-		&s.SV, latestVersion, minSupportedVersion)
+		&s.SV, binaryVersion, binaryMinSupportedVersion)
 	sv.Init(context.TODO(), s.Version)
 
 	if initializeVersion {
-		// Initialize cluster version to specified latestVersion.
-		if err := clusterversion.Initialize(context.TODO(), latestVersion, &s.SV); err != nil {
+		// Initialize cluster version to specified binaryVersion.
+		if err := clusterversion.Initialize(context.TODO(), binaryVersion, &s.SV); err != nil {
 			log.Fatalf(context.TODO(), "unable to initialize version: %s", err)
 		}
 	}
 	return s
-}
-
-// TestingCloneClusterSettings makes a clone of the Settings object. This is to
-// be used for settings objects that are passed as initial parameters for test
-// clusters; the given Settings object should not be in use by any server.
-func TestingCloneClusterSettings(st *Settings) *Settings {
-	result := &Settings{
-		ExternalIODir: st.ExternalIODir,
-	}
-	result.Version = clusterversion.MakeVersionHandleWithOverride(
-		&result.SV, st.Version.LatestVersion(), st.Version.MinSupportedVersion(),
-	)
-	result.SV.TestingCopyForServer(&st.SV, result.Version)
-	return result
 }

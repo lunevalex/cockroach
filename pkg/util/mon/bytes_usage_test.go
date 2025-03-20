@@ -1,12 +1,7 @@
 // Copyright 2016 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package mon
 
@@ -496,7 +491,9 @@ func TestBytesMonitorTree(t *testing.T) {
 	require.Equal(t, "child1\n-grandchild1\n", export(child1))
 	require.Equal(t, "child2\n-grandchild2\n", export(child2))
 
-	grandchild2.Stop(ctx)
+	// Only stop child2 to simulate a case where we forgot to stop grandchild2:
+	// we should proactively lose references to it from child2.
+	_ = grandchild2 // silence unused warning
 	child2.Stop(ctx)
 
 	require.Equal(t, "parent\n-child1\n--grandchild1\n", export(parent))

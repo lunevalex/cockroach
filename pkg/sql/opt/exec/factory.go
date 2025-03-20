@@ -1,12 +1,7 @@
 // Copyright 2018 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 // Package exec contains execution-related utilities. (See README.md.)
 package exec
@@ -31,11 +26,67 @@ import (
 // (currently maps to sql.planNode).
 type Node interface{}
 
-// Plan represents the plan for a query (currently maps to sql.planTop).
+// Plan represents the plan for a query (currently maps to sql.planComponents).
 // For simple queries, the plan is associated with a single Node tree.
 // For queries containing subqueries, the plan is associated with multiple Node
 // trees (see ConstructPlan).
 type Plan interface{}
+
+// PlanFlags tracks various properties of the built plan.
+type PlanFlags uint32
+
+const (
+	// PlanFlagIsDDL is set if the statement contains DDL.
+	PlanFlagIsDDL = (1 << iota)
+
+	// PlanFlagContainsFullTableScan is set if the statement contains an
+	// unconstrained primary index scan. This could be a full scan of any
+	// cardinality. Full scans of virtual tables are ignored.
+	PlanFlagContainsFullTableScan
+
+	// PlanFlagContainsFullIndexScan is set if the statement contains an
+	// unconstrained non-partial secondary index scan. This could be a full scan
+	// of any cardinality. Full scans of virtual tables are ignored.
+	PlanFlagContainsFullIndexScan
+
+	// PlanFlagContainsLargeFullTableScan is set if the statement contains an
+	// unconstrained primary index scan estimated to read more than
+	// large_full_scan_rows (or without available stats). Large scans of virtual
+	// tables are ignored.
+	PlanFlagContainsLargeFullTableScan
+
+	// PlanFlagContainsLargeFullIndexScan is set if the statement contains an
+	// unconstrained non-partial secondary index scan estimated to read more than
+	// large_full_scan_rows (or without available stats). Large scans of virtual
+	// tables are ignored.
+	PlanFlagContainsLargeFullIndexScan
+
+	// PlanFlagContainsMutation is set if the whole plan contains any mutations.
+	PlanFlagContainsMutation
+
+	// PlanFlagContainsLocking is set if at least one node in the plan uses
+	// locking. (Examples of plans using locking include SELECT FOR UPDATE and
+	// SELECT FOR SHARE, UPDATE, UPSERT, and FK checks under read committed
+	// isolation.)
+	PlanFlagContainsLocking
+
+	// PlanFlagCheckContainsLocking is set if at least one node in at least one
+	// check plan uses locking. Typically this is set for plans with FK checks
+	// under read committed isolation.
+	PlanFlagCheckContainsLocking
+)
+
+func (pf PlanFlags) IsSet(flag PlanFlags) bool {
+	return (pf & flag) != 0
+}
+
+func (pf *PlanFlags) Set(flag PlanFlags) {
+	*pf |= flag
+}
+
+func (pf *PlanFlags) Unset(flag PlanFlags) {
+	*pf &^= flag
+}
 
 // ScanParams contains all the parameters for a table scan.
 type ScanParams struct {
@@ -154,10 +205,6 @@ type AggInfo struct {
 	// Filter is the index of the column, if any, which should be used as the
 	// FILTER condition for the aggregate. If there is no filter, Filter is -1.
 	Filter NodeColumnOrdinal
-
-	// DistsqlBlocklist is set to true when this aggregate function cannot be
-	// evaluated in distributed fashion.
-	DistsqlBlocklist bool
 }
 
 // WindowInfo represents the information about a window function that must be

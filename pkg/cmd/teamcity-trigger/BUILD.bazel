@@ -21,10 +21,7 @@ go_test(
     name = "teamcity-trigger_test",
     size = "small",
     srcs = ["main_test.go"],
+    args = ["-test.timeout=55s"],
     embed = [":teamcity-trigger_lib"],
-    exec_properties = select({
-        "//build/toolchains:is_heavy": {"Pool": "heavy"},
-        "//conditions:default": {"Pool": "default"},
-    }),
     deps = ["@com_github_stretchr_testify//require"],
 )

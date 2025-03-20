@@ -1,12 +1,7 @@
 // Copyright 2021 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 import { createMemoryHistory } from "history";
 import _ from "lodash";
@@ -18,6 +13,7 @@ import {
   defaultFilters,
   api as clusterUiApi,
 } from "@cockroachlabs/cluster-ui";
+import { cockroach } from "@cockroachlabs/crdb-protobuf-client";
 
 import { AdminUIState, createAdminUIStore } from "src/redux/state";
 import * as fakeApi from "src/util/fakeApi";
@@ -199,7 +195,9 @@ describe("Databases Page", function () {
       "gcp-europe-west1",
     ];
 
-    const nodes = Array.from(Array(regions.length).keys()).map(node_id => {
+    const nodes: cockroach.server.serverpb.INodeResponse[] = Array.from(
+      Array(regions.length).keys(),
+    ).map(node_id => {
       return {
         desc: {
           node_id: node_id + 1, // 1-index offset.
@@ -212,6 +210,7 @@ describe("Databases Page", function () {
             ],
           },
         },
+        store_statuses: [{ desc: { store_id: node_id + 1 } }],
       };
     });
 
@@ -254,16 +253,13 @@ describe("Databases Page", function () {
         {
           rows: [
             {
-              replicas: [1, 2, 3],
-              regions: ["gcp-europe-west1", "gcp-europe-west2"],
+              store_ids: [1, 2, 3],
             },
             {
-              replicas: [1, 2, 3],
-              regions: ["gcp-europe-west1", "gcp-europe-west2"],
+              store_ids: [1, 2, 3],
             },
             {
-              replicas: [1, 2, 3],
-              regions: ["gcp-europe-west1", "gcp-europe-west2"],
+              store_ids: [1, 2, 3],
             },
           ],
         },
@@ -302,7 +298,18 @@ describe("Databases Page", function () {
       nodes: [1, 2, 3],
       spanStats: undefined,
       tables: {
-        tables: [`"public"."foo"`, `"public"."bar"`],
+        tables: [
+          {
+            schema: "public",
+            table: "foo",
+            qualifiedNameWithSchemaAndTable: `"public"."foo"`,
+          },
+          {
+            schema: "public",
+            table: "bar",
+            qualifiedNameWithSchemaAndTable: `"public"."bar"`,
+          },
+        ],
       },
       nodesByRegionString: "gcp-europe-west1(n3), gcp-us-east1(n1,n2)",
       numIndexRecommendations: 1,

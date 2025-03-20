@@ -1,4 +1,10 @@
 #!/usr/bin/env bash
+
+# Copyright 2023 The Cockroach Authors.
+#
+# Use of this software is governed by the CockroachDB Software License
+# included in the /LICENSE file.
+
 #
 # This script runs microbenchmarks across a roachprod cluster.
 # Parameters:
@@ -22,7 +28,6 @@ set -exuo pipefail
 dir="$(dirname $(dirname $(dirname $(dirname "${0}"))))"
 source "$dir/teamcity-support.sh"
 output_dir="./artifacts/microbench"
-exit_status=0
 
 # Set up credentials
 google_credentials="$GOOGLE_EPHEMERAL_CREDENTIALS"
@@ -71,7 +76,6 @@ fi
   --gce-zones="$GCE_ZONE" \
   --os-volume-size=128
 
-
 # Execute microbenchmarks
 ./bin/roachprod-microbench run "$ROACHPROD_CLUSTER" \
   --output-dir="$output_dir" \
@@ -82,20 +86,11 @@ fi
   ${BENCH_TIMEOUT:+--timeout="$BENCH_TIMEOUT"} \
   ${BENCH_EXCLUDE:+--exclude="$BENCH_EXCLUDE"} \
   --quiet \
-  -- "$TEST_ARGS" \
-  || exit_status=$?
+  -- "$TEST_ARGS"
 
 # Generate sheets if comparing
-if [[ -n "${GCS_COMPARE_BINARIES}" ]]; then
-  if [ -d "$output_dir/0" ] && [ "$(ls -A "$output_dir/0")" ] \
-  && [ -d "$output_dir/1" ] && [ "$(ls -A "$output_dir/1")" ]; then
-    ./bin/roachprod-microbench compare "$output_dir/0" "$output_dir/1" \
-      ${MICROBENCH_SLACK_TOKEN:+--slack-token="$MICROBENCH_SLACK_TOKEN"} \
-      --sheet-desc="$SHEET_DESCRIPTION" 2>&1 | tee "$output_dir/sheets.txt"
-  else
-    echo "No microbenchmarks were run. Skipping comparison."
-  fi
+if [[ -n "${GCS_COMPARE_BINARIES}" ]] ; then
+  ./bin/roachprod-microbench compare "$output_dir/0" "$output_dir/1" \
+    ${MICROBENCH_SLACK_TOKEN:+--slack-token="$MICROBENCH_SLACK_TOKEN"} \
+    --sheet-desc="$SHEET_DESCRIPTION" 2>&1 | tee "$output_dir/sheets.txt"
 fi
-
-# Exit with the code from roachprod-microbench
-exit $exit_status

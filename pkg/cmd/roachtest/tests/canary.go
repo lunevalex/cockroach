@@ -1,12 +1,7 @@
 // Copyright 2018 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package tests
 
@@ -112,7 +107,7 @@ func repeatRunE(
 		}
 		attempt++
 		t.L().Printf("attempt %d - %s", attempt, operation)
-		lastError = c.RunE(ctx, option.WithNodes(node), args...)
+		lastError = c.RunE(ctx, node, args...)
 		if lastError != nil {
 			t.L().Printf("error - retrying: %s", lastError)
 			continue
@@ -145,7 +140,7 @@ func repeatRunWithDetailsSingleNode(
 		}
 		attempt++
 		t.L().Printf("attempt %d - %s", attempt, operation)
-		lastResult, lastError = c.RunWithDetailsSingleNode(ctx, t.L(), option.WithNodes(node), args...)
+		lastResult, lastError = c.RunWithDetailsSingleNode(ctx, t.L(), node, args...)
 		if lastError != nil {
 			t.L().Printf("error - retrying: %s", lastError)
 			continue
@@ -246,8 +241,8 @@ func repeatGetLatestTag(
 			return "", fmt.Errorf("no tags found at %s", url)
 		}
 		var releaseTags []releaseTag
-		for _, tag := range tags {
-			match := releaseRegex.FindStringSubmatch(tag.Name)
+		for _, t := range tags {
+			match := releaseRegex.FindStringSubmatch(t.Name)
 			if match == nil {
 				continue
 			}
@@ -259,7 +254,7 @@ func repeatGetLatestTag(
 				continue
 			}
 			releaseTags = append(releaseTags, releaseTag{
-				tag:      tag.Name,
+				tag:      t.Name,
 				major:    atoiOrZero(groups, "major"),
 				minor:    atoiOrZero(groups, "minor"),
 				point:    atoiOrZero(groups, "point"),
@@ -301,5 +296,5 @@ func gitCloneWithRecurseSubmodules(
 		fi
 	'`, dest, branch, src),
 	}
-	return errors.Wrap(c.RunE(ctx, option.WithNodes(node), cmd...), "gitCloneWithRecurseSubmodules")
+	return errors.Wrap(c.RunE(ctx, node, cmd...), "gitCloneWithRecurseSubmodules")
 }

@@ -1,12 +1,7 @@
 // Copyright 2018 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package pgwire
 
@@ -45,18 +40,24 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/testutils/serverutils"
 	"github.com/cockroachdb/cockroach/pkg/testutils/sqlutils"
 	"github.com/cockroachdb/cockroach/pkg/util"
+	"github.com/cockroachdb/cockroach/pkg/util/cidr"
+	"github.com/cockroachdb/cockroach/pkg/util/ctxgroup"
 	"github.com/cockroachdb/cockroach/pkg/util/leaktest"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/cockroach/pkg/util/metric"
+	"github.com/cockroachdb/cockroach/pkg/util/metric/aggmetric"
 	"github.com/cockroachdb/cockroach/pkg/util/mon"
 	"github.com/cockroachdb/cockroach/pkg/util/timeutil"
 	"github.com/cockroachdb/errors"
 	"github.com/jackc/pgconn"
-	pgproto3 "github.com/jackc/pgproto3/v2"
-	pgx "github.com/jackc/pgx/v4"
+	"github.com/jackc/pgproto3/v2"
+	"github.com/jackc/pgx/v4"
+	pgx5 "github.com/jackc/pgx/v5"
 	"github.com/stretchr/testify/require"
 	"golang.org/x/sync/errgroup"
 )
+
+var nilStat = func(int64) {}
 
 // Test the conn struct: check that it marshalls the correct commands to the
 // stmtBuf.
@@ -103,7 +104,7 @@ func TestConn(t *testing.T) {
 	})
 
 	server := newTestServer()
-	// Wait for the client to connect and perform the handshake.
+	// Wait for the client to connect.
 	netConn, err := waitForClientConn(ln)
 	if err != nil {
 		t.Fatal(err)
@@ -117,7 +118,7 @@ func TestConn(t *testing.T) {
 	)
 
 	// Run the conn's loop in the background - it will push commands to the
-	// buffer.
+	// buffer. serveImpl also performs the server handshake.
 	serveCtx, stopServe := context.WithCancel(ctx)
 	g.Go(func() error {
 		server.serveImpl(
@@ -185,6 +186,151 @@ func TestConn(t *testing.T) {
 	if err := g.Wait(); err != nil {
 		t.Fatal(err)
 	}
+}
+
+// TestPipelineMetric checks that we update the metric for commands in the
+// stmtBuf.
+func TestPipelineMetric(t *testing.T) {
+	defer leaktest.AfterTest(t)()
+	defer log.Scope(t).Close(t)
+
+	// Start a pgwire "server". We use a fake server here since we need to control
+	// exactly when statements are removed from the stmtBuf in the server.
+	addr := util.TestAddr
+	ln, err := net.Listen(addr.Network(), addr.String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	serverAddr := ln.Addr()
+	log.Infof(context.Background(), "started listener on %s", serverAddr)
+
+	ctx, cancelConn := context.WithCancel(context.Background())
+	defer cancelConn()
+	connectGroup := ctxgroup.WithContext(ctx)
+
+	var pgxConn *pgx5.Conn
+	connectGroup.GoCtx(func(ctx context.Context) error {
+		host, ports, err := net.SplitHostPort(serverAddr.String())
+		if err != nil {
+			return err
+		}
+		port, err := strconv.Atoi(ports)
+		if err != nil {
+			return err
+		}
+		pgxConn, err = pgx5.Connect(
+			ctx,
+			fmt.Sprintf("postgresql://%s@%s:%d/system?sslmode=disable", username.RootUser, host, port),
+		)
+		if err != nil {
+			return err
+		}
+		return nil
+	})
+
+	server := newTestServer()
+	// Wait for the client to connect.
+	netConn, err := waitForClientConn(ln)
+	require.NoError(t, err)
+	serverSideConn := server.newConn(
+		ctx,
+		cancelConn,
+		netConn,
+		sql.SessionArgs{ConnResultsBufferSize: 16 << 10},
+		timeutil.Now(),
+	)
+
+	// Run the conn's loop in the background - it will push commands to the
+	// buffer. serveImpl also performs the server handshake.
+	serveCtx, stopServe := context.WithCancel(context.Background())
+	defer stopServe()
+	serveGroup := ctxgroup.WithContext(serveCtx)
+	serveGroup.GoCtx(func(ctx context.Context) error {
+		server.serveImpl(
+			ctx,
+			serverSideConn,
+			&mon.BoundAccount{}, /* reserved */
+			authOptions{testingSkipAuth: true, connType: hba.ConnHostAny},
+			clusterunique.ID{},
+		)
+		return nil
+	})
+
+	err = connectGroup.Wait()
+	require.NoError(t, err)
+	typeMap := pgxConn.TypeMap()
+	pipeline := pgxConn.PgConn().StartPipeline(ctx)
+
+	eqb := pgx5.ExtendedQueryBuilder{}
+	err = eqb.Build(typeMap, nil, []any{1, 2})
+	require.NoError(t, err)
+	pipeline.SendQueryParams(`select $1::int + $2::int`, eqb.ParamValues, nil, eqb.ParamFormats, eqb.ResultFormats)
+	err = eqb.Build(typeMap, nil, []any{3, 4, 5})
+	require.NoError(t, err)
+	pipeline.SendQueryParams(`select $1::int + $2::int + $3::int`, eqb.ParamValues, nil, eqb.ParamFormats, eqb.ResultFormats)
+	err = pipeline.Sync()
+	require.NoError(t, err)
+
+	// We need to poll until all the messages are received by the server. Note
+	// that the server will never actually send results back to the client, since
+	// we are just testing the stmtBuf, not the actual execution of the queries.
+	testutils.SucceedsSoon(t, func() error {
+		// Each query sends Prepare, Bind, Describe, and Execute. The Sync brings it
+		// to 9 total messages.
+		if n := serverSideConn.stmtBuf.PipelineCount.Value(); n != 9 {
+			return errors.Errorf("expected 9, got %d", n)
+		}
+		return nil
+	})
+
+	// Now we'll expect to receive the commands corresponding to the
+	// pipelined operations. This simulates the server processing the commands.
+	rd := sql.MakeStmtBufReader(&serverSideConn.stmtBuf)
+	expectPrepareStmt(ctx, t, "", "SELECT $1::INT8 + $2::INT8", &rd, serverSideConn)
+	expectBindStmt(ctx, t, "", &rd, serverSideConn)
+	expectDescribeStmt(ctx, t, "", pgwirebase.PreparePortal, &rd, serverSideConn)
+	expectExecPortal(ctx, t, "", &rd, serverSideConn)
+	require.EqualValues(t, 5, serverSideConn.stmtBuf.PipelineCount.Value())
+
+	// Send another query in the pipeline.
+	err = eqb.Build(typeMap, nil, []any{"abc"})
+	require.NoError(t, err)
+	pipeline.SendQueryParams(`select $1::text`, eqb.ParamValues, nil, eqb.ParamFormats, eqb.ResultFormats)
+	err = pipeline.Sync()
+	require.NoError(t, err)
+
+	// We need to poll until all the messages are received by the server. Note
+	// that the server will never actually send results back to the client, since
+	// we are just testing the stmtBuf, not the actual execution of the queries.
+	testutils.SucceedsSoon(t, func() error {
+		// Should have received Prepare, Bind, Describe, Execute and Sync.
+		if n := serverSideConn.stmtBuf.PipelineCount.Value(); n != 10 {
+			return errors.Errorf("expected 10, got %d", n)
+		}
+		return nil
+	})
+
+	// Process all of the commands that are in the pipeline.
+	expectPrepareStmt(ctx, t, "", "SELECT ($1::INT8 + $2::INT8) + $3::INT8", &rd, serverSideConn)
+	expectBindStmt(ctx, t, "", &rd, serverSideConn)
+	expectDescribeStmt(ctx, t, "", pgwirebase.PreparePortal, &rd, serverSideConn)
+	expectExecPortal(ctx, t, "", &rd, serverSideConn)
+	expectSync(ctx, t, &rd)
+	require.EqualValues(t, 5, serverSideConn.stmtBuf.PipelineCount.Value())
+
+	expectPrepareStmt(ctx, t, "", "SELECT $1::STRING", &rd, serverSideConn)
+	expectBindStmt(ctx, t, "", &rd, serverSideConn)
+	expectDescribeStmt(ctx, t, "", pgwirebase.PreparePortal, &rd, serverSideConn)
+	expectExecPortal(ctx, t, "", &rd, serverSideConn)
+	expectSync(ctx, t, &rd)
+	require.EqualValues(t, 0, serverSideConn.stmtBuf.PipelineCount.Value())
+
+	err = pipeline.Close()
+	require.NoError(t, err)
+	err = pgxConn.Close(ctx)
+	require.NoError(t, err)
+	err = serveGroup.Wait()
+	require.NoError(t, err)
 }
 
 func TestConnMessageTooBig(t *testing.T) {
@@ -542,23 +688,33 @@ func client(ctx context.Context, serverAddr net.Addr, wg *sync.WaitGroup) error 
 func newTestServer() *Server {
 	sqlMetrics := sql.MakeMemMetrics("test" /* endpoint */, time.Second /* histogramWindow */)
 	metrics := newTenantSpecificMetrics(sqlMetrics /* sqlMemMetrics */, metric.TestSampleInterval)
-	return &Server{
+	st := cluster.MakeTestingClusterSettings()
+	s := &Server{
 		tenantMetrics: metrics,
+		destinationMetrics: destinationAggMetrics{
+			BytesInCount:  aggmetric.NewCounter(MetaBytesIn, "remote"),
+			BytesOutCount: aggmetric.NewCounter(MetaBytesOut, "remote"),
+		},
 		execCfg: &sql.ExecutorConfig{
-			Settings: cluster.MakeTestingClusterSettings(),
+			Settings:   st,
+			CidrLookup: cidr.NewLookup(&st.SV),
 		},
 	}
+	s.mu.destinations = make(map[string]*destinationMetrics)
+	return s
 }
 
 // waitForClientConn blocks until a client connects and performs the pgwire
 // handshake. This emulates what pgwire.Server does.
 func waitForClientConn(ln net.Listener) (net.Conn, error) {
-	conn, _, err := getSessionArgs(ln, false)
+	conn, _, err := getSessionArgs(ln, false /* trustRemoteAddr */)
 	return conn, err
 }
 
 // getSessionArgs blocks until a client connects and returns the connection
-// together with session arguments or an error.
+// together with session arguments or an error. If sendResponse is true,
+// this also sends back a response to the client to indicate that the
+// connection is ready.
 func getSessionArgs(
 	ln net.Listener, trustRemoteAddr bool,
 ) (conn net.Conn, _ sql.SessionArgs, err error) {
@@ -585,7 +741,6 @@ func getSessionArgs(
 		if version != version30 {
 			return nil, sql.SessionArgs{}, errors.Errorf("unexpected protocol version: %d", version)
 		}
-
 		ctx := context.Background()
 		cp, err := parseClientProvidedSessionParameters(ctx, &buf, conn.RemoteAddr(), trustRemoteAddr,
 			false /* acceptTenantName */, false /* acceptSystemIdentityOption */)
@@ -1404,11 +1559,12 @@ func TestParseClientProvidedSessionParameters(t *testing.T) {
 			},
 		},
 		{
-			desc:  "results_buffer_size is not configurable from options",
-			query: "user=root&options=-c%20results_buffer_size=42",
+			desc:  "results_buffer_size is configurable from options",
+			query: "user=root&options=-c%20results_buffer_size=512kb",
 			assert: func(t *testing.T, args sql.SessionArgs, err error) {
-				require.Error(t, err)
-				require.Regexp(t, "options: parameter \"results_buffer_size\" cannot be changed", err)
+				require.NoError(t, err)
+				require.Equal(t, "root", args.User.Normalized())
+				require.EqualValues(t, 512000, args.ConnResultsBufferSize)
 			},
 		},
 		{

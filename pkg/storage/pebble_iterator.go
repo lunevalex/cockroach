@@ -1,12 +1,7 @@
 // Copyright 2019 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package storage
 
@@ -96,16 +91,12 @@ var pebbleIterPool = sync.Pool{
 
 // newPebbleIterator creates a new Pebble iterator for the given Pebble reader.
 func newPebbleIterator(
-	ctx context.Context,
-	handle pebble.Reader,
-	opts IterOptions,
-	durability DurabilityRequirement,
-	parent *Pebble,
+	handle pebble.Reader, opts IterOptions, durability DurabilityRequirement, parent *Pebble,
 ) (*pebbleIterator, error) {
 	p := pebbleIterPool.Get().(*pebbleIterator)
 	p.reusable = false // defensive
-	p.init(ctx, nil, opts, durability, parent)
-	iter, err := handle.NewIterWithContext(ctx, &p.options)
+	p.init(nil, opts, durability, parent)
+	iter, err := handle.NewIter(&p.options)
 	if err != nil {
 		return nil, err
 	}
@@ -116,13 +107,13 @@ func newPebbleIterator(
 // newPebbleIteratorByCloning creates a new Pebble iterator by cloning the given
 // iterator and reconfiguring it.
 func newPebbleIteratorByCloning(
-	ctx context.Context, cloneCtx CloneContext, opts IterOptions, durability DurabilityRequirement,
+	cloneCtx CloneContext, opts IterOptions, durability DurabilityRequirement,
 ) *pebbleIterator {
 	var err error
 	p := pebbleIterPool.Get().(*pebbleIterator)
 	p.reusable = false // defensive
-	p.init(ctx, nil, opts, durability, cloneCtx.engine)
-	p.iter, err = cloneCtx.rawIter.CloneWithContext(ctx, pebble.CloneOptions{
+	p.init(nil, opts, durability, cloneCtx.engine)
+	p.iter, err = cloneCtx.rawIter.Clone(pebble.CloneOptions{
 		IterOptions:      &p.options,
 		RefreshBatchView: true,
 	})
@@ -135,13 +126,18 @@ func newPebbleIteratorByCloning(
 
 // newPebbleSSTIterator creates a new Pebble iterator for the given SSTs.
 func newPebbleSSTIterator(
-	files [][]sstable.ReadableFile, opts IterOptions,
+	files [][]sstable.ReadableFile, opts IterOptions, forwardOnly bool,
 ) (*pebbleIterator, error) {
 	p := pebbleIterPool.Get().(*pebbleIterator)
 	p.reusable = false // defensive
-	p.init(context.Background(), nil, opts, StandardDurability, nil)
+	p.init(nil, opts, StandardDurability, nil)
 
-	iter, err := pebble.NewExternalIter(DefaultPebbleOptions(), &p.options, files)
+	var externalIterOpts []pebble.ExternalIterOption
+	if forwardOnly {
+		externalIterOpts = append(externalIterOpts, pebble.ExternalIterForwardOnly{})
+	}
+
+	iter, err := pebble.NewExternalIter(DefaultPebbleOptions(), &p.options, files, externalIterOpts...)
 	if err != nil {
 		p.Close()
 		return nil, err
@@ -155,7 +151,6 @@ func newPebbleSSTIterator(
 // reconfiguring the given iter. It is valid to pass a nil iter and then create
 // p.iter using p.options, to avoid redundant reconfiguration via SetOptions().
 func (p *pebbleIterator) init(
-	ctx context.Context,
 	iter pebbleiter.Iterator,
 	opts IterOptions,
 	durability DurabilityRequirement,
@@ -170,7 +165,7 @@ func (p *pebbleIterator) init(
 		parent:             statsReporter,
 		reusable:           p.reusable,
 	}
-	p.setOptions(ctx, opts, durability)
+	p.setOptions(opts, durability)
 	p.inuse = true // after setOptions(), so panic won't cause reader to panic too
 }
 
@@ -181,7 +176,6 @@ func (p *pebbleIterator) init(
 // 2. iter != nil && clone: clone and reconfigure the given raw Pebble iterator.
 // 3. iter == nil: create a new iterator from handle.
 func (p *pebbleIterator) initReuseOrCreate(
-	ctx context.Context,
 	handle pebble.Reader,
 	iter pebbleiter.Iterator,
 	clone bool,
@@ -190,21 +184,20 @@ func (p *pebbleIterator) initReuseOrCreate(
 	statsReporter *Pebble,
 ) error {
 	if iter != nil && !clone {
-		p.init(ctx, iter, opts, durability, statsReporter)
+		p.init(iter, opts, durability, statsReporter)
 		return nil
 	}
 
-	p.init(ctx, nil, opts, durability, statsReporter)
+	p.init(nil, opts, durability, statsReporter)
 	if iter == nil {
-		// TODO(sumeer): fix after bumping to latest Pebble.
-		innerIter, err := handle.NewIterWithContext(ctx, &p.options)
+		innerIter, err := handle.NewIter(&p.options)
 		if err != nil {
 			return err
 		}
 		p.iter = pebbleiter.MaybeWrap(innerIter)
 	} else if clone {
 		var err error
-		p.iter, err = iter.CloneWithContext(ctx, pebble.CloneOptions{
+		p.iter, err = iter.Clone(pebble.CloneOptions{
 			IterOptions:      &p.options,
 			RefreshBatchView: true,
 		})
@@ -217,10 +210,8 @@ func (p *pebbleIterator) initReuseOrCreate(
 }
 
 // setOptions updates the options for a pebbleIterator. If p.iter is non-nil, it
-// updates the options on the existing iterator too, and set the context.
-func (p *pebbleIterator) setOptions(
-	ctx context.Context, opts IterOptions, durability DurabilityRequirement,
-) {
+// updates the options on the existing iterator too.
+func (p *pebbleIterator) setOptions(opts IterOptions, durability DurabilityRequirement) {
 	if !opts.Prefix && len(opts.UpperBound) == 0 && len(opts.LowerBound) == 0 {
 		panic("iterator must set prefix or upper bound or lower bound")
 	}
@@ -236,7 +227,6 @@ func (p *pebbleIterator) setOptions(
 		OnlyReadGuaranteedDurable: durability == GuaranteedDurability,
 		KeyTypes:                  opts.KeyTypes,
 		UseL6Filters:              opts.useL6Filters,
-		CategoryAndQoS:            getCategoryAndQoS(opts.ReadCategory),
 	}
 	p.prefix = opts.Prefix
 
@@ -334,7 +324,6 @@ func (p *pebbleIterator) setOptions(
 	// Set the new iterator options. We unconditionally do so, since Pebble will
 	// optimize noop changes as needed, and it may affect batch write visibility.
 	if p.iter != nil {
-		p.iter.SetContext(ctx)
 		p.iter.SetOptions(&p.options)
 	}
 }

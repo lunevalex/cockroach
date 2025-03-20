@@ -9,6 +9,7 @@ go_library(
         "contains_testers.go",
         "encode.go",
         "encoded.go",
+        "encoded_format.go",
         "iterator.go",
         "jentry.go",
         "json.go",
@@ -19,6 +20,8 @@ go_library(
     importpath = "github.com/cockroachdb/cockroach/pkg/util/json",
     visibility = ["//visibility:public"],
     deps = [
+        "//pkg/geo",
+        "//pkg/geo/geopb",
         "//pkg/keysbase",
         "//pkg/sql/inverted",
         "//pkg/sql/pgwire/pgcode",
@@ -43,12 +46,9 @@ go_test(
         "encode_test.go",
         "json_test.go",
     ],
+    args = ["-test.timeout=55s"],
     data = glob(["testdata/**"]),
     embed = [":json"],
-    exec_properties = select({
-        "//build/toolchains:is_heavy": {"Pool": "heavy"},
-        "//conditions:default": {"Pool": "default"},
-    }),
     deps = [
         "//pkg/sql/inverted",
         "//pkg/sql/pgwire/pgerror",

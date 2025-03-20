@@ -1,12 +1,7 @@
 // Copyright 2014 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package kvserver
 
@@ -1460,11 +1455,11 @@ func TestBaseQueueChangeReplicaID(t *testing.T) {
 	bq.mu.Unlock()
 	require.Equal(t, 0, testQueue.getProcessed())
 	bq.maybeAdd(ctx, r, tc.store.Clock().NowAsClockTimestamp())
-	bq.DrainQueue(ctx, tc.store.Stopper())
+	bq.DrainQueue(tc.store.Stopper())
 	require.Equal(t, 1, testQueue.getProcessed())
 	bq.maybeAdd(ctx, r, tc.store.Clock().NowAsClockTimestamp())
 	r.replicaID = 2
-	bq.DrainQueue(ctx, tc.store.Stopper())
+	bq.DrainQueue(tc.store.Stopper())
 	require.Equal(t, 1, testQueue.getProcessed())
 	require.Equal(t, 0, bq.Length())
 	require.Equal(t, 0, bq.PurgatoryLength())

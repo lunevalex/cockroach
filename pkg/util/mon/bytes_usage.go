@@ -1,12 +1,7 @@
 // Copyright 2016 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package mon
 
@@ -17,6 +12,7 @@ import (
 	"math/bits"
 	"unsafe"
 
+	"github.com/cockroachdb/cockroach/pkg/settings"
 	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
 	"github.com/cockroachdb/cockroach/pkg/util"
 	"github.com/cockroachdb/cockroach/pkg/util/envutil"
@@ -206,10 +202,6 @@ type BytesMonitor struct {
 		// current monitor's lock.
 		head *BytesMonitor
 
-		// numChildren is the number of children of this BytesMonitor (i.e. the
-		// number of nodes in the linked list).
-		numChildren int
-
 		// stopped indicates whether this monitor has been stopped.
 		stopped bool
 	}
@@ -268,6 +260,20 @@ type BytesMonitor struct {
 	settings *cluster.Settings
 }
 
+// enableMonitorTreeTrackingEnvVar indicates whether tracking of all children of
+// a BytesMonitor (which is what powers TraverseTree) is enabled.
+var enableMonitorTreeTrackingEnvVar = envutil.EnvOrDefaultBool(
+	"COCKROACH_ENABLE_MONITOR_TREE", true)
+
+// enableMonitorTreeTrackingSetting indicates whether tracking of all children
+// of a BytesMonitor (which is what powers TraverseTree) is enabled.
+var enableMonitorTreeTrackingSetting = settings.RegisterBoolSetting(
+	settings.ApplicationLevel,
+	"diagnostics.memory_monitor_tree.enabled",
+	"enable tracking of memory monitor tree",
+	true,
+)
+
 // MonitorState describes the current state of a single monitor.
 type MonitorState struct {
 	// Level tracks how many "generations" away the current monitor is from the
@@ -290,6 +296,8 @@ type MonitorState struct {
 	// ReservedReserved is amount of bytes reserved in the reserved account, or
 	// 0 if no reserved account was provided in Start.
 	ReservedReserved int64
+	// Stopped indicates whether the monitor has been stopped.
+	Stopped bool
 }
 
 // TraverseTree traverses the tree of monitors rooted in the BytesMonitor. The
@@ -305,15 +313,9 @@ func (mm *BytesMonitor) TraverseTree(monitorStateCb func(MonitorState) error) er
 }
 
 // traverseTree recursively traverses the tree of monitors rooted in the current
-// monitor. If the monitor is stopped, then the tree is not traversed and the
-// callback is not called.
+// monitor.
 func (mm *BytesMonitor) traverseTree(level int, monitorStateCb func(MonitorState) error) error {
 	mm.mu.Lock()
-	if mm.mu.stopped {
-		// The monitor has been stopped, so it should be ignored.
-		mm.mu.Unlock()
-		return nil
-	}
 	var reservedUsed, reservedReserved int64
 	if mm.reserved != nil {
 		reservedUsed = mm.reserved.used
@@ -332,11 +334,15 @@ func (mm *BytesMonitor) traverseTree(level int, monitorStateCb func(MonitorState
 		Used:             mm.mu.curAllocated,
 		ReservedUsed:     reservedUsed,
 		ReservedReserved: reservedReserved,
+		Stopped:          mm.mu.stopped,
 	}
 	// Note that we cannot call traverseTree on the children while holding mm's
 	// lock since it could lead to deadlocks. Instead, we store all children as
 	// of right now, and then export them after unlocking ourselves.
-	children := make([]*BytesMonitor, 0, mm.mu.numChildren)
+	//
+	//gcassert:noescape
+	var childrenAlloc [8]*BytesMonitor
+	children := childrenAlloc[:0]
 	for c := mm.mu.head; c != nil; c = c.parentMu.nextSibling {
 		children = append(children, c)
 	}
@@ -455,7 +461,7 @@ func NewMonitorInheritWithLimit(
 }
 
 // noReserved is safe to be used by multiple monitors as the "reserved" account
-// since only its 'used' field will ever be read.
+// since only its 'used' and 'reserved' fields will ever be read.
 var noReserved = BoundAccount{}
 
 // StartNoReserved is the same as Start when there is no pre-reserved budget.
@@ -495,18 +501,21 @@ func (mm *BytesMonitor) Start(ctx context.Context, pool *BytesMonitor, reserved 
 
 	var effectiveLimit int64
 	if pool != nil {
-		// If we have a "parent" monitor, then register mm as its child by
-		// making it the head of the doubly-linked list.
-		func() {
-			pool.mu.Lock()
-			defer pool.mu.Unlock()
-			if s := pool.mu.head; s != nil {
-				s.parentMu.prevSibling = mm
-				mm.parentMu.nextSibling = s
-			}
-			pool.mu.head = mm
-			pool.mu.numChildren++
-		}()
+		// mm.settings can be nil in tests in which case we use the default
+		// value of enableMonitorTreeTrackingSetting cluster setting (true).
+		if enableMonitorTreeTrackingEnvVar && (mm.settings == nil || enableMonitorTreeTrackingSetting.Get(&mm.settings.SV)) {
+			// If we have a "parent" monitor, then register mm as its child by
+			// making it the head of the doubly-linked list.
+			func() {
+				pool.mu.Lock()
+				defer pool.mu.Unlock()
+				if s := pool.mu.head; s != nil {
+					s.parentMu.prevSibling = mm
+					mm.parentMu.nextSibling = s
+				}
+				pool.mu.head = mm
+			}()
+		}
 		effectiveLimit = pool.limit
 	}
 
@@ -624,8 +633,21 @@ func (mm *BytesMonitor) doStop(ctx context.Context, check bool) {
 			if next != nil {
 				next.parentMu.prevSibling = prev
 			}
-			parent.mu.numChildren--
+			// Lose the references to siblings to aid GC.
+			mm.parentMu.prevSibling, mm.parentMu.nextSibling = nil, nil
 		}()
+	}
+	// If this monitor still has children, let's lose the reference to them as
+	// well as break the references between them to aid GC.
+	if mm.mu.head != nil {
+		nextChild := mm.mu.head
+		mm.mu.head = nil
+		for nextChild != nil {
+			next := nextChild.parentMu.nextSibling
+			nextChild.parentMu.prevSibling = nil
+			nextChild.parentMu.nextSibling = nil
+			nextChild = next
+		}
 	}
 
 	// Disable the pool for further allocations, so that further
@@ -635,6 +657,9 @@ func (mm *BytesMonitor) doStop(ctx context.Context, check bool) {
 	// Release the reserved budget to its original pool, if any.
 	if mm.reserved != &noReserved {
 		mm.reserved.Clear(ctx)
+		// Make sure to lose reference to the reserved account because it has a
+		// pointer to the parent monitor.
+		mm.reserved = &noReserved
 	}
 }
 
@@ -820,7 +845,7 @@ func (mm *BytesMonitor) TransferAccount(
 	if err = b.Grow(ctx, origAccount.used); err != nil {
 		return newAccount, err
 	}
-	origAccount.Close(ctx)
+	origAccount.Clear(ctx)
 	return b, nil
 }
 

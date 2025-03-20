@@ -1,12 +1,7 @@
 // Copyright 2016 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package rowexec
 
@@ -617,7 +612,7 @@ func (jr *joinReader) initJoinReaderStrategy(
 	strategyMemAcc := jr.MemMonitor.MakeBoundAccount()
 	spanGeneratorMemAcc := jr.MemMonitor.MakeBoundAccount()
 	var generator joinReaderSpanGenerator
-	if jr.lookupExpr.Expr() == nil {
+	if jr.lookupExpr.Expr == nil {
 		defGen := &defaultSpanGenerator{}
 		if err := defGen.init(
 			flowCtx.EvalCtx,
@@ -652,7 +647,7 @@ func (jr *joinReader) initJoinReaderStrategy(
 		// If jr.remoteLookupExpr is set, this is a locality optimized lookup join
 		// and we need to use localityOptimizedSpanGenerator.
 		var err error
-		if jr.remoteLookupExpr.Expr() == nil {
+		if jr.remoteLookupExpr.Expr == nil {
 			multiSpanGen := &multiSpanGenerator{}
 			if jr.spansCanOverlap, err = multiSpanGen.init(
 				flowCtx.EvalCtx,
@@ -660,7 +655,7 @@ func (jr *joinReader) initJoinReaderStrategy(
 				&jr.fetchSpec,
 				jr.splitFamilyIDs,
 				len(jr.input.OutputTypes()),
-				jr.lookupExpr.Expr(),
+				&jr.lookupExpr,
 				fetchedOrdToIndexKeyOrd,
 				&spanGeneratorMemAcc,
 			); err != nil {
@@ -676,8 +671,8 @@ func (jr *joinReader) initJoinReaderStrategy(
 				&jr.fetchSpec,
 				jr.splitFamilyIDs,
 				len(jr.input.OutputTypes()),
-				jr.lookupExpr.Expr(),
-				jr.remoteLookupExpr.Expr(),
+				&jr.lookupExpr,
+				&jr.remoteLookupExpr,
 				fetchedOrdToIndexKeyOrd,
 				&spanGeneratorMemAcc,
 				&remoteSpanGenMemAcc,
@@ -1104,7 +1099,7 @@ func (jr *joinReader) fetchLookupRow() (joinReaderState, *execinfrapb.ProducerMe
 	// remote spans, check whether all input rows in the batch had local matches.
 	// If not all rows matched, generate remote spans and start a scan to search
 	// the remote nodes for the current batch.
-	if jr.remoteLookupExpr.Expr() != nil && !jr.strategy.generatedRemoteSpans() &&
+	if jr.remoteLookupExpr.Expr != nil && !jr.strategy.generatedRemoteSpans() &&
 		jr.curBatchRowsRead != jr.curBatchInputRowCount {
 		spans, spanIDs, err := jr.strategy.generateRemoteSpans()
 		if err != nil {

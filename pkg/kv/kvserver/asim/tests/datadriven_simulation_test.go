@@ -1,12 +1,7 @@
 // Copyright 2023 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package tests
 
@@ -412,26 +407,20 @@ func TestDataDriven(t *testing.T) {
 						Stores:    stores,
 					})
 				case "conformance":
-					var under, over, unavailable, violating, leaseViolating, leaseLessPref int
+					var under, over, unavailable, violating int
 					under = assertion.ConformanceAssertionSentinel
 					over = assertion.ConformanceAssertionSentinel
 					unavailable = assertion.ConformanceAssertionSentinel
 					violating = assertion.ConformanceAssertionSentinel
-					leaseLessPref = assertion.ConformanceAssertionSentinel
-					leaseViolating = assertion.ConformanceAssertionSentinel
 					scanIfExists(t, d, "under", &under)
 					scanIfExists(t, d, "over", &over)
 					scanIfExists(t, d, "unavailable", &unavailable)
 					scanIfExists(t, d, "violating", &violating)
-					scanIfExists(t, d, "lease-violating", &leaseViolating)
-					scanIfExists(t, d, "lease-less-preferred", &leaseLessPref)
 					assertions = append(assertions, assertion.ConformanceAssertion{
-						Underreplicated:           under,
-						Overreplicated:            over,
-						ViolatingConstraints:      violating,
-						Unavailable:               unavailable,
-						ViolatingLeasePreferences: leaseViolating,
-						LessPreferredLeases:       leaseLessPref,
+						Underreplicated: under,
+						Overreplicated:  over,
+						Violating:       violating,
+						Unavailable:     unavailable,
 					})
 				}
 				return ""

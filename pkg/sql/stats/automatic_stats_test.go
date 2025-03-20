@@ -1,12 +1,7 @@
 // Copyright 2018 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package stats
 
@@ -74,7 +69,7 @@ func TestMaybeRefreshStats(t *testing.T) {
 		s.InternalDB().(descs.DB),
 	)
 	require.NoError(t, cache.Start(ctx, codec, s.RangeFeedFactory().(*rangefeed.Factory)))
-	refresher := MakeRefresher(s.AmbientCtx(), st, executor, cache, time.Microsecond /* asOfTime */)
+	refresher := MakeRefresher(s.AmbientCtx(), st, executor, cache, time.Microsecond /* asOfTime */, nil /* knobs */)
 
 	// There should not be any stats yet.
 	if err := checkStatsCount(ctx, cache, descA, 0 /* expected */); err != nil {
@@ -198,7 +193,7 @@ func TestEnsureAllTablesQueries(t *testing.T) {
 		s.InternalDB().(descs.DB),
 	)
 	require.NoError(t, cache.Start(ctx, codec, s.RangeFeedFactory().(*rangefeed.Factory)))
-	r := MakeRefresher(s.AmbientCtx(), st, executor, cache, time.Microsecond /* asOfTime */)
+	r := MakeRefresher(s.AmbientCtx(), st, executor, cache, time.Microsecond /* asOfTime */, nil /* knobs */)
 
 	// Exclude the 3 system tables which don't use autostats.
 	systemTablesWithStats := bootstrap.NumSystemTablesForSystemTenant - 3
@@ -274,6 +269,46 @@ func TestEnsureAllTablesQueries(t *testing.T) {
 	}
 }
 
+// BenchmarkEnsureAllTables was added since this operation appeared as a major
+// source of memory usage in https://github.com/cockroachlabs/support/issues/2870.
+func BenchmarkEnsureAllTables(b *testing.B) {
+	defer leaktest.AfterTest(b)()
+	defer log.Scope(b).Close(b)
+	ctx := context.Background()
+
+	for _, numTables := range []int{10, 100, 1000} {
+		b.Run(fmt.Sprintf("numTables=%d", numTables), func(b *testing.B) {
+			srv, sqlDB, _ := serverutils.StartServer(b, base.TestServerArgs{})
+			defer srv.Stopper().Stop(ctx)
+			s := srv.ApplicationLayer()
+			codec, st := s.Codec(), s.ClusterSettings()
+			AutomaticStatisticsClusterMode.Override(ctx, &st.SV, true)
+			AutomaticStatisticsOnSystemTables.Override(ctx, &st.SV, true)
+
+			sqlRun := sqlutils.MakeSQLRunner(sqlDB)
+			sqlRun.Exec(b, `CREATE DATABASE t;`)
+
+			for i := 0; i < numTables; i++ {
+				sqlRun.Exec(b, fmt.Sprintf(`CREATE TABLE t.a%d (k INT PRIMARY KEY);`, i))
+			}
+
+			executor := s.InternalExecutor().(isql.Executor)
+			cache := NewTableStatisticsCache(
+				10, /* cacheSize */
+				s.ClusterSettings(),
+				s.InternalDB().(descs.DB),
+			)
+			require.NoError(b, cache.Start(ctx, codec, s.RangeFeedFactory().(*rangefeed.Factory)))
+			r := MakeRefresher(s.AmbientCtx(), st, executor, cache, time.Microsecond /* asOfTime */, nil /* knobs */)
+
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				r.ensureAllTables(ctx, &st.SV, time.Microsecond)
+			}
+		})
+	}
+}
+
 func checkAllTablesCount(ctx context.Context, systemTables bool, expected int, r *Refresher) error {
 	const collectionDelay = time.Microsecond
 	systemTablesPredicate := autoStatsOnSystemTablesEnabledPredicate
@@ -341,7 +376,7 @@ func TestAverageRefreshTime(t *testing.T) {
 		s.InternalDB().(descs.DB),
 	)
 	require.NoError(t, cache.Start(ctx, codec, s.RangeFeedFactory().(*rangefeed.Factory)))
-	refresher := MakeRefresher(s.AmbientCtx(), st, executor, cache, time.Microsecond /* asOfTime */)
+	refresher := MakeRefresher(s.AmbientCtx(), st, executor, cache, time.Microsecond /* asOfTime */, nil /* knobs */)
 
 	// curTime is used as the current time throughout the test to ensure that the
 	// calculated average refresh time is consistent even if there are delays due
@@ -588,7 +623,7 @@ func TestAutoStatsReadOnlyTables(t *testing.T) {
 		s.InternalDB().(descs.DB),
 	)
 	require.NoError(t, cache.Start(ctx, codec, s.RangeFeedFactory().(*rangefeed.Factory)))
-	refresher := MakeRefresher(s.AmbientCtx(), st, executor, cache, time.Microsecond /* asOfTime */)
+	refresher := MakeRefresher(s.AmbientCtx(), st, executor, cache, time.Microsecond /* asOfTime */, nil /* knobs */)
 
 	AutomaticStatisticsClusterMode.Override(ctx, &st.SV, true)
 
@@ -643,7 +678,7 @@ func TestAutoStatsOnStartupClusterSettingOff(t *testing.T) {
 		s.InternalDB().(descs.DB),
 	)
 	require.NoError(t, cache.Start(ctx, codec, s.RangeFeedFactory().(*rangefeed.Factory)))
-	refresher := MakeRefresher(s.AmbientCtx(), st, executor, cache, time.Microsecond /* asOfTime */)
+	refresher := MakeRefresher(s.AmbientCtx(), st, executor, cache, time.Microsecond /* asOfTime */, nil /* knobs */)
 
 	// Refresher start should trigger stats collection on t.a.
 	if err := refresher.Start(
@@ -690,7 +725,7 @@ func TestNoRetryOnFailure(t *testing.T) {
 		s.InternalDB().(descs.DB),
 	)
 	require.NoError(t, cache.Start(ctx, codec, s.RangeFeedFactory().(*rangefeed.Factory)))
-	r := MakeRefresher(s.AmbientCtx(), st, executor, cache, time.Microsecond /* asOfTime */)
+	r := MakeRefresher(s.AmbientCtx(), st, executor, cache, time.Microsecond /* asOfTime */, nil /* knobs */)
 
 	// Try to refresh stats on a table that doesn't exist.
 	r.maybeRefreshStats(

@@ -1,5 +1,11 @@
 #!/usr/bin/env bash
 
+# Copyright 2023 The Cockroach Authors.
+#
+# Use of this software is governed by the CockroachDB Software License
+# included in the /LICENSE file.
+
+
 set -exuo pipefail
 
 dir="$(dirname $(dirname $(dirname $(dirname "${0}"))))"
@@ -34,6 +40,7 @@ build/teamcity-roachtest-invoke.sh \
   --artifacts=/artifacts \
   --artifacts-literal="${LITERAL_ARTIFACTS_DIR:-}" \
   --slack-token="${SLACK_TOKEN:-}" \
+  --selective-tests="${SELECTIVE_TESTS:-true}" \
   --go-cover \
   --suite nightly \
   ${TESTS:-}

@@ -1,12 +1,7 @@
 // Copyright 2023 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package application_api_test
 
@@ -384,18 +379,10 @@ func TestHotRangesResponse(t *testing.T) {
 				if r.Desc.RangeID == 0 || (len(r.Desc.StartKey) == 0 && len(r.Desc.EndKey) == 0) {
 					t.Errorf("unexpected empty/unpopulated range descriptor: %+v", r.Desc)
 				}
-				if r.QueriesPerSecond > 0 {
-					if r.ReadsPerSecond == 0 && r.WritesPerSecond == 0 && r.ReadBytesPerSecond == 0 && r.WriteBytesPerSecond == 0 {
-						t.Errorf("qps %.2f > 0, expected either reads=%.2f, writes=%.2f, readBytes=%.2f or writeBytes=%.2f to be non-zero",
-							r.QueriesPerSecond, r.ReadsPerSecond, r.WritesPerSecond, r.ReadBytesPerSecond, r.WriteBytesPerSecond)
-					}
-					// If the architecture doesn't support sampling CPU, it
-					// will also be zero.
-					if grunning.Supported() && r.CPUTimePerSecond == 0 {
-						t.Errorf("qps %.2f > 0, expected cpu=%.2f to be non-zero",
-							r.QueriesPerSecond, r.CPUTimePerSecond)
-					}
-				}
+				// NB: Assertions against ReadsPerSecond, WritesPerSecond, ReadBytesPerSecond, WriteBytesPerSecond, and
+				// CPUTimePerSecond were explicitly removed from this test for older release branches (<24.1). This is because
+				// the values were flaky, but the fix made (https://github.com/cockroachdb/cockroach/pull/119723) was not able
+				// to be backported as it made critical changes to KV QPS calculations that are too risky for backport.
 				if r.QueriesPerSecond > lastQPS {
 					t.Errorf("unexpected increase in qps between ranges; prev=%.2f, current=%.2f, desc=%v",
 						lastQPS, r.QueriesPerSecond, r.Desc)
@@ -403,7 +390,6 @@ func TestHotRangesResponse(t *testing.T) {
 				lastQPS = r.QueriesPerSecond
 			}
 		}
-
 	}
 }
 

@@ -4,6 +4,7 @@ go_library(
     name = "corpus",
     srcs = ["corpus.go"],
     importpath = "github.com/cockroachdb/cockroach/pkg/sql/schemachanger/corpus",
+    tags = ["integration"],
     visibility = ["//visibility:public"],
     deps = [
         "//pkg/sql/schemachanger/scop",
@@ -20,10 +21,7 @@ go_library(
 go_test(
     name = "corpus_test",
     srcs = ["corpus_test.go"],
-    exec_properties = select({
-        "//build/toolchains:is_heavy": {"Pool": "heavy"},
-        "//conditions:default": {"Pool": "default"},
-    }),
+    args = ["-test.timeout=295s"],
     deps = [
         ":corpus",
         "//pkg/clusterversion",

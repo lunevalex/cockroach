@@ -1,12 +1,7 @@
 // Copyright 2020 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package main
 
@@ -29,12 +24,11 @@ import (
 )
 
 const (
-	crossFlag          = "cross"
-	cockroachTargetOss = "//pkg/cmd/cockroach-oss:cockroach-oss"
-	cockroachTarget    = "//pkg/cmd/cockroach:cockroach"
-	nogoDisableFlag    = "--//build/toolchains:nogo_disable_flag"
-	geosTarget         = "//c-deps:libgeos"
-	devTarget          = "//pkg/cmd/dev:dev"
+	crossFlag       = "cross"
+	cockroachTarget = "//pkg/cmd/cockroach:cockroach"
+	nogoDisableFlag = "--//build/toolchains:nogo_disable_flag"
+	geosTarget      = "//c-deps:libgeos"
+	devTarget       = "//pkg/cmd/dev:dev"
 )
 
 type buildTarget struct {
@@ -59,7 +53,7 @@ func makeBuildCmd(runE func(cmd *cobra.Command, args []string) error) *cobra.Com
 		// TODO(irfansharif): Flesh out the example usage patterns.
 		Example: `
 	dev build cockroach
-	dev build cockroach-{short,oss}
+	dev build cockroach-short
 	dev build {opt,exec}gen`,
 		Args: cobra.MinimumNArgs(0),
 		RunE: runE,
@@ -81,7 +75,6 @@ var buildTargetMapping = map[string]string{
 	"buildozer":            "@com_github_bazelbuild_buildtools//buildozer:buildozer",
 	"cockroach":            cockroachTarget,
 	"cockroach-sql":        "//pkg/cmd/cockroach-sql:cockroach-sql",
-	"cockroach-oss":        cockroachTargetOss,
 	"cockroach-short":      "//pkg/cmd/cockroach-short:cockroach-short",
 	"crlfmt":               "@com_github_cockroachdb_crlfmt//:crlfmt",
 	"dev":                  devTarget,
@@ -94,10 +87,8 @@ var buildTargetMapping = map[string]string{
 	"geos":                 geosTarget,
 	"langgen":              "//pkg/sql/opt/optgen/cmd/langgen:langgen",
 	"libgeos":              geosTarget,
-	"obsservice":           "//pkg/obsservice/cmd/obsservice:obsservice",
 	"optgen":               "//pkg/sql/opt/optgen/cmd/optgen:optgen",
 	"optfmt":               "//pkg/sql/opt/optgen/cmd/optfmt:optfmt",
-	"oss":                  cockroachTargetOss,
 	"reduce":               "//pkg/cmd/reduce:reduce",
 	"roachprod":            "//pkg/cmd/roachprod:roachprod",
 	"roachprod-stress":     "//pkg/cmd/roachprod-stress:roachprod-stress",
@@ -107,7 +98,6 @@ var buildTargetMapping = map[string]string{
 	"smith":                "//pkg/cmd/smith:smith",
 	"smithcmp":             "//pkg/cmd/smithcmp:smithcmp",
 	"smithtest":            "//pkg/cmd/smithtest:smithtest",
-	"sql-bootstrap-data":   "//pkg/cmd/sql-bootstrap-data:sql-bootstrap-data",
 	"staticcheck":          "@co_honnef_go_tools//cmd/staticcheck:staticcheck",
 	"swagger":              "@com_github_go_swagger_go_swagger//cmd/swagger:swagger",
 	"tests":                "//pkg:all_tests",
@@ -173,7 +163,6 @@ func (d *dev) build(cmd *cobra.Command, commandLine []string) error {
 	}
 	args = append(args, additionalBazelArgs...)
 	configArgs := getConfigArgs(args)
-	configArgs = append(configArgs, getConfigArgs(additionalBazelArgs)...)
 
 	if err := d.assertNoLinkedNpmDeps(buildTargets); err != nil {
 		return err
@@ -295,7 +284,7 @@ func (d *dev) stageArtifacts(
 			}
 			var geosDir string
 			if archived != "" {
-				execRoot, err := d.getExecutionRoot(ctx)
+				execRoot, err := d.getExecutionRoot(ctx, configArgs)
 				if err != nil {
 					return err
 				}

@@ -29,12 +29,9 @@ go_test(
     name = "pprofui_test",
     size = "small",
     srcs = ["server_test.go"],
+    args = ["-test.timeout=55s"],
     data = glob(["testdata/**"]),
     embed = [":pprofui"],
-    exec_properties = select({
-        "//build/toolchains:is_heavy": {"Pool": "heavy"},
-        "//conditions:default": {"Pool": "default"},
-    }),
     deps = [
         "//pkg/build/bazel",
         "//pkg/server/serverpb",

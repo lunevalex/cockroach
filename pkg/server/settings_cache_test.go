@@ -1,12 +1,7 @@
 // Copyright 2020 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package server
 
@@ -50,7 +45,7 @@ func TestCachedSettingsStoreAndLoad(t *testing.T) {
 	ctx := context.Background()
 	engine, err := storage.Open(ctx, storage.InMemory(),
 		cluster.MakeClusterSettings(),
-		storage.MaxSize(512<<20 /* 512 MiB */),
+		storage.MaxSizeBytes(512<<20 /* 512 MiB */),
 		storage.ForTesting)
 	require.NoError(t, err)
 	defer engine.Close()
@@ -117,8 +112,8 @@ func TestCachedSettingsServerRestart(t *testing.T) {
 		inspectState, err := inspectEngines(
 			context.Background(),
 			s.Engines(),
-			s.ClusterSettings().Version.LatestVersion(),
-			s.ClusterSettings().Version.MinSupportedVersion(),
+			s.ClusterSettings().Version.BinaryVersion(),
+			s.ClusterSettings().Version.BinaryMinSupportedVersion(),
 		)
 		require.NoError(t, err)
 

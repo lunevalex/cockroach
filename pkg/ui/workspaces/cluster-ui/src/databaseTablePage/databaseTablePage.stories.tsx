@@ -1,12 +1,7 @@
 // Copyright 2021 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 import React from "react";
 import { storiesOf } from "@storybook/react";
@@ -39,8 +34,7 @@ const withLoadingIndicator: DatabaseTablePageProps = {
     queryError: undefined,
     createStatement: { create_statement: "" },
     replicaData: {
-      nodeIDs: [],
-      nodeCount: 0,
+      storeIDs: [],
       replicaCount: 0,
     },
     indexData: { columns: [], indexes: [] },
@@ -105,8 +99,7 @@ const withData: DatabaseTablePageProps = {
     `,
     },
     replicaData: {
-      nodeIDs: [1, 2, 3, 4, 5, 6, 7],
-      nodeCount: 7,
+      storeIDs: [1, 2, 3, 4, 5, 6, 7],
       replicaCount: 7,
     },
     indexData: {

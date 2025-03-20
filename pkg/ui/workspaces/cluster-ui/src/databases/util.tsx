@@ -1,17 +1,14 @@
 // Copyright 2023 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 import { cockroach } from "@cockroachlabs/crdb-protobuf-client";
 import React from "react";
-import { Tooltip } from "antd";
+import { Skeleton, Tooltip } from "antd";
+import { Caution } from "@cockroachlabs/icons";
 import "antd/lib/tooltip/style";
+import "antd/lib/skeleton/style";
 import {
   isMaxSizeError,
   isPrivilegeError,
@@ -58,31 +55,71 @@ export class GetDatabaseInfoError extends Error {
   }
 }
 
-// getNodesByRegionString converts a list of node ids and map of
-// node ids to region to a string of node ids by region, ordered
-// by region name, e.g.
-// regionA(n1, n2), regionB(n2,n3), ...
+/** Store ids and node ids are both of type `number[]`. To disambiguate, a
+ * `kind` field is included in the type. */
+export type Stores = { kind: "store"; ids: number[] };
+
+/** Node ids and store IDs are both of type `number[]`. To disambiguate, a
+ * `kind` field is included in the type. */
+export type Nodes = { kind: "node"; ids: number[] };
+
+/** getNodeIdsFromStoreIds converts a list of store IDs to a list of node IDs.
+ *
+ * @param stores - Store ids for the cluster.
+ * @param nodeStatuses - A list of nodes that includes store information.
+ * @returns A list of node ids for the cluster.
+ */
+export function getNodeIdsFromStoreIds(
+  stores: Stores,
+  nodeStatuses: cockroach.server.status.statuspb.INodeStatus[],
+): Nodes {
+  /** Associates stores with their node. Nodes can have multiple stores:
+   * `{ store1: node1, store2: node1 }` */
+  const nodeByStoreMap: Record<number, number> = {};
+  nodeStatuses?.map(node =>
+    node.store_statuses?.map(store => {
+      nodeByStoreMap[store.desc.store_id] = node.desc.node_id;
+    }),
+  );
+
+  /** A unique list of node IDs derived from the nodeByStoreMap. */
+  const nodeIds = Array.from(
+    new Set(stores.ids.map(id => nodeByStoreMap[id])),
+  ).filter(value => value !== undefined);
+
+  return { kind: "node", ids: nodeIds };
+}
+
+/** getNodesByRegionString converts a list of node IDs to a user-facing string.
+ *
+ * @param nodes - Node ids for the cluster.
+ * @param nodeRegions - A map of node IDs to region IDs.
+ * @param isTenant - Whether the cluster is a tenant cluster.
+ * @returns A string of node IDs by region, ordered by region name, e.g.
+ * `regionA(n1, n2), regionB(n2,n3), ...`
+ */
 export function getNodesByRegionString(
-  nodes: number[],
+  nodes: Nodes,
   nodeRegions: Record<string, string>,
   isTenant: boolean,
 ): string {
   return nodesByRegionMapToString(
-    createNodesByRegionMap(nodes, nodeRegions),
+    createNodesByRegionMap(nodes.ids, nodeRegions),
     isTenant,
   );
 }
 
-// nodesByRegionMapToString converts a map of regions to node ids,
-// ordered by region name, e.g. converts:
-// { regionA: [1, 2], regionB: [2, 3] }
-// to:
-// regionA(n1, n2), regionB(n2,n3), ...
-// If the cluster is a tenant cluster, then we redact node info
-// and only display the region name, e.g.
-// regionA(n1, n2), regionB(n2,n3), ... becomes:
-// regionA, regionB, ...
-export function nodesByRegionMapToString(
+/** nodesByRegionMapToString converts a map of regions to node ids,
+ * ordered by region name, e.g. converts:
+ * `{ regionA: [1, 2], regionB: [2, 3] }`
+ * to:
+ * `regionA(n1, n2), regionB(n2,n3), ...`
+ *
+ * If the cluster is a tenant cluster, then we redact node info
+ * and only display the region name, e.g.
+ * `regionA(n1, n2), regionB(n2,n3), ...` becomes:
+ * `regionA, regionB, ...` */
+function nodesByRegionMapToString(
   nodesByRegion: Record<string, number[]>,
   isTenant: boolean,
 ): string {
@@ -102,7 +139,7 @@ export function nodesByRegionMapToString(
     .join(", ");
 }
 
-export function createNodesByRegionMap(
+function createNodesByRegionMap(
   nodes: number[],
   nodeRegions: Record<string, string>,
 ): Record<string, number[]> {
@@ -200,34 +237,56 @@ export function buildIndexStatToRecommendationsMap(
   return recommendationsMap;
 }
 
-export function checkInfoAvailable(
-  requestError: Error,
-  queryError: Error,
-  cell: React.ReactNode,
-): React.ReactNode {
+interface LoadingCellProps {
+  requestError: Error;
+  queryError?: Error;
+  loading: boolean;
+  errorClassName: string;
+}
+
+export const LoadingCell: React.FunctionComponent<LoadingCellProps> = ({
+  loading,
+  requestError,
+  queryError,
+  errorClassName,
+  children,
+}) => {
+  if (loading) {
+    return (
+      <Skeleton loading={true} active={true} paragraph={false} title={true} />
+    );
+  }
+
   let tooltipMsg = "";
   if (requestError) {
     tooltipMsg = `Encountered a network error fetching data for this cell: ${requestError.name}`;
   } else if (queryError) {
     tooltipMsg = getQueryErrorMessage(queryError);
-  } else if (cell == null) {
-    tooltipMsg = "Empty result";
   }
+
+  let childrenOrNoData = <>{children}</>;
+  if (children == null) {
+    childrenOrNoData = <>{"No data"}</>;
+  }
+
   // If we encounter an error gathering data for this cell,
-  // render it "unavailable" with a tooltip message for the error.
+  // render a warning icon with a tooltip message for the error.
   if (tooltipMsg !== "") {
     return (
       <Tooltip
         overlayStyle={{ whiteSpace: "pre-line" }}
         placement="bottom"
         title={tooltipMsg}
+        className={errorClassName}
       >
-        (unavailable)
+        <Caution role={"status"} />
+        {childrenOrNoData}
       </Tooltip>
     );
+  } else {
+    return childrenOrNoData;
   }
-  return cell;
-}
+};
 
 export const getNetworkErrorMessage = (requestError: Error): string => {
   return `Encountered a network error: ${requestError.message}`;

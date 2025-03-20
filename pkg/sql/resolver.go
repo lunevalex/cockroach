@@ -1,12 +1,7 @@
 // Copyright 2018 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package sql
 
@@ -63,35 +58,6 @@ func (p *planner) ResolveMutableTableDescriptor(
 	}
 
 	return prefix, desc, nil
-}
-
-// TODO(ajwerner): Remove this and things like it to use more generic
-// functionality. We really need to centralize the privilege checking.
-func (p *planner) resolveUncachedTableDescriptor(
-	ctx context.Context, tn *tree.TableName, required bool, requiredType tree.RequiredTableKind,
-) (table catalog.TableDescriptor, err error) {
-	var prefix catalog.ResolvedObjectPrefix
-	var desc catalog.Descriptor
-	p.runWithOptions(resolveFlags{skipCache: true}, func() {
-		lookupFlags := tree.ObjectLookupFlags{
-			Required:             required,
-			DesiredObjectKind:    tree.TableObject,
-			DesiredTableDescKind: requiredType,
-		}
-		desc, prefix, err = resolver.ResolveExistingObject(
-			ctx, p, tn.ToUnresolvedObjectName(), lookupFlags,
-		)
-	})
-	if err != nil || desc == nil {
-		return nil, err
-	}
-	table = desc.(catalog.TableDescriptor)
-	// Ensure that the current user can access the target schema.
-	if err := p.canResolveDescUnderSchema(ctx, prefix.Schema, table); err != nil {
-		return nil, err
-	}
-
-	return table, nil
 }
 
 func (p *planner) ResolveTargetObject(
@@ -304,7 +270,7 @@ func (p *planner) getDescriptorsFromTargetListForPrivilegeChange(
 	const required = true
 	if targets.Databases != nil {
 		if len(targets.Databases) == 0 {
-			return nil, sqlerrors.ErrNoDatabase
+			return nil, errNoDatabase
 		}
 		descs := make([]DescriptorWithObjectType, 0, len(targets.Databases))
 		for _, database := range targets.Databases {
@@ -318,14 +284,14 @@ func (p *planner) getDescriptorsFromTargetListForPrivilegeChange(
 			})
 		}
 		if len(descs) == 0 {
-			return nil, sqlerrors.ErrNoMatch
+			return nil, errNoMatch
 		}
 		return descs, nil
 	}
 
 	if targets.Types != nil {
 		if len(targets.Types) == 0 {
-			return nil, sqlerrors.ErrNoType
+			return nil, errNoType
 		}
 		descs := make([]DescriptorWithObjectType, 0, len(targets.Types))
 		for _, typ := range targets.Types {
@@ -341,7 +307,7 @@ func (p *planner) getDescriptorsFromTargetListForPrivilegeChange(
 		}
 
 		if len(descs) == 0 {
-			return nil, sqlerrors.ErrNoMatch
+			return nil, errNoMatch
 		}
 		return descs, nil
 	}
@@ -356,7 +322,7 @@ func (p *planner) getDescriptorsFromTargetListForPrivilegeChange(
 			routineType = tree.ProcedureRoutine
 		}
 		if len(targetRoutines) == 0 {
-			return nil, sqlerrors.ErrNoFunction
+			return nil, errNoFunction
 		}
 		descs := make([]DescriptorWithObjectType, 0, len(targetRoutines))
 		fnResolved := catalog.DescriptorIDSet{}
@@ -392,7 +358,7 @@ func (p *planner) getDescriptorsFromTargetListForPrivilegeChange(
 
 	if targets.Schemas != nil {
 		if len(targets.Schemas) == 0 {
-			return nil, sqlerrors.ErrNoSchema
+			return nil, errNoSchema
 		}
 		if targets.AllTablesInSchema || targets.AllSequencesInSchema {
 			// Get all the descriptors for the tables in the specified schemas.
@@ -426,7 +392,7 @@ func (p *planner) getDescriptorsFromTargetListForPrivilegeChange(
 									descs,
 									DescriptorWithObjectType{
 										descriptor: mut,
-										objectType: privilege.Table,
+										objectType: mut.GetObjectType(),
 									})
 							}
 						}
@@ -540,7 +506,7 @@ func (p *planner) getDescriptorsFromTargetListForPrivilegeChange(
 	}
 
 	if len(targets.Tables.TablePatterns) == 0 {
-		return nil, sqlerrors.ErrNoTable
+		return nil, errNoTable
 	}
 	descs := make([]DescriptorWithObjectType, 0, len(targets.Tables.TablePatterns))
 	for _, tableTarget := range targets.Tables.TablePatterns {
@@ -570,6 +536,8 @@ func (p *planner) getDescriptorsFromTargetListForPrivilegeChange(
 							objectType: privilege.Sequence,
 						},
 					)
+				} else if targets.Tables.SequenceOnly {
+					return nil, pgerror.Newf(pgcode.WrongObjectType, "%s is not a sequence", tableDesc.GetName())
 				} else {
 					descs = append(
 						descs,
@@ -583,7 +551,7 @@ func (p *planner) getDescriptorsFromTargetListForPrivilegeChange(
 		}
 	}
 	if len(descs) == 0 {
-		return nil, sqlerrors.ErrNoMatch
+		return nil, errNoMatch
 	}
 	return descs, nil
 }

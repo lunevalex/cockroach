@@ -1,12 +1,7 @@
 // Copyright 2017 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package colinfo
 
@@ -197,11 +192,10 @@ var ShowFingerprintsColumns = ResultColumns{
 	{Name: "fingerprint", Typ: types.String},
 }
 
-// ShowTenantFingerprintsColumns are the result columns of a SHOW
-// EXPERIMENTAL_FINGERPRINTS FROM TENANT statement.
+// ShowFingerprintsColumns are the result columns of a
+// SHOW EXPERIMENTAL_FINGERPRINTS FROM TENANT statement.
 var ShowTenantFingerprintsColumns = ResultColumns{
 	{Name: "tenant_name", Typ: types.String},
-	{Name: "start_ts", Typ: types.Decimal},
 	{Name: "end_ts", Typ: types.Decimal},
 	{Name: "fingerprint", Typ: types.Int},
 }
@@ -311,13 +305,6 @@ var TenantColumnsWithReplication = ResultColumns{
 	// cutover to before this time.
 	{Name: "retained_time", Typ: types.TimestampTZ},
 	{Name: "cutover_time", Typ: types.Decimal},
-}
-
-// TenantColumnsWithPriorReplication is appended to TenantColumns for
-// SHOW VIRTUAL CLUSTER ... WITH PRIOR REPLICATION DETAILS queries.
-var TenantColumnsWithPriorReplication = ResultColumns{
-	{Name: "source_id", Typ: types.String},
-	{Name: "activation_time", Typ: types.Decimal},
 }
 
 // TenantColumnsWithCapabilities is appended to TenantColumns for

@@ -1,12 +1,7 @@
 // Copyright 2015 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package tabledesc_test
 
@@ -355,17 +350,19 @@ func TestMaybeUpgradeIndexFormatVersion(t *testing.T) {
 			// upgrades, in particular the primary index will have its format version
 			// properly set.
 			desc: descpb.TableDescriptor{
-				FormatVersion: descpb.BaseFormatVersion,
-				ID:            51,
-				Name:          "tbl",
-				ParentID:      52,
-				NextColumnID:  3,
-				NextIndexID:   2,
+				FormatVersion:    descpb.BaseFormatVersion,
+				ID:               51,
+				Name:             "tbl",
+				ParentID:         52,
+				NextColumnID:     3,
+				NextIndexID:      2,
+				NextConstraintID: 2,
 				Columns: []descpb.ColumnDescriptor{
 					{ID: 1, Name: "foo"},
 					{ID: 2, Name: "bar"},
 				},
 				PrimaryIndex: descpb.IndexDescriptor{
+					ConstraintID:        1,
 					ID:                  descpb.IndexID(1),
 					Name:                "primary",
 					KeyColumnIDs:        []descpb.ColumnID{1, 2},

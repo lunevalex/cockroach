@@ -1,17 +1,11 @@
 // Copyright 2021 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package spanset_test
 
 import (
-	"context"
 	"fmt"
 	"testing"
 
@@ -80,10 +74,8 @@ func TestReadWriterDeclareLockTable(t *testing.T) {
 					defer b.Close()
 					rw := fn(ss, b)
 
-					require.NoError(t, rw.MVCCIterate(context.Background(), ltStartKey, ltEndKey,
-						storage.MVCCKeyIterKind, storage.IterKeyTypePointsOnly, storage.UnknownReadCategory, nil))
-					require.Error(t, rw.MVCCIterate(context.Background(), ltEndKey, ltEndKey.Next(),
-						storage.MVCCKeyIterKind, storage.IterKeyTypePointsOnly, storage.UnknownReadCategory, nil))
+					require.NoError(t, rw.MVCCIterate(ltStartKey, ltEndKey, storage.MVCCKeyIterKind, storage.IterKeyTypePointsOnly, nil))
+					require.Error(t, rw.MVCCIterate(ltEndKey, ltEndKey.Next(), storage.MVCCKeyIterKind, storage.IterKeyTypePointsOnly, nil))
 
 					err := rw.PutUnversioned(ltStartKey, []byte("value"))
 					if str == lock.None {

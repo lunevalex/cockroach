@@ -1,12 +1,7 @@
 // Copyright 2021 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package sql
 
@@ -43,7 +38,7 @@ func (r *sqlStatsCompactionResumer) Resume(ctx context.Context, execCtx interfac
 	p := execCtx.(JobExecContext)
 
 	var (
-		scheduledJobID jobspb.ScheduleID
+		scheduledJobID int64
 		err            error
 	)
 
@@ -53,7 +48,7 @@ func (r *sqlStatsCompactionResumer) Resume(ctx context.Context, execCtx interfac
 			return err
 		}
 
-		if scheduledJobID != jobspb.InvalidScheduleID {
+		if scheduledJobID != jobs.InvalidScheduleID {
 			schedules := jobs.ScheduledJobTxn(txn)
 			r.sj, err = schedules.Load(ctx, scheduledjobs.ProdJobSchedulerEnv, scheduledJobID)
 			if err != nil {
@@ -120,22 +115,22 @@ func (r *sqlStatsCompactionResumer) maybeNotifyJobTerminated(
 
 func (r *sqlStatsCompactionResumer) getScheduleID(
 	ctx context.Context, txn isql.Txn, env scheduledjobs.JobSchedulerEnv,
-) (scheduleID jobspb.ScheduleID, _ error) {
+) (scheduleID int64, _ error) {
 	row, err := txn.QueryRowEx(ctx, "lookup-sql-stats-schedule", txn.KV(),
 		sessiondata.NodeUserSessionDataOverride,
 		fmt.Sprintf("SELECT created_by_id FROM %s WHERE id=$1 AND created_by_type=$2", env.SystemJobsTableName()),
 		r.job.ID(), jobs.CreatedByScheduledJobs,
 	)
 	if err != nil {
-		return jobspb.InvalidScheduleID, errors.Wrap(err, "fail to look up scheduled information")
+		return jobs.InvalidScheduleID, errors.Wrap(err, "fail to look up scheduled information")
 	}
 
 	if row == nil {
 		// Compaction not triggered by a scheduled job.
-		return jobspb.InvalidScheduleID, nil
+		return jobs.InvalidScheduleID, nil
 	}
 
-	scheduleID = jobspb.ScheduleID(tree.MustBeDInt(row[0]))
+	scheduleID = int64(tree.MustBeDInt(row[0]))
 	return scheduleID, nil
 }
 
@@ -193,7 +188,7 @@ func (e *scheduledSQLStatsCompactionExecutor) createSQLStatsCompactionJob(
 
 	_, err :=
 		persistedsqlstats.CreateCompactionJob(ctx, &jobs.CreatedByInfo{
-			ID:   int64(sj.ScheduleID()),
+			ID:   sj.ScheduleID(),
 			Name: jobs.CreatedByScheduledJobs,
 		}, txn, p.(*planner).ExecCfg().JobRegistry)
 

@@ -1,12 +1,7 @@
 // Copyright 2022 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package eval
 
@@ -128,12 +123,14 @@ type CatalogBuiltins interface {
 	// puts it into a catalog.DescriptorBuilder,
 	// calls RunPostDeserializationChanges,
 	// calls StripDanglingBackReferences,
+	// calls StripNonExistentRoles,
 	// and re-encodes it.
 	RepairedDescriptor(
 		ctx context.Context,
 		encodedDescriptor []byte,
 		descIDMightExist func(id descpb.ID) bool,
 		nonTerminalJobIDMightExist func(id jobspb.JobID) bool,
+		roleExists func(username username.SQLUsername) bool,
 	) ([]byte, error)
 }
 
@@ -652,6 +649,11 @@ type TenantOperator interface {
 	// It returns an error if the tenant does not exist. If synchronous is true
 	// the gc job will not wait for a GC ttl.
 	DropTenantByID(ctx context.Context, tenantID uint64, synchronous, ignoreServiceMode bool) error
+
+	// GCTenant attempts to garbage collect a DROP tenant from the system. Upon
+	// success it also removes the tenant record.
+	// It returns an error if the tenant does not exist.
+	GCTenant(ctx context.Context, tenantID uint64) error
 
 	// LookupTenantID returns the ID for the given tenant name.o
 	LookupTenantID(ctx context.Context, tenantName roachpb.TenantName) (roachpb.TenantID, error)

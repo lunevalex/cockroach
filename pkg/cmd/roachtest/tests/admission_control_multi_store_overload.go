@@ -1,12 +1,7 @@
 // Copyright 2022 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package tests
 
@@ -27,7 +22,7 @@ func registerMultiStoreOverload(r registry.Registry) {
 	runKV := func(ctx context.Context, t test.Test, c cluster.Cluster) {
 		nodes := c.Spec().NodeCount - 1
 		c.Put(ctx, t.DeprecatedWorkload(), "./workload", c.Node(nodes+1))
-		startOpts := option.DefaultStartOptsNoBackups()
+		startOpts := option.NewStartOpts(option.NoBackupSchedule)
 		startOpts.RoachprodOpts.StoreCount = 2
 		c.Start(ctx, t.L(), startOpts, install.MakeClusterSettings(), c.Range(1, nodes))
 
@@ -69,7 +64,7 @@ func registerMultiStoreOverload(r registry.Registry) {
 			cmdRegular := fmt.Sprintf("./workload run kv --init"+
 				dbRegular+histograms+concurrencyRegular+duration+readPercentRegular+
 				" {pgurl:1-%d}", nodes)
-			c.Run(ctx, option.WithNodes(c.Node(nodes+1)), cmdRegular)
+			c.Run(ctx, c.Node(nodes+1), cmdRegular)
 			return nil
 		})
 		m2 := c.NewMonitor(ctx, c.Range(1, nodes))
@@ -83,7 +78,7 @@ func registerMultiStoreOverload(r registry.Registry) {
 			cmdOverload := fmt.Sprintf("./workload run kv --init"+
 				dbOverload+histograms+concurrencyOverload+duration+readPercentOverload+blockSizeOverload+
 				" {pgurl:1-%d}", nodes)
-			c.Run(ctx, option.WithNodes(c.Node(nodes+1)), cmdOverload)
+			c.Run(ctx, c.Node(nodes+1), cmdOverload)
 			return nil
 		})
 		m1.Wait()

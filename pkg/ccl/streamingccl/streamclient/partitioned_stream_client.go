@@ -1,20 +1,15 @@
 // Copyright 2021 The Cockroach Authors.
 //
-// Licensed as a CockroachDB Enterprise file under the Cockroach Community
-// License (the "License"); you may not use this file except in compliance with
-// the License. You may obtain a copy of the License at
-//
-//     https://github.com/cockroachdb/cockroach/blob/master/licenses/CCL.txt
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package streamclient
 
 import (
 	"context"
-	gosql "database/sql"
 	"net"
 	"net/url"
 
-	"github.com/cockroachdb/apd/v3"
 	"github.com/cockroachdb/cockroach/pkg/ccl/streamingccl"
 	"github.com/cockroachdb/cockroach/pkg/repstream/streampb"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
@@ -254,34 +249,6 @@ func (p *partitionedStreamClient) Complete(
 		return errors.Wrapf(err, "error completing replication stream %d", streamID)
 	}
 	return nil
-}
-
-// PriorReplicationDetails implements the streamclient.Client interface.
-func (p *partitionedStreamClient) PriorReplicationDetails(
-	ctx context.Context, tenant roachpb.TenantName,
-) (string, string, hlc.Timestamp, error) {
-	ctx, sp := tracing.ChildSpan(ctx, "streamclient.Client.PriorReplicationDetails")
-	defer sp.Finish()
-
-	var id string
-	var fromID, activated gosql.NullString
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	row := p.mu.srcConn.QueryRow(ctx,
-		`SELECT crdb_internal.cluster_id()::string||':'||id::string, source_id, activation_time FROM [SHOW VIRTUAL CLUSTER $1 WITH PRIOR REPLICATION DETAILS]`, tenant)
-	if err := row.Scan(&id, &fromID, &activated); err != nil {
-		return "", "", hlc.Timestamp{}, errors.Wrapf(err, "error querying prior replication details for %s", tenant)
-	}
-
-	if activated.Valid {
-		d, _, err := apd.NewFromString(activated.String)
-		if err != nil {
-			return "", "", hlc.Timestamp{}, err
-		}
-		ts, err := hlc.DecimalToHLC(d)
-		return id, fromID.String, ts, err
-	}
-	return id, "", hlc.Timestamp{}, nil
 }
 
 type partitionedStreamSubscription struct {

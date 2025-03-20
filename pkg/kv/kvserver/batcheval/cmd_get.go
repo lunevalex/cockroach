@@ -1,12 +1,7 @@
 // Copyright 2014 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package batcheval
 
@@ -33,12 +28,8 @@ func Get(
 	h := cArgs.Header
 	reply := resp.(*kvpb.GetResponse)
 
-	var lockTableForSkipLocked storage.LockTableView
-	if h.WaitPolicy == lock.WaitPolicy_SkipLocked {
-		lockTableForSkipLocked = newRequestBoundLockTableView(
-			readWriter, cArgs.Concurrency, h.Txn, args.KeyLockingStrength,
-		)
-		defer lockTableForSkipLocked.Close()
+	if err := maybeDisallowSkipLockedRequest(h, args.KeyLockingStrength); err != nil {
+		return result.Result{}, err
 	}
 
 	getRes, err := storage.MVCCGet(ctx, readWriter, args.Key, h.Timestamp, storage.MVCCGetOptions{
@@ -49,12 +40,11 @@ func Get(
 		ScanStats:             cArgs.ScanStats,
 		Uncertainty:           cArgs.Uncertainty,
 		MemoryAccount:         cArgs.EvalCtx.GetResponseMemoryAccount(),
-		LockTable:             lockTableForSkipLocked,
+		LockTable:             cArgs.Concurrency,
 		DontInterleaveIntents: cArgs.DontInterleaveIntents,
 		MaxKeys:               cArgs.Header.MaxSpanRequestKeys,
 		TargetBytes:           cArgs.Header.TargetBytes,
 		AllowEmpty:            cArgs.Header.AllowEmpty,
-		ReadCategory:          storage.BatchEvalReadCategory,
 	})
 	if err != nil {
 		return result.Result{}, err
@@ -96,7 +86,7 @@ func Get(
 		acq, err := acquireLockOnKey(ctx, readWriter, h.Txn, args.KeyLockingStrength,
 			args.KeyLockingDurability, args.Key, cArgs.Stats, cArgs.EvalCtx.ClusterSettings())
 		if err != nil {
-			return result.Result{}, err
+			return result.Result{}, maybeInterceptDisallowedSkipLockedUsage(h, err)
 		}
 		res.Local.AcquiredLocks = []roachpb.LockAcquisition{acq}
 	}

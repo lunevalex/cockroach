@@ -1,12 +1,7 @@
 // Copyright 2023 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package sqlutils
 
@@ -111,9 +106,6 @@ var issueLinkRE = regexp.MustCompile("https://go.crdb.dev/issue-v/([0-9]+)/.*")
 // VerifyParseError is used in the SQL and PL/pgSQL datadriven parser tests to
 // check that an unsuccessfully parsed expression returns an expected error.
 func VerifyParseError(err error) string {
-	if err == nil {
-		return ""
-	}
 	pgerr := pgerror.Flatten(err)
 	msg := pgerr.Message
 	if pgerr.Detail != "" {

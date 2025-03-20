@@ -50,11 +50,8 @@ go_test(
         "catalog_reader_test.go",
         "main_test.go",
     ],
+    args = ["-test.timeout=55s"],
     data = glob(["testdata/**"]),
-    exec_properties = select({
-        "//build/toolchains:is_heavy": {"Pool": "heavy"},
-        "//conditions:default": {"Pool": "default"},
-    }),
     deps = [
         ":catkv",
         "//pkg/base",

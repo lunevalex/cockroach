@@ -1,12 +1,7 @@
 // Copyright 2015 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 // Note that there's also a lease_test.go, in package sql_test.
 
@@ -288,7 +283,7 @@ CREATE TABLE t.test (k CHAR PRIMARY KEY, v CHAR);
 	}
 
 	tableDesc := desctestutils.TestingGetPublicTableDescriptor(kvDB, s.Codec(), "t", "test")
-	futureTime := s.Clock().Now().Add(500*time.Millisecond.Nanoseconds(), 0)
+	futureTime := s.Clock().Now().Add(500*time.Millisecond.Nanoseconds(), 0).WithSynthetic(true)
 
 	getLatestDesc := func() catalog.TableDescriptor {
 		if err := leaseManager.AcquireFreshestFromStore(ctx, tableDesc.GetID()); err != nil {
@@ -992,7 +987,7 @@ func TestLeaseAcquireAndReleaseConcurrently(t *testing.T) {
 			// monotonically increasing expiration. This prevents two leases
 			// from having the same expiration due to randomness, as the
 			// leases are checked for having a different expiration.
-			LeaseJitterFraction.Override(ctx, &serverArgs.Settings.SV, 0)
+			LeaseJitterFraction.Override(ctx, &serverArgs.SV, 0)
 
 			srv, sqlDB, _ := serverutils.StartServer(t, serverArgs)
 			defer srv.Stopper().Stop(context.Background())
@@ -1567,35 +1562,4 @@ func TestGetDescriptorsFromStoreForIntervalCPULimiterPagination(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, descs, 3)
 	require.Equal(t, numRequests, 1)
-}
-
-// TestSessionLeasingClusterSetting sanity testing for the new
-// experimental_use_session_based_leasing cluster setting and interfaces used
-// to consume it.
-func TestSessionLeasingClusterSetting(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-	defer log.Scope(t).Close(t)
-
-	ctx := context.Background()
-	srv, sqlDB, _ := serverutils.StartServer(t, base.TestServerArgs{})
-	defer srv.Stopper().Stop(ctx)
-
-	// Validate all settings can be set and the provider works correctly.
-	for idx, setting := range []string{"off", "dual_write", "drain", "session"} {
-		_, err := sqlDB.Exec("SET CLUSTER SETTING sql.catalog.experimental_use_session_based_leasing=$1::STRING", setting)
-		require.NoError(t, err)
-		lm := srv.LeaseManager().(*Manager)
-
-		// Validate that the mode we just set is active and the provider handles
-		// it properly.
-		require.True(t, lm.sessionBasedLeasingModeAtLeast(SessionBasedLeasingMode(idx)))
-		require.Equal(t, lm.getSessionBasedLeasingMode(), SessionBasedLeasingMode(idx))
-		// Validate that the previous minimums are active and forwards ones are not.
-		for mode := SessionBasedLeasingOff; mode <= SessionBasedLeasingMode(idx); mode++ {
-			require.True(t, lm.sessionBasedLeasingModeAtLeast(mode))
-		}
-		for mode := SessionBasedLeasingMode(idx) + 1; mode <= SessionBasedOnly; mode++ {
-			require.False(t, lm.sessionBasedLeasingModeAtLeast(mode))
-		}
-	}
 }

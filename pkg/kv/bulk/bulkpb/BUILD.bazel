@@ -50,11 +50,8 @@ go_library(
 go_test(
     name = "bulkpb_test",
     srcs = ["ingestion_performance_stats_test.go"],
+    args = ["-test.timeout=295s"],
     embed = [":bulkpb"],
-    exec_properties = select({
-        "//build/toolchains:is_heavy": {"Pool": "heavy"},
-        "//conditions:default": {"Pool": "default"},
-    }),
     deps = [
         "//pkg/roachpb",
         "//pkg/util/bulk",

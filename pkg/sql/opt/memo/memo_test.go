@@ -1,12 +1,7 @@
 // Copyright 2018 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package memo_test
 
@@ -103,7 +98,7 @@ func TestCompositeSensitive(t *testing.T) {
 		if err != nil {
 			d.Fatalf(t, "error building: %v", err)
 		}
-		return fmt.Sprintf("%v", memo.CanBeCompositeSensitive(scalar))
+		return fmt.Sprintf("%v", memo.CanBeCompositeSensitive(md, scalar))
 	})
 }
 
@@ -286,6 +281,12 @@ func TestMemoIsStale(t *testing.T) {
 	evalCtx.SessionData().LargeFullScanRows = 0
 	notStale()
 
+	// Stale OptimizerApplyFullScanPenaltyToVirtualTables.
+	evalCtx.SessionData().OptimizerApplyFullScanPenaltyToVirtualTables = true
+	stale()
+	evalCtx.SessionData().OptimizerApplyFullScanPenaltyToVirtualTables = false
+	notStale()
+
 	// Stale txn rows read error.
 	evalCtx.SessionData().TxnRowsReadErr = 1000
 	stale()
@@ -424,10 +425,63 @@ func TestMemoIsStale(t *testing.T) {
 	evalCtx.SessionData().OptimizerUseProvidedOrderingFix = false
 	notStale()
 
-	// Stale optimizer_merge_joins_enabled.
-	evalCtx.SessionData().OptimizerMergeJoinsEnabled = true
+	// Stale optimizer_use_virtual_computed_column_stats.
+	evalCtx.SessionData().OptimizerUseVirtualComputedColumnStats = true
 	stale()
-	evalCtx.SessionData().OptimizerMergeJoinsEnabled = false
+	evalCtx.SessionData().OptimizerUseVirtualComputedColumnStats = false
+	notStale()
+
+	// Stale optimizer_use_trigram_similarity_optimization.
+	evalCtx.SessionData().OptimizerUseTrigramSimilarityOptimization = true
+	stale()
+	evalCtx.SessionData().OptimizerUseTrigramSimilarityOptimization = false
+	notStale()
+
+	// Stale optimizer_use_distinct_on_limit_hint_costing.
+	evalCtx.SessionData().OptimizerUseImprovedDistinctOnLimitHintCosting = true
+	stale()
+	evalCtx.SessionData().OptimizerUseImprovedDistinctOnLimitHintCosting = false
+	notStale()
+
+	// Stale optimizer_use_improved_trigram_similarity_selectivity.
+	evalCtx.SessionData().OptimizerUseImprovedTrigramSimilaritySelectivity = true
+	stale()
+	evalCtx.SessionData().OptimizerUseImprovedTrigramSimilaritySelectivity = false
+	notStale()
+
+	// Stale pg_trgm.similarity_threshold.
+	evalCtx.SessionData().TrigramSimilarityThreshold = 0.5
+	stale()
+	evalCtx.SessionData().TrigramSimilarityThreshold = 0
+	notStale()
+
+	// Stale optimizer_use_improved_zigzag_join_costing.
+	evalCtx.SessionData().OptimizerUseImprovedZigzagJoinCosting = true
+	stale()
+	evalCtx.SessionData().OptimizerUseImprovedZigzagJoinCosting = false
+	notStale()
+
+	// Stale optimizer_use_improved_multi_column_selectivity_estimate.
+	evalCtx.SessionData().OptimizerUseImprovedMultiColumnSelectivityEstimate = true
+	stale()
+	evalCtx.SessionData().OptimizerUseImprovedMultiColumnSelectivityEstimate = false
+	notStale()
+
+	// Stale optimizer_prove_implication_with_virtual_computed_columns.
+	evalCtx.SessionData().OptimizerProveImplicationWithVirtualComputedColumns = true
+	stale()
+	evalCtx.SessionData().OptimizerProveImplicationWithVirtualComputedColumns = false
+	notStale()
+
+	// Stale optimizer_push_offset_into_index_join.
+	evalCtx.SessionData().OptimizerPushOffsetIntoIndexJoin = true
+	stale()
+	evalCtx.SessionData().OptimizerPushOffsetIntoIndexJoin = false
+	notStale()
+
+	evalCtx.SessionData().LegacyVarcharTyping = true
+	stale()
+	evalCtx.SessionData().LegacyVarcharTyping = false
 	notStale()
 
 	// User no longer has access to view.

@@ -1,12 +1,7 @@
 // Copyright 2020 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package sql
 
@@ -40,6 +35,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/sessiondatapb"
 	"github.com/cockroachdb/cockroach/pkg/sql/sessionphase"
 	"github.com/cockroachdb/cockroach/pkg/sql/sqlstats"
+	"github.com/cockroachdb/cockroach/pkg/sql/sqlstats/sslocal"
 	"github.com/cockroachdb/cockroach/pkg/sql/sqltelemetry"
 	"github.com/cockroachdb/cockroach/pkg/sql/stmtdiagnostics"
 	"github.com/cockroachdb/cockroach/pkg/util/buildutil"
@@ -155,6 +151,16 @@ type instrumentationHelper struct {
 	distribution     physicalplan.PlanDistribution
 	vectorized       bool
 	containsMutation bool
+	// generic is true if the plan can be fully-optimized once and re-used
+	// without re-optimization. Plans without placeholders and fold-able stable
+	// expressions, and plans utilizing the placeholder fast-path are always
+	// considered "generic". Plans that are fully optimized with placeholders
+	// present via the force_generic_plan or auto settings for plan_cache_mode
+	// are also considered "generic".
+	generic bool
+	// optimized is true if the plan was optimized or re-optimized during the
+	// current execution.
+	optimized bool
 
 	traceMetadata execNodeTraceMetadata
 
@@ -407,7 +413,7 @@ func (ih *instrumentationHelper) finalizeSetup(ctx context.Context, cfg *Executo
 func (ih *instrumentationHelper) Setup(
 	ctx context.Context,
 	cfg *ExecutorConfig,
-	statsCollector sqlstats.StatsCollector,
+	statsCollector *sslocal.StatsCollector,
 	p *planner,
 	stmtDiagnosticsRecorder *stmtdiagnostics.Registry,
 	fingerprint string,
@@ -469,18 +475,23 @@ func (ih *instrumentationHelper) Setup(
 		}
 	}
 
-	ih.collectExecStats = collectTxnExecStats
+	shouldSampleFirstEncounter := func() bool {
+		// If this is the first time we see this statement in the current stats
+		// container, we'll collect its execution stats anyway (unless the user
+		// disabled txn or stmt stats collection entirely).
+		// TODO(117690): Unify StmtStatsEnable and TxnStatsEnable into a single cluster setting.
+		if collectTxnStatsSampleRate.Get(&cfg.Settings.SV) == 0 ||
+			!sqlstats.StmtStatsEnable.Get(&cfg.Settings.SV) {
+			return false
+		}
 
-	// Don't collect it if Stats Collection is disabled. If it is disabled the
-	// stats are not stored, so it always returns false for previouslySampled.
-	if !collectTxnExecStats && (!previouslySampled && sqlstats.StmtStatsEnable.Get(&cfg.Settings.SV)) {
-		// We don't collect the execution stats for statements in this txn, but
-		// this is the first time we see this statement ever, so we'll collect
-		// its execution stats anyway (unless the user disabled txn stats
-		// collection entirely).
-		statsCollectionDisabled := collectTxnStatsSampleRate.Get(&cfg.Settings.SV) == 0
-		ih.collectExecStats = !statsCollectionDisabled
+		// We don't want to collect the stats if the stats container is full,
+		// since previouslySampled will always return false for statements
+		// not already in the container.
+		return !previouslySampled && !statsCollector.StatementsContainerFull()
 	}
+
+	ih.collectExecStats = collectTxnExecStats || shouldSampleFirstEncounter()
 
 	if !ih.collectBundle && ih.withStatementTrace == nil && ih.outputMode == unmodifiedOutput {
 		if ih.collectExecStats {
@@ -560,7 +571,7 @@ func (ih *instrumentationHelper) setupWithPlanGist(
 
 func (ih *instrumentationHelper) Finish(
 	cfg *ExecutorConfig,
-	statsCollector sqlstats.StatsCollector,
+	statsCollector *sslocal.StatsCollector,
 	txnStats *execstats.QueryLevelStats,
 	collectExecStats bool,
 	p *planner,
@@ -662,7 +673,7 @@ func (ih *instrumentationHelper) Finish(
 				planString = "-- plan elided due to gist matching"
 			}
 			bundle = buildStatementBundle(
-				bundleCtx, ih.explainFlags, cfg.DB, ie.(*InternalExecutor),
+				bundleCtx, ih.explainFlags, cfg.DB, p, ie.(*InternalExecutor),
 				stmtRawSQL, &p.curPlan, planString, trace, placeholders, res.ErrAllowReleased(),
 				payloadErr, retErr, &p.extendedEvalCtx.Settings.SV, ih.inFlightTraceCollector,
 			)
@@ -753,11 +764,13 @@ func (ih *instrumentationHelper) RecordExplainPlan(explainPlan *explain.Plan) {
 
 // RecordPlanInfo records top-level information about the plan.
 func (ih *instrumentationHelper) RecordPlanInfo(
-	distribution physicalplan.PlanDistribution, vectorized, containsMutation bool,
+	distribution physicalplan.PlanDistribution, vectorized, containsMutation, generic, optimized bool,
 ) {
 	ih.distribution = distribution
 	ih.vectorized = vectorized
 	ih.containsMutation = containsMutation
+	ih.generic = generic
+	ih.optimized = optimized
 }
 
 // PlanForStats returns the plan as an ExplainTreePlanNode tree, if it was
@@ -773,6 +786,7 @@ func (ih *instrumentationHelper) PlanForStats(ctx context.Context) *appstatspb.E
 	})
 	ob.AddDistribution(ih.distribution.String())
 	ob.AddVectorized(ih.vectorized)
+	ob.AddPlanType(ih.generic, ih.optimized)
 	if err := emitExplain(ctx, ob, ih.evalCtx, ih.codec, ih.explainPlan); err != nil {
 		log.Warningf(ctx, "unable to emit explain plan tree: %v", err)
 		return nil
@@ -798,6 +812,7 @@ func (ih *instrumentationHelper) emitExplainAnalyzePlanToOutputBuilder(
 	ob.AddExecutionTime(phaseTimes.GetRunLatency())
 	ob.AddDistribution(ih.distribution.String())
 	ob.AddVectorized(ih.vectorized)
+	ob.AddPlanType(ih.generic, ih.optimized)
 
 	if queryStats != nil {
 		if queryStats.KVRowsRead != 0 {
@@ -831,9 +846,6 @@ func (ih *instrumentationHelper) emitExplainAnalyzePlanToOutputBuilder(
 			// for example, EXPORT statements. For now, only output RU estimates for
 			// vectorized plans.
 			ob.AddRUEstimate(queryStats.RUEstimate)
-		}
-		if queryStats.ClientTime != 0 {
-			ob.AddClientTime(queryStats.ClientTime)
 		}
 	}
 

@@ -1,12 +1,7 @@
 // Copyright 2016 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package kvpb
 
@@ -383,6 +378,13 @@ func TestNotLeaseholderError(t *testing.T) {
 		exp string
 		err *NotLeaseHolderError
 	}{
+		{
+			exp: `[NotLeaseHolderError] r1: replica not lease holder; replica (n1,s1):1 is`,
+			err: &NotLeaseHolderError{
+				RangeID:               1,
+				DeprecatedLeaseHolder: rd,
+			},
+		},
 		{
 			exp: `[NotLeaseHolderError] r1: replica not lease holder; current lease is repl=(n1,s1):1 seq=2 start=0.000000001,0 epo=1`,
 			err: &NotLeaseHolderError{

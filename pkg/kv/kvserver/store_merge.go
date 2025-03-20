@@ -1,12 +1,7 @@
 // Copyright 2019 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package kvserver
 
@@ -180,7 +175,7 @@ func (s *Store) MergeRange(
 			} else {
 				sum = rspb.FromTimestamp(freezeStart.ToTimestamp())
 			}
-			applyReadSummaryToTimestampCache(ctx, s.tsCache, &rightDesc, sum)
+			applyReadSummaryToTimestampCache(s.tsCache, &rightDesc, sum)
 		}
 		// When merging ranges, the closed timestamp of the RHS can regress. It's
 		// possible that, at subsumption time, the RHS had a high closed timestamp.
@@ -193,7 +188,7 @@ func (s *Store) MergeRange(
 		// is frequently (but not necessarily) redundant with the bumping to the
 		// freeze time done above.
 		sum := rspb.FromTimestamp(rightClosedTS)
-		applyReadSummaryToTimestampCache(ctx, s.tsCache, &rightDesc, sum)
+		applyReadSummaryToTimestampCache(s.tsCache, &rightDesc, sum)
 	}
 
 	// Update the subsuming range's descriptor, atomically widening it while

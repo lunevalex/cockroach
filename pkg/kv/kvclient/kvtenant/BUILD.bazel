@@ -5,6 +5,7 @@ go_library(
     srcs = [
         "connector.go",
         "connector_factory.go",
+        "rangedesc_iter.go",
         "setting_overrides.go",
         "test_utils.go",
     ],
@@ -60,11 +61,8 @@ go_test(
         "tenant_scan_range_descriptors_test.go",
         "tenant_trace_test.go",
     ],
+    args = ["-test.timeout=295s"],
     embed = [":kvtenant"],
-    exec_properties = select({
-        "//build/toolchains:is_heavy": {"Pool": "heavy"},
-        "//conditions:default": {"Pool": "default"},
-    }),
     deps = [
         "//pkg/base",
         "//pkg/config",
@@ -90,6 +88,7 @@ go_test(
         "//pkg/testutils/sqlutils",
         "//pkg/testutils/testcluster",
         "//pkg/util",
+        "//pkg/util/grpcutil",
         "//pkg/util/hlc",
         "//pkg/util/leaktest",
         "//pkg/util/log",

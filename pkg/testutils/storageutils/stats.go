@@ -1,17 +1,11 @@
 // Copyright 2022 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package storageutils
 
 import (
-	"context"
 	"testing"
 
 	"github.com/cockroachdb/cockroach/pkg/keys"
@@ -25,8 +19,7 @@ import (
 func EngineStats(t *testing.T, engine storage.Reader, nowNanos int64) *enginepb.MVCCStats {
 	t.Helper()
 
-	stats, err := storage.ComputeStats(
-		context.Background(), engine, keys.LocalMax, keys.MaxKey, nowNanos)
+	stats, err := storage.ComputeStats(engine, keys.LocalMax, keys.MaxKey, nowNanos)
 	require.NoError(t, err)
 	return &stats
 }

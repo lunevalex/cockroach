@@ -1,12 +1,7 @@
 // Copyright 2022 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package tests
 
@@ -48,6 +43,7 @@ type allocationBenchSpec struct {
 	nodes, cpus int
 	load        allocBenchLoad
 
+	nodeAttrs   map[int]string
 	startRecord time.Duration
 	samples     int
 }
@@ -80,6 +76,8 @@ type kvAllocBenchEventRunner struct {
 	insertCount int
 
 	name string
+
+	replFactor int
 }
 
 var (
@@ -146,13 +144,24 @@ func (r kvAllocBenchEventRunner) run(ctx context.Context, c cluster.Cluster, t t
 		}
 	}
 	setupCmd += " {pgurl:1}"
-	err := c.RunE(ctx, option.WithNodes(c.Node(workloadNode)), setupCmd)
+	err := c.RunE(ctx, c.Node(workloadNode), setupCmd)
 	if err != nil {
 		return err
 	}
 
+	if r.replFactor == 0 {
+		r.replFactor = 3
+	}
+
 	db := c.Conn(ctx, t.L(), 1)
 	defer db.Close()
+
+	// Set the replication factor of the database to match the spec.
+	stmt := fmt.Sprintf("alter database %s configure zone using num_replicas=%d",
+		name, r.replFactor)
+	if _, err = db.ExecContext(ctx, stmt); err != nil {
+		return err
+	}
 
 	runCmd := fmt.Sprintf(
 		"./workload run kv --db=%s --read-percent=%d --min-block-bytes=%d --max-block-bytes=%d --max-rate=%d",
@@ -173,7 +182,7 @@ func (r kvAllocBenchEventRunner) run(ctx context.Context, c cluster.Cluster, t t
 		runCmd, defaultAllocBenchConcurrency, defaultAllocBenchDuration.String(), workloadNode-1)
 
 	t.Status("running kv workload", runCmd)
-	return c.RunE(ctx, option.WithNodes(c.Node(workloadNode)), runCmd)
+	return c.RunE(ctx, c.Node(workloadNode), runCmd)
 }
 func registerAllocationBench(r registry.Registry) {
 	for _, spec := range []allocationBenchSpec{
@@ -261,6 +270,7 @@ func registerAllocationBenchSpec(r registry.Registry, allocSpec allocationBenchS
 			allocSpec.nodes+1,
 			specOptions...,
 		),
+		Timeout:           time.Duration(allocSpec.samples) * time.Hour,
 		NonReleaseBlocker: true,
 		CompatibleClouds:  registry.AllExceptAWS,
 		Suites:            registry.Suites(registry.Nightly),
@@ -278,7 +288,11 @@ func setupAllocationBench(
 	t.Status("starting cluster")
 	for i := 1; i <= spec.nodes; i++ {
 		// Don't start a backup schedule as this test reports to roachperf.
-		startOpts := option.DefaultStartOptsNoBackups()
+		startOpts := option.NewStartOpts(option.NoBackupSchedule)
+		if attr, ok := spec.nodeAttrs[i]; ok {
+			startOpts.RoachprodOpts.ExtraArgs = append(startOpts.RoachprodOpts.ExtraArgs,
+				fmt.Sprintf("--attrs=%s", attr))
+		}
 		startOpts.RoachprodOpts.ExtraArgs = append(startOpts.RoachprodOpts.ExtraArgs,
 			"--vmodule=store_rebalancer=2,allocator=2,replicate_queue=2")
 		c.Start(ctx, t.L(), startOpts, install.MakeClusterSettings(), c.Node(i))
@@ -306,7 +320,7 @@ func setupStatCollector(
 		if err := c.StopGrafana(ctx, t.L(), t.ArtifactsDir()); err != nil {
 			t.L().ErrorfCtx(ctx, "Error(s) shutting down prom/grafana %s", err)
 		}
-		c.Wipe(ctx, false /* preserveCerts */)
+		c.Wipe(ctx)
 	}
 
 	promClient, err := clusterstats.SetupCollectorPromClient(ctx, c, t.L(), cfg)

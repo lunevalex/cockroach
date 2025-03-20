@@ -1,17 +1,11 @@
 // Copyright 2023 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package storage
 
 import (
-	"context"
 	"sync"
 
 	"github.com/cockroachdb/cockroach/pkg/keys"
@@ -121,12 +115,7 @@ var lockTableKeyScannerPool = sync.Pool{
 // should accumulate before returning an error. If maxConflicts is zero, the
 // scanner will accumulate all conflicting locks.
 func newLockTableKeyScanner(
-	ctx context.Context,
-	reader Reader,
-	txn *roachpb.Transaction,
-	str lock.Strength,
-	maxConflicts int64,
-	readCategory ReadCategory,
+	reader Reader, txn *roachpb.Transaction, str lock.Strength, maxConflicts int64,
 ) (*lockTableKeyScanner, error) {
 	var txnID uuid.UUID
 	if txn != nil {
@@ -136,11 +125,10 @@ func newLockTableKeyScanner(
 	if err != nil {
 		return nil, err
 	}
-	iter, err := NewLockTableIterator(ctx, reader, LockTableIteratorOptions{
-		Prefix:       true,
-		MatchTxnID:   txnID,
-		MatchMinStr:  minConflictStr,
-		ReadCategory: readCategory,
+	iter, err := NewLockTableIterator(reader, LockTableIteratorOptions{
+		Prefix:      true,
+		MatchTxnID:  txnID,
+		MatchMinStr: minConflictStr,
 	})
 	if err != nil {
 		return nil, err

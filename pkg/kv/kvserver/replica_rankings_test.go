@@ -1,12 +1,7 @@
 // Copyright 2018 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package kvserver
 
@@ -24,6 +19,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/load"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/storage"
+	"github.com/cockroachdb/cockroach/pkg/testutils"
 	"github.com/cockroachdb/cockroach/pkg/testutils/serverutils"
 	"github.com/cockroachdb/cockroach/pkg/testutils/sqlutils"
 	"github.com/cockroachdb/cockroach/pkg/testutils/storageutils"
@@ -187,7 +183,7 @@ func TestAddSSTQPSStat(t *testing.T) {
 		// If queries are correctly recorded, we should see increase in query
 		// count by the expected QPS. However, it is possible to to get a
 		// slightly higher number due to interleaving requests. To avoid a
-		// flaky test, we assert that QPS is at least as high as expected,
+		// flakey test, we assert that QPS is at least as high as expected,
 		// then no greater than 4 requests of expected QPS. If this test is
 		// flaky, increase the delta to account for background activity
 		// interleaving with measurements.
@@ -220,7 +216,7 @@ func TestWriteLoadStatsAccounting(t *testing.T) {
 	args.ServerArgs.Knobs.Store = &StoreTestingKnobs{DisableCanAckBeforeApplication: true}
 	tc := serverutils.StartCluster(t, 1, args)
 
-	const epsilonAllowed = 5
+	const epsilonAllowed = 4
 
 	defer tc.Stopper().Stop(ctx)
 	ts := tc.Server(0)
@@ -258,40 +254,48 @@ func TestWriteLoadStatsAccounting(t *testing.T) {
 	sqlDB.Exec(t, `SET CLUSTER SETTING kv.range_split.by_load.enabled = false`)
 
 	for _, testCase := range testCases {
-		// Reset the request counts to 0 before sending to clear previous requests.
-		repl.loadStats.Reset()
+		// This test can flake, where an errant request - not sent here
+		// (commonly intent resolution) will artifically inflate the collected
+		// metrics. This results in unexpected read/write statistics and a
+		// flakey test every few hundred runs. Here we assert that the run
+		// should succeed soon, if it fails on the first.
+		testutils.SucceedsSoon(t, func() error {
+			// Reset the request counts to 0 before sending to clear previous requests.
+			repl.loadStats.Reset()
 
-		requestsBefore := repl.loadStats.TestingGetSum(load.Requests)
-		writesBefore := repl.loadStats.TestingGetSum(load.WriteKeys)
-		readsBefore := repl.loadStats.TestingGetSum(load.ReadKeys)
-		readBytesBefore := repl.loadStats.TestingGetSum(load.ReadBytes)
-		writeBytesBefore := repl.loadStats.TestingGetSum(load.WriteBytes)
+			requestsBefore := repl.loadStats.TestingGetSum(load.Requests)
+			writesBefore := repl.loadStats.TestingGetSum(load.WriteKeys)
+			readsBefore := repl.loadStats.TestingGetSum(load.ReadKeys)
+			readBytesBefore := repl.loadStats.TestingGetSum(load.ReadBytes)
+			writeBytesBefore := repl.loadStats.TestingGetSum(load.WriteBytes)
 
-		for i := 0; i < testCase.writes; i++ {
-			_, pErr := db.Inc(ctx, scratchKey, 1)
-			require.Nil(t, pErr)
-		}
-		require.Equal(t, 0.0, requestsBefore)
-		require.Equal(t, 0.0, writesBefore)
-		require.Equal(t, 0.0, readsBefore)
-		require.Equal(t, 0.0, writeBytesBefore)
-		require.Equal(t, 0.0, readBytesBefore)
+			for i := 0; i < testCase.writes; i++ {
+				_, pErr := db.Inc(ctx, scratchKey, 1)
+				require.Nil(t, pErr)
+			}
+			require.Equal(t, 0.0, requestsBefore)
+			require.Equal(t, 0.0, writesBefore)
+			require.Equal(t, 0.0, readsBefore)
+			require.Equal(t, 0.0, writeBytesBefore)
+			require.Equal(t, 0.0, readBytesBefore)
 
-		requestsAfter := repl.loadStats.TestingGetSum(load.Requests)
-		writesAfter := repl.loadStats.TestingGetSum(load.WriteKeys)
-		readsAfter := repl.loadStats.TestingGetSum(load.ReadKeys)
-		readBytesAfter := repl.loadStats.TestingGetSum(load.ReadBytes)
-		writeBytesAfter := repl.loadStats.TestingGetSum(load.WriteBytes)
+			requestsAfter := repl.loadStats.TestingGetSum(load.Requests)
+			writesAfter := repl.loadStats.TestingGetSum(load.WriteKeys)
+			readsAfter := repl.loadStats.TestingGetSum(load.ReadKeys)
+			readBytesAfter := repl.loadStats.TestingGetSum(load.ReadBytes)
+			writeBytesAfter := repl.loadStats.TestingGetSum(load.WriteBytes)
 
-		assertGreaterThanInDelta(t, testCase.expectedRQPS, requestsAfter, epsilonAllowed)
-		assertGreaterThanInDelta(t, testCase.expectedWPS, writesAfter, epsilonAllowed)
-		assertGreaterThanInDelta(t, testCase.expectedRPS, readsAfter, epsilonAllowed)
-		assertGreaterThanInDelta(t, testCase.expectedRBPS, readBytesAfter, epsilonAllowed)
-		// NB: We assert that the written bytes is greater than the write
-		// batch request size. However the size multiplication factor,
-		// varies between 3 and 5 so we instead assert that it is greater
-		// than the logical bytes.
-		require.GreaterOrEqual(t, writeBytesAfter, testCase.expectedWBPS)
+			assertGreaterThanInDelta(t, testCase.expectedRQPS, requestsAfter, epsilonAllowed)
+			assertGreaterThanInDelta(t, testCase.expectedWPS, writesAfter, epsilonAllowed)
+			assertGreaterThanInDelta(t, testCase.expectedRPS, readsAfter, epsilonAllowed)
+			assertGreaterThanInDelta(t, testCase.expectedRBPS, readBytesAfter, epsilonAllowed)
+			// NB: We assert that the written bytes is greater than the write
+			// batch request size. However the size multiplication factor,
+			// varies between 3 and 5 so we instead assert that it is greater
+			// than the logical bytes.
+			require.GreaterOrEqual(t, writeBytesAfter, testCase.expectedWBPS)
+			return nil
+		})
 	}
 }
 

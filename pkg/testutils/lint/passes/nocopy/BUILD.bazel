@@ -16,13 +16,10 @@ go_test(
     name = "nocopy_test",
     size = "small",
     srcs = ["nocopy_test.go"],
+    args = ["-test.timeout=55s"],
     data = glob(["testdata/**"]) + [
         "@go_sdk//:files",
     ],
-    exec_properties = select({
-        "//build/toolchains:is_heavy": {"Pool": "heavy"},
-        "//conditions:default": {"Pool": "default"},
-    }),
     deps = [
         ":nocopy",
         "//pkg/build/bazel",

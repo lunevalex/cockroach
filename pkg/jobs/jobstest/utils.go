@@ -1,12 +1,7 @@
 // Copyright 2020 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package jobstest
 
@@ -148,7 +143,7 @@ func GetJobsTableSchema(env scheduledjobs.JobSchedulerEnv) string {
 var DummyClusterID = uuid.UUID{1}
 
 // DummyClusterVersion is used while instantiating dummy schedules
-var DummyClusterVersion = clusterversion.ClusterVersion{Version: clusterversion.Latest.Version()}
+var DummyClusterVersion = clusterversion.ClusterVersion{Version: clusterversion.TestingBinaryVersion}
 
 // AddDummyScheduleDetails augments passed in details with a dummy clusterID and CreationClusterVersion.
 func AddDummyScheduleDetails(details jobspb.ScheduleDetails) jobspb.ScheduleDetails {

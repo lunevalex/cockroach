@@ -1,12 +1,7 @@
 // Copyright 2022 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 // Package logstore implements the Raft log storage.
 package logstore
@@ -404,7 +399,7 @@ func logAppend(
 	value.RawBytes = value.RawBytes[:0]
 	diff.Reset()
 
-	opts := storage.MVCCWriteOptions{Stats: diff, Category: storage.ReplicationReadCategory}
+	opts := storage.MVCCWriteOptions{Stats: diff}
 	for i := range entries {
 		ent := &entries[i]
 		key := keys.RaftLogKeyFromPrefix(raftLogPrefix, kvpb.RaftIndex(ent.Index))
@@ -462,7 +457,7 @@ func LoadTerm(
 	reader := eng.NewReadOnly(storage.StandardDurability)
 	defer reader.Close()
 
-	if err := raftlog.Visit(ctx, reader, rangeID, index, index+1, func(ent raftpb.Entry) error {
+	if err := raftlog.Visit(reader, rangeID, index, index+1, func(ent raftpb.Entry) error {
 		if found {
 			return errors.Errorf("found more than one entry in [%d,%d)", index, index+1)
 		}
@@ -594,7 +589,7 @@ func LoadEntries(
 
 	reader := eng.NewReadOnly(storage.StandardDurability)
 	defer reader.Close()
-	if err := raftlog.Visit(ctx, reader, rangeID, expectedIndex, hi, scanFunc); err != nil {
+	if err := raftlog.Visit(reader, rangeID, expectedIndex, hi, scanFunc); err != nil {
 		return nil, 0, 0, err
 	}
 	eCache.Add(rangeID, ents, false /* truncate */)

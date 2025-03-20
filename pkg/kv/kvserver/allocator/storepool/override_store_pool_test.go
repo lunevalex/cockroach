@@ -1,12 +1,7 @@
 // Copyright 2022 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package storepool
 
@@ -96,12 +91,11 @@ func TestOverrideStorePoolStatusString(t *testing.T) {
 	// Mark node 5 as draining.
 	mnl.SetNodeStatus(5, livenesspb.NodeLivenessStatus_DRAINING)
 
-	require.Equal(t,
-		"1: range-count=0 fraction-used=0.00\n"+
-			"2 (status=dead): range-count=0 fraction-used=0.00\n"+
-			"3 (status=decommissioning): range-count=0 fraction-used=0.00\n"+
-			"4: range-count=0 fraction-used=0.00\n"+
-			"5 (status=draining): range-count=0 fraction-used=0.00\n",
+	require.Equal(t, "1: range-count=0 fraction-used=0.00\n"+
+		"2 (status=1): range-count=0 fraction-used=0.00\n"+
+		"3 (status=5): range-count=0 fraction-used=0.00\n"+
+		"4: range-count=0 fraction-used=0.00\n"+
+		"5 (status=7): range-count=0 fraction-used=0.00\n",
 		sp.String(),
 	)
 }

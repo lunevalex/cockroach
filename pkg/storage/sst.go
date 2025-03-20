@@ -1,12 +1,7 @@
 // Copyright 2021 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package storage
 
@@ -44,15 +39,20 @@ var (
 // subarray. The outer slice of levels must be sorted in reverse chronological
 // order: a key in a file in a level at a lower index will shadow the same key
 // contained within a file in a level at a higher index.
-func NewSSTIterator(files [][]sstable.ReadableFile, opts IterOptions) (MVCCIterator, error) {
-	return newPebbleSSTIterator(files, opts)
+//
+// If the iterator is only going to be used for forward iteration, the caller
+// may pass forwardOnly=true for better performance.
+func NewSSTIterator(
+	files [][]sstable.ReadableFile, opts IterOptions, forwardOnly bool,
+) (MVCCIterator, error) {
+	return newPebbleSSTIterator(files, opts, forwardOnly)
 }
 
 // NewSSTEngineIterator is like NewSSTIterator, but returns an EngineIterator.
 func NewSSTEngineIterator(
-	files [][]sstable.ReadableFile, opts IterOptions,
+	files [][]sstable.ReadableFile, opts IterOptions, forwardOnly bool,
 ) (EngineIterator, error) {
-	return newPebbleSSTIterator(files, opts)
+	return newPebbleSSTIterator(files, opts, forwardOnly)
 }
 
 // NewMemSSTIterator returns an MVCCIterator for the provided SST data,
@@ -68,7 +68,7 @@ func NewMultiMemSSTIterator(ssts [][]byte, verify bool, opts IterOptions) (MVCCI
 	for _, sst := range ssts {
 		files = append(files, vfs.NewMemFile(sst))
 	}
-	iter, err := NewSSTIterator([][]sstable.ReadableFile{files}, opts)
+	iter, err := NewSSTIterator([][]sstable.ReadableFile{files}, opts, false /* forwardOnly */)
 	if err != nil {
 		return nil, err
 	}
@@ -147,10 +147,9 @@ func CheckSSTConflicts(
 		// first, where there are no keys in the reader between the sstable's start
 		// and end keys. We use a non-prefix iterator for this search, and reopen a
 		// prefix one if there are engine keys in the span.
-		nonPrefixIter, err := reader.NewMVCCIterator(ctx, MVCCKeyAndIntentsIterKind, IterOptions{
-			KeyTypes:     IterKeyTypePointsAndRanges,
-			UpperBound:   end.Key,
-			ReadCategory: BatchEvalReadCategory,
+		nonPrefixIter, err := reader.NewMVCCIterator(MVCCKeyAndIntentsIterKind, IterOptions{
+			KeyTypes:   IterKeyTypePointsAndRanges,
+			UpperBound: end.Key,
 		})
 		if err != nil {
 			return statsDiff, err
@@ -164,8 +163,7 @@ func CheckSSTConflicts(
 	}
 
 	// Check for any overlapping locks, and return them to be resolved.
-	if locks, err := ScanLocks(
-		ctx, reader, start.Key, end.Key, maxLockConflicts, 0, BatchEvalReadCategory); err != nil {
+	if locks, err := ScanLocks(ctx, reader, start.Key, end.Key, maxLockConflicts, 0); err != nil {
 		return enginepb.MVCCStats{}, err
 	} else if len(locks) > 0 {
 		return enginepb.MVCCStats{}, &kvpb.LockConflictError{Locks: locks}
@@ -196,10 +194,9 @@ func CheckSSTConflicts(
 	}
 	rkIter.Close()
 
-	rkIter, err = reader.NewMVCCIterator(ctx, MVCCKeyIterKind, IterOptions{
-		UpperBound:   rightPeekBound,
-		KeyTypes:     IterKeyTypeRangesOnly,
-		ReadCategory: BatchEvalReadCategory,
+	rkIter, err = reader.NewMVCCIterator(MVCCKeyIterKind, IterOptions{
+		UpperBound: rightPeekBound,
+		KeyTypes:   IterKeyTypeRangesOnly,
 	})
 	if err != nil {
 		return enginepb.MVCCStats{}, err
@@ -237,14 +234,13 @@ func CheckSSTConflicts(
 		// https://github.com/cockroachdb/cockroach/issues/92254
 		statsDiff.ContainsEstimates += 2
 	}
-	extIter, err := reader.NewMVCCIterator(ctx, MVCCKeyIterKind, IterOptions{
+	extIter, err := reader.NewMVCCIterator(MVCCKeyIterKind, IterOptions{
 		KeyTypes:             IterKeyTypePointsAndRanges,
 		LowerBound:           leftPeekBound,
 		UpperBound:           rightPeekBound,
 		RangeKeyMaskingBelow: sstTimestamp,
 		Prefix:               usePrefixSeek,
 		useL6Filters:         true,
-		ReadCategory:         BatchEvalReadCategory,
 	})
 	if err != nil {
 		return enginepb.MVCCStats{}, err
@@ -345,8 +341,7 @@ func CheckSSTConflicts(
 			allowShadow := !disallowShadowingBelow.IsEmpty() &&
 				disallowShadowingBelow.LessEq(extKey.Timestamp) && bytes.Equal(extValueRaw, sstValueRaw)
 			if !allowShadow {
-				return errors.Errorf(
-					"ingested key collides with an existing one: %s", sstKey.Key)
+				return kvpb.NewKeyCollisionError(sstKey.Key, sstValueRaw)
 			}
 		}
 

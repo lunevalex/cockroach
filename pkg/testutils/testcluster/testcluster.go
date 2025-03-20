@@ -1,12 +1,7 @@
 // Copyright 2016 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package testcluster
 
@@ -33,7 +28,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/rpc/nodedialer"
 	"github.com/cockroachdb/cockroach/pkg/server"
 	"github.com/cockroachdb/cockroach/pkg/server/serverpb"
-	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
 	"github.com/cockroachdb/cockroach/pkg/spanconfig"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog"
 	"github.com/cockroachdb/cockroach/pkg/sql/isql"
@@ -305,12 +299,6 @@ func NewTestCluster(
 			serverArgs = tc.clusterArgs.ServerArgs
 		}
 
-		// We cannot allow multiple nodes to share a Settings object, so we make a
-		// clone for each one.
-		if serverArgs.Settings != nil && nodes > 1 {
-			serverArgs.Settings = cluster.TestingCloneClusterSettings(serverArgs.Settings)
-		}
-
 		// If a reusable listener registry is provided, create reusable listeners
 		// for every server that doesn't have a custom listener provided. (Only
 		// servers with a reusable listener can be restarted).
@@ -471,6 +459,7 @@ func (tc *TestCluster) Start(t serverutils.TestFataler) {
 				_, e := ssrv.SystemLayer().RPCContext().GRPCDialNode(
 					dsrv.SystemLayer().AdvRPCAddr(),
 					stl.NodeID(),
+					roachpb.Locality{},
 					rpc.DefaultClass,
 				).Connect(context.TODO())
 				err = errors.CombineErrors(err, e)
@@ -1111,17 +1100,6 @@ func (tc *TestCluster) TransferRangeLeaseOrFatal(
 	}
 }
 
-// IncrClockForLeaseUpgrade run up the clock to force a lease renewal (and thus
-// the change in lease types).
-func (tc *TestCluster) IncrClockForLeaseUpgrade(
-	t serverutils.TestFataler, clock *hlc.HybridManualClock,
-) {
-	clock.Increment(
-		tc.GetFirstStoreFromServer(t, 0).GetStoreConfig().RangeLeaseRenewalDuration().Nanoseconds() +
-			time.Second.Nanoseconds(),
-	)
-}
-
 // MaybeWaitForLeaseUpgrade waits until the lease held for the given range
 // descriptor is upgraded to an epoch-based one, but only if we expect the lease
 // to be upgraded.
@@ -1138,21 +1116,18 @@ func (tc *TestCluster) MaybeWaitForLeaseUpgrade(
 // is upgraded to an epoch-based one.
 func (tc *TestCluster) WaitForLeaseUpgrade(
 	ctx context.Context, t serverutils.TestFataler, desc roachpb.RangeDescriptor,
-) roachpb.Lease {
+) {
 	require.False(t, kvserver.ExpirationLeasesOnly.Get(&tc.Server(0).ClusterSettings().SV),
 		"cluster configured to only use expiration leases")
-	var l roachpb.Lease
 	testutils.SucceedsSoon(t, func() error {
 		li, _, err := tc.FindRangeLeaseEx(ctx, desc, nil)
 		require.NoError(t, err)
-		l = li.Current()
-		if l.Type() != roachpb.LeaseEpoch {
+		if li.Current().Type() != roachpb.LeaseEpoch {
 			return errors.Errorf("lease still an expiration based lease")
 		}
-		require.Equal(t, int64(1), l.Epoch)
+		require.Equal(t, int64(1), li.Current().Epoch)
 		return nil
 	})
-	return l
 }
 
 // RemoveLeaseHolderOrFatal is a convenience version of TransferRangeLease and RemoveVoter
@@ -1537,6 +1512,7 @@ func (tc *TestCluster) WaitForNodeStatuses(t serverutils.TestFataler) {
 		conn, err := srv.RPCContext().GRPCDialNode(
 			srv.AdvRPCAddr(),
 			tc.Server(0).StorageLayer().NodeID(),
+			roachpb.Locality{},
 			rpc.DefaultClass,
 		).Connect(context.TODO())
 		if err != nil {

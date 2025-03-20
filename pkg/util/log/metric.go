@@ -1,12 +1,7 @@
 // Copyright 2023 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package log
 
@@ -33,8 +28,12 @@ type LogMetrics interface {
 }
 
 // Metric is the enum representation of each metric supported within the log package.
+// NB: When adding a metric here, be sure to add to log.Metrics below.
 // NB: The metric also needs to be added to pkg/util/log/logmetrics, where we
 // need to register the metric and define its metadata.
+//
+// We use an enum representation as an optimization within LogMetrics implementations
+// when doing lookups for underlying metric counters.
 type Metric int
 
 const (
@@ -45,3 +44,12 @@ const (
 	BufferedSinkMessagesDropped
 	LogMessageCount
 )
+
+var Metrics = []Metric{
+	FluentSinkConnectionAttempt,
+	FluentSinkConnectionError,
+	FluentSinkWriteAttempt,
+	FluentSinkWriteError,
+	BufferedSinkMessagesDropped,
+	LogMessageCount,
+}

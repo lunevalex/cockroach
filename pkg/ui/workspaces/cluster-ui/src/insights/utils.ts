@@ -1,12 +1,7 @@
 // Copyright 2022 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 import { unset } from "src/util";
 import {
@@ -396,23 +391,23 @@ export function getStmtInsightRecommendations(
   if (!insightDetails) return [];
 
   const execDetails: ExecutionDetails = {
-    application: insightDetails?.application,
-    statement: insightDetails?.query,
-    fingerprintID: insightDetails?.statementFingerprintID,
-    retries: insightDetails?.retries,
-    indexRecommendations: insightDetails?.indexRecommendations,
-    databaseName: insightDetails?.databaseName,
-    elapsedTimeMillis: insightDetails?.elapsedTimeMillis,
-    contentionTimeMs: insightDetails?.contentionTime?.asMilliseconds(),
-    statementExecutionID: insightDetails?.statementExecutionID,
-    transactionExecutionID: insightDetails?.transactionExecutionID,
+    application: insightDetails.application,
+    statement: insightDetails.query,
+    fingerprintID: insightDetails.statementFingerprintID,
+    retries: insightDetails.retries,
+    indexRecommendations: insightDetails.indexRecommendations,
+    databaseName: insightDetails.databaseName,
+    elapsedTimeMillis: insightDetails.elapsedTimeMillis,
+    contentionTimeMs: insightDetails.contentionTime?.asMilliseconds(),
+    statementExecutionID: insightDetails.statementExecutionID,
+    transactionExecutionID: insightDetails.transactionExecutionID,
     execType: InsightExecEnum.STATEMENT,
-    errorCode: insightDetails?.errorCode,
-    errorMsg: insightDetails?.errorMsg,
-    status: insightDetails?.status,
+    errorCode: insightDetails.errorCode,
+    errorMsg: insightDetails.errorMsg,
+    status: insightDetails.status,
   };
 
-  const recs: InsightRecommendation[] = insightDetails?.insights?.map(insight =>
+  const recs: InsightRecommendation[] = insightDetails.insights?.map(insight =>
     getRecommendationForExecInsight(insight, execDetails),
   );
 
@@ -425,14 +420,14 @@ export function getTxnInsightRecommendations(
   if (!insightDetails) return [];
 
   const execDetails: ExecutionDetails = {
-    application: insightDetails?.application,
-    transactionExecutionID: insightDetails?.transactionExecutionID,
-    retries: insightDetails?.retries,
-    contentionTimeMs: insightDetails?.contentionTime.asMilliseconds(),
-    elapsedTimeMillis: insightDetails?.elapsedTimeMillis,
+    application: insightDetails.application,
+    transactionExecutionID: insightDetails.transactionExecutionID,
+    retries: insightDetails.retries,
+    contentionTimeMs: insightDetails.contentionTime.asMilliseconds(),
+    elapsedTimeMillis: insightDetails.elapsedTimeMillis,
     execType: InsightExecEnum.TRANSACTION,
-    errorCode: insightDetails?.errorCode,
-    errorMsg: insightDetails?.errorMsg,
+    errorCode: insightDetails.errorCode,
+    errorMsg: insightDetails.errorMsg,
   };
   const recs: InsightRecommendation[] = [];
 

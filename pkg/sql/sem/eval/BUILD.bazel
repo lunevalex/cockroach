@@ -81,6 +81,7 @@ go_library(
         "//pkg/util",
         "//pkg/util/arith",
         "//pkg/util/bitarray",
+        "//pkg/util/cidr",
         "//pkg/util/duration",
         "//pkg/util/encoding",
         "//pkg/util/hlc",
@@ -117,12 +118,9 @@ go_test(
         "timeconv_test.go",
         "window_funcs_test.go",
     ],
+    args = ["-test.timeout=295s"],
     data = glob(["testdata/**"]),
     embed = [":eval"],
-    exec_properties = select({
-        "//build/toolchains:is_heavy": {"Pool": "heavy"},
-        "//conditions:default": {"Pool": "default"},
-    }),
     deps = [
         "//pkg/kv",
         "//pkg/kv/kvpb",

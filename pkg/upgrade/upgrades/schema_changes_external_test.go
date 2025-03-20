@@ -1,12 +1,7 @@
 // Copyright 2022 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package upgrades_test
 
@@ -245,8 +240,8 @@ func testMigrationWithFailures(
 
 	// We're going to be migrating from the minimum supported version to the
 	// "next" version. We'll be injecting the migration for the next version.
-	startKey := clusterversion.MinSupported
-	startCV := startKey.Version()
+	startKey := clusterversion.BinaryMinSupportedVersionKey
+	startCV := clusterversion.ByKey(startKey)
 	endCV := startCV
 	endCV.Internal += 2
 
@@ -341,6 +336,7 @@ func testMigrationWithFailures(
 						Server: &server.TestingKnobs{
 							DisableAutomaticVersionUpgrade: make(chan struct{}),
 							BinaryVersionOverride:          startCV,
+							BootstrapVersionKeyOverride:    startKey,
 						},
 						JobsTestingKnobs: jobsKnobs,
 						SQLExecutor: &sql.ExecutorTestingKnobs{
@@ -365,7 +361,6 @@ func testMigrationWithFailures(
 										endCV,
 										upgrade.NoPrecondition,
 										migrationFunc,
-										upgrade.RestoreActionNotRequired("test"),
 									), true
 								}
 								panic("unexpected version")
@@ -532,7 +527,7 @@ func cancelJob(
 		// Using this way of canceling because the migration job us non-cancelable.
 		// Canceling in this way skips the check.
 		return s.JobRegistry().(*jobs.Registry).UpdateJobWithTxn(
-			ctx, jobID, txn, func(
+			ctx, jobID, txn, false /* useReadLock */, func(
 				txn isql.Txn, md jobs.JobMetadata, ju *jobs.JobUpdater,
 			) error {
 				ju.UpdateStatus(jobs.StatusCancelRequested)

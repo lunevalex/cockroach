@@ -1,12 +1,7 @@
 // Copyright 2023 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package build
 
@@ -74,10 +69,9 @@ func TestComputeBinaryVersion(t *testing.T) {
 			defer func() { typ = oldBuildType }()
 
 			if tc.panicExpected {
-				require.Panics(t, func() { parseCockroachVersion(tc.versionTxt) })
+				require.Panics(t, func() { computeBinaryVersion(tc.versionTxt, tc.revision) })
 			} else {
-				v := parseCockroachVersion(tc.versionTxt)
-				actualVersion := computeBinaryVersion("" /* buildTagOverride */, v, tc.revision)
+				actualVersion := computeBinaryVersion(tc.versionTxt, tc.revision)
 				require.Equal(t, tc.expectedVersion, actualVersion)
 			}
 		})

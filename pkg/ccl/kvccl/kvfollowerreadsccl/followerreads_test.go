@@ -1,10 +1,7 @@
 // Copyright 2019 The Cockroach Authors.
 //
-// Licensed as a CockroachDB Enterprise file under the Cockroach Community
-// License (the "License"); you may not use this file except in compliance with
-// the License. You may obtain a copy of the License at
-//
-//     https://github.com/cockroachdb/cockroach/blob/master/licenses/CCL.txt
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package kvfollowerreadsccl
 
@@ -48,6 +45,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/stop"
 	"github.com/cockroachdb/cockroach/pkg/util/syncutil"
 	"github.com/cockroachdb/cockroach/pkg/util/tracing/tracingpb"
+	"github.com/cockroachdb/cockroach/pkg/util/uuid"
 	"github.com/cockroachdb/errors"
 	"github.com/stretchr/testify/require"
 )
@@ -61,17 +59,14 @@ func TestEvalFollowerReadOffset(t *testing.T) {
 	disableEnterprise := utilccl.TestingEnableEnterprise()
 	defer disableEnterprise()
 	st := cluster.MakeTestingClusterSettings()
-	if offset, err := evalFollowerReadOffset(st); err != nil {
+	if offset, err := evalFollowerReadOffset(uuid.MakeV4(), st); err != nil {
 		t.Fatal(err)
 	} else if offset != expectedFollowerReadOffset {
 		t.Fatalf("expected %v, got %v", expectedFollowerReadOffset, offset)
 	}
 	disableEnterprise()
-	_, err := evalFollowerReadOffset(st)
-	if !testutils.IsError(err, "requires an enterprise license") {
-		t.Fatalf("failed to get error when evaluating follower read offset without " +
-			"an enterprise license")
-	}
+	_, err := evalFollowerReadOffset(uuid.MakeV4(), st)
+	require.NoError(t, err)
 }
 
 func TestZeroDurationDisablesFollowerReadOffset(t *testing.T) {
@@ -81,7 +76,7 @@ func TestZeroDurationDisablesFollowerReadOffset(t *testing.T) {
 
 	st := cluster.MakeTestingClusterSettings()
 	closedts.TargetDuration.Override(ctx, &st.SV, 0)
-	if offset, err := evalFollowerReadOffset(st); err != nil {
+	if offset, err := evalFollowerReadOffset(uuid.MakeV4(), st); err != nil {
 		t.Fatal(err)
 	} else if offset != math.MinInt64 {
 		t.Fatalf("expected %v, got %v", math.MinInt64, offset)
@@ -132,7 +127,6 @@ func TestCanSendToFollower(t *testing.T) {
 		name                  string
 		ba                    *kvpb.BatchRequest
 		ctPolicy              roachpb.RangeClosedTimestampPolicy
-		disabledEnterprise    bool
 		disabledFollowerReads bool
 		zeroTargetDuration    bool
 		exp                   bool
@@ -459,12 +453,6 @@ func TestCanSendToFollower(t *testing.T) {
 			exp:      false,
 		},
 		{
-			name:               "non-enterprise",
-			ba:                 withBatchTimestamp(batch(nil, &kvpb.GetRequest{}), stale),
-			disabledEnterprise: true,
-			exp:                false,
-		},
-		{
 			name:                  "follower reads disabled",
 			ba:                    withBatchTimestamp(batch(nil, &kvpb.GetRequest{}), stale),
 			disabledFollowerReads: true,
@@ -473,16 +461,13 @@ func TestCanSendToFollower(t *testing.T) {
 	}
 	for _, c := range testCases {
 		t.Run(c.name, func(t *testing.T) {
-			if !c.disabledEnterprise {
-				defer utilccl.TestingEnableEnterprise()()
-			}
 			st := cluster.MakeTestingClusterSettings()
 			kvserver.FollowerReadsEnabled.Override(ctx, &st.SV, !c.disabledFollowerReads)
 			if c.zeroTargetDuration {
 				closedts.TargetDuration.Override(ctx, &st.SV, 0)
 			}
 
-			can := canSendToFollower(st, clock, c.ctPolicy, c.ba)
+			can := canSendToFollower(uuid.MakeV4(), st, clock, c.ctPolicy, c.ba)
 			require.Equal(t, c.exp, can)
 		})
 	}
@@ -566,7 +551,6 @@ func TestOracle(t *testing.T) {
 		txn                   *kv.Txn
 		lh                    *roachpb.ReplicaDescriptor
 		ctPolicy              roachpb.RangeClosedTimestampPolicy
-		disabledEnterprise    bool
 		disabledFollowerReads bool
 		exp                   roachpb.ReplicaDescriptor
 	}{
@@ -654,13 +638,6 @@ func TestOracle(t *testing.T) {
 			exp:      closestFollower,
 		},
 		{
-			name:               "stale txn, non-enterprise",
-			txn:                staleTxn,
-			lh:                 &leaseholder,
-			disabledEnterprise: true,
-			exp:                leaseholder,
-		},
-		{
 			name:                  "stale txn, follower reads disabled",
 			txn:                   staleTxn,
 			lh:                    &leaseholder,
@@ -680,9 +657,6 @@ func TestOracle(t *testing.T) {
 
 	for _, c := range testCases {
 		t.Run(c.name, func(t *testing.T) {
-			if !c.disabledEnterprise {
-				defer utilccl.TestingEnableEnterprise()()
-			}
 			st := cluster.MakeTestingClusterSettings()
 			kvserver.FollowerReadsEnabled.Override(ctx, &st.SV, !c.disabledFollowerReads)
 

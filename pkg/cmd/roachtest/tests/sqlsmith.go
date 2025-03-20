@@ -1,12 +1,7 @@
 // Copyright 2019 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package tests
 
@@ -155,6 +150,7 @@ WITH into_db = 'defaultdb', unsafe_restore_incompatible_version;
 		}
 		logStmt(setStmtTimeout)
 
+		setting.Options = append(setting.Options, sqlsmith.SimpleNames())
 		smither, err := sqlsmith.NewSmither(conn, rng, setting.Options...)
 		if err != nil {
 			t.Fatal(err)
@@ -270,11 +266,24 @@ WITH into_db = 'defaultdb', unsafe_restore_incompatible_version;
 						logStmt(stmt)
 						t.Fatalf("error: %s\nstmt:\n%s;", err, stmt)
 					}
-				} else if strings.Contains(es, "Empty statement returned by generate") ||
-					stmt == "" {
-					// Either were unable to generate a statement or
-					// we panicked making one.
-					t.Fatalf("Failed generating a query %s", err)
+				} else {
+					if strings.Contains(es, "Empty statement returned by generate") {
+						// We were unable to generate a statement - this is
+						// never expected.
+						t.Fatalf("Failed generating a query %s", err)
+					}
+					if stmt == "" {
+						// We panicked when generating a statement.
+						//
+						// The panic might be expected if it was a vectorized
+						// panic that was injected when sqlsmith itself issued a
+						// query to generate another query (for example, in
+						// getDatabaseRegions).
+						expectedError := strings.Contains(es, "injected panic in ")
+						if !expectedError {
+							t.Fatalf("Panicked when generating a query %s", err)
+						}
+					}
 				}
 				// Ignore other errors because they happen so
 				// frequently (due to sqlsmith not crafting
@@ -325,6 +334,7 @@ WITH into_db = 'defaultdb', unsafe_restore_incompatible_version;
 			Cluster:          clusterSpec,
 			CompatibleClouds: registry.AllExceptAWS,
 			Suites:           registry.Suites(registry.Nightly),
+			Randomized:       true,
 			Leases:           registry.MetamorphicLeases,
 			NativeLibs:       registry.LibGEOS,
 			Timeout:          time.Minute * 20,

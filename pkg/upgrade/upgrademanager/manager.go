@@ -1,12 +1,7 @@
 // Copyright 2020 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 // Package upgrademanager provides an implementation of upgrade.Manager
 // for use on kv nodes.
@@ -16,6 +11,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/cockroachdb/cockroach/pkg/base"
 	"github.com/cockroachdb/cockroach/pkg/clusterversion"
@@ -39,8 +35,8 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/upgrade/upgradecluster"
 	"github.com/cockroachdb/cockroach/pkg/upgrade/upgradejob"
 	"github.com/cockroachdb/cockroach/pkg/upgrade/upgrades"
-	"github.com/cockroachdb/cockroach/pkg/util/buildutil"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
+	"github.com/cockroachdb/cockroach/pkg/util/retry"
 	"github.com/cockroachdb/cockroach/pkg/util/startup"
 	"github.com/cockroachdb/cockroach/pkg/util/stop"
 	"github.com/cockroachdb/errors"
@@ -212,7 +208,7 @@ func (m *Manager) RunPermanentUpgrades(ctx context.Context, upToVersion roachpb.
 	// because upgrades run in order.
 	latest := permanentUpgrades[len(permanentUpgrades)-1]
 	lastVer := latest.Version()
-	enterpriseEnabled := base.CCLDistributionAndEnterpriseEnabled(m.settings)
+	enterpriseEnabled := base.CCLDistributionAndEnterpriseEnabled(m.settings, m.clusterID.Get())
 	lastUpgradeCompleted, err := startup.RunIdempotentWithRetryEx(ctx,
 		m.deps.Stopper.ShouldQuiesce(),
 		"check if migration completed",
@@ -321,7 +317,7 @@ func (m *Manager) runPermanentMigrationsWithoutJobsForTests(
 	ctx context.Context, user username.SQLUsername,
 ) error {
 	log.Infof(ctx, "found test configuration that eliminated all upgrades; running permanent upgrades anyway")
-	vers := clusterversion.ListBetween(roachpb.Version{}, clusterversion.VPrimordialMax.Version())
+	vers := clusterversion.ListBetween(roachpb.Version{}, clusterversion.ByKey(clusterversion.VPrimordialMax))
 	for _, v := range vers {
 		upg, exists := upgrades.GetUpgrade(v)
 		if !exists || !upg.Permanent() {
@@ -396,11 +392,6 @@ func (m *Manager) Migrate(
 	clusterVersions := m.listBetween(from.Version, to.Version)
 	log.Infof(ctx, "migrating cluster from %s to %s (stepping through %s)", from, to, clusterVersions)
 	if len(clusterVersions) == 0 {
-		if buildutil.CrdbTestBuild && from.Version != to.Version {
-			// This suggests a test is using bogus versions and didn't set up
-			// ListBetweenOverride properly.
-			panic(errors.AssertionFailedf("no valid versions in (%s, %s]", from.Version, to.Version))
-		}
 		return nil
 	}
 
@@ -660,7 +651,12 @@ func forEveryNodeUntilClusterStable(
 	f func(ctx context.Context, client serverpb.MigrationClient) error,
 ) error {
 	log.Infof(ctx, "executing operation %s", redact.Safe(op))
-	return c.UntilClusterStable(ctx, func() error {
+	return c.UntilClusterStable(ctx, retry.Options{
+		InitialBackoff: 1 * time.Second,
+		MaxBackoff:     1 * time.Second,
+		Multiplier:     1.0,
+		MaxRetries:     60, // retry for 60 seconds
+	}, func() error {
 		return c.ForEveryNodeOrServer(ctx, op, f)
 	})
 }
@@ -738,14 +734,14 @@ func (m *Manager) runMigration(
 			return err
 		}
 		if alreadyExisting {
-			log.Infof(ctx, "waiting for %s", redact.Safe(mig.Name()))
+			log.Infof(ctx, "waiting for %s", mig.Name())
 			return startup.RunIdempotentWithRetry(ctx,
 				m.deps.Stopper.ShouldQuiesce(),
 				"upgrade wait jobs", func(ctx context.Context) error {
 					return m.jr.WaitForJobs(ctx, []jobspb.JobID{id})
 				})
 		} else {
-			log.Infof(ctx, "running %s", redact.Safe(mig.Name()))
+			log.Infof(ctx, "running %s", mig.Name())
 			return startup.RunIdempotentWithRetry(ctx,
 				m.deps.Stopper.ShouldQuiesce(),
 				"upgrade run jobs", func(ctx context.Context) error {
@@ -760,7 +756,7 @@ func (m *Manager) getOrCreateMigrationJob(
 ) (alreadyCompleted, alreadyExisting bool, jobID jobspb.JobID, _ error) {
 	newJobID := m.jr.MakeJobID()
 	if err := m.deps.DB.Txn(ctx, func(ctx context.Context, txn isql.Txn) (err error) {
-		enterpriseEnabled := base.CCLDistributionAndEnterpriseEnabled(m.settings)
+		enterpriseEnabled := base.CCLDistributionAndEnterpriseEnabled(m.settings, m.clusterID.Get())
 		alreadyCompleted, err = migrationstable.CheckIfMigrationCompleted(
 			ctx, version, txn.KV(), txn, enterpriseEnabled, migrationstable.ConsistentRead,
 		)
@@ -785,6 +781,19 @@ func (m *Manager) getOrCreateMigrationJob(
 }
 
 const (
+	preJobInfoTableQuery = `
+SELECT id, status
+FROM (
+     SELECT id, status,
+     crdb_internal.pb_to_json(
+	'cockroach.sql.jobs.jobspb.Payload',
+	payload,
+	false -- emit_defaults
+     ) AS pl
+     FROM system.jobs
+     WHERE status IN ` + jobs.NonTerminalStatusTupleString + `
+)
+WHERE ((pl->'migration')->'clusterVersion') = $1::JSONB`
 	// PostJobInfoQuery avoids the crdb_internal.system_jobs table
 	// to avoid expensive full scans.
 	// Exported for testing.
@@ -816,7 +825,12 @@ func (m *Manager) getRunningMigrationJob(
 	// Wrap the version into a ClusterVersion so that the JSON looks like what the
 	// Payload proto has inside.
 	cv := clusterversion.ClusterVersion{Version: version}
-	query := PostJobInfoTableQuery
+	var query string
+	if m.settings.Version.IsActive(ctx, clusterversion.V23_1JobInfoTableIsBackfilled) {
+		query = PostJobInfoTableQuery
+	} else {
+		query = preJobInfoTableQuery
+	}
 	jsonMsg, err := protoreflect.MessageToJSON(&cv, protoreflect.FmtFlags{EmitDefaults: false})
 	if err != nil {
 		return false, 0, errors.Wrap(err, "failed to marshal version to JSON")

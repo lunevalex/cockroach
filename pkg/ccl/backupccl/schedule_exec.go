@@ -1,10 +1,7 @@
 // Copyright 2020 The Cockroach Authors.
 //
-// Licensed as a CockroachDB Enterprise file under the Cockroach Community
-// License (the "License"); you may not use this file except in compliance with
-// the License. You may obtain a copy of the License at
-//
-//     https://github.com/cockroachdb/cockroach/blob/master/licenses/CCL.txt
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package backupccl
 
@@ -366,7 +363,7 @@ func (e *scheduledBackupExecutor) backupSucceeded(
 		e.metrics.RpoMetric.Update(details.(jobspb.BackupDetails).EndTime.GoTime().Unix())
 	}
 
-	if args.UnpauseOnSuccess == jobspb.InvalidScheduleID {
+	if args.UnpauseOnSuccess == jobs.InvalidScheduleID {
 		return nil
 	}
 
@@ -390,7 +387,7 @@ func (e *scheduledBackupExecutor) backupSucceeded(
 	}
 
 	// Clear UnpauseOnSuccess; caller updates schedule.
-	args.UnpauseOnSuccess = jobspb.InvalidScheduleID
+	args.UnpauseOnSuccess = jobs.InvalidScheduleID
 	any, err := pbtypes.MarshalAny(args)
 	if err != nil {
 		return errors.Wrap(err, "marshaling args")
@@ -424,7 +421,7 @@ func extractBackupStatement(sj *jobs.ScheduledJob) (*annotatedBackupStatement, e
 			Backup: backupStmt,
 			CreatedByInfo: &jobs.CreatedByInfo{
 				Name: jobs.CreatedByScheduledJobs,
-				ID:   int64(sj.ScheduleID()),
+				ID:   sj.ScheduleID(),
 			},
 		}, nil
 	}

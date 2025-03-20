@@ -31,11 +31,8 @@ go_test(
         "sliceslice_test.go",
         "workloadsql_test.go",
     ],
+    args = ["-test.timeout=55s"],
     embed = [":workloadsql"],
-    exec_properties = select({
-        "//build/toolchains:is_heavy": {"Pool": "heavy"},
-        "//conditions:default": {"Pool": "default"},
-    }),
     deps = [
         "//pkg/base",
         "//pkg/security/securityassets",

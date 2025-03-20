@@ -1,12 +1,7 @@
 // Copyright 2016 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package sql
 
@@ -275,46 +270,6 @@ func populateRoleHierarchy(
 		return nil
 	},
 	)
-}
-
-var informationSchemaAttributesTable = virtualSchemaView{
-	comment: `attributes of composite data types in the current database` +
-		docs.URL("information-schema.html#attributes") + `
-    https://www.postgresql.org/docs/16/infoschema-attributes.html`,
-	schema: vtable.InformationSchemaAttributes,
-	resultColumns: colinfo.ResultColumns{
-		{Name: "udt_catalog", Typ: types.String},
-		{Name: "udt_schema", Typ: types.String},
-		{Name: "udt_name", Typ: types.String},
-		{Name: "attribute_name", Typ: types.String},
-		{Name: "ordinal_position", Typ: types.Int},
-		{Name: "attribute_default", Typ: types.String},
-		{Name: "is_nullable", Typ: types.String},
-		{Name: "data_type", Typ: types.String},
-		{Name: "character_maximum_length", Typ: types.Int},
-		{Name: "character_octet_length", Typ: types.Int},
-		{Name: "character_set_catalog", Typ: types.String},
-		{Name: "character_set_schema", Typ: types.String},
-		{Name: "character_set_name", Typ: types.String},
-		{Name: "collation_catalog", Typ: types.String},
-		{Name: "collation_schema", Typ: types.String},
-		{Name: "collation_name", Typ: types.String},
-		{Name: "numeric_precision", Typ: types.Int},
-		{Name: "numeric_precision_radix", Typ: types.Int},
-		{Name: "numeric_scale", Typ: types.Int},
-		{Name: "datetime_precision", Typ: types.Int},
-		{Name: "interval_type", Typ: types.String},
-		{Name: "interval_precision", Typ: types.Int},
-		{Name: "attribute_udt_catalog", Typ: types.String},
-		{Name: "attribute_udt_schema", Typ: types.String},
-		{Name: "attribute_udt_name", Typ: types.String},
-		{Name: "scope_catalog", Typ: types.String},
-		{Name: "scope_schema", Typ: types.String},
-		{Name: "scope_name", Typ: types.String},
-		{Name: "maximum_cardinality", Typ: types.Int},
-		{Name: "dtd_identifier", Typ: types.String},
-		{Name: "is_derived_reference_attribute", Typ: types.String},
-	},
 }
 
 var informationSchemaCharacterSets = virtualSchemaTable{
@@ -1196,7 +1151,7 @@ var informationSchemaTypePrivilegesTable = virtualSchemaTable{
 				}
 
 				// And for all user defined types.
-				return forEachTypeDesc(ctx, p, db, func(db catalog.DatabaseDescriptor, sc catalog.SchemaDescriptor, typeDesc catalog.TypeDescriptor) error {
+				return forEachTypeDesc(ctx, p, db, func(ctx context.Context, db catalog.DatabaseDescriptor, sc catalog.SchemaDescriptor, typeDesc catalog.TypeDescriptor) error {
 					scNameStr := tree.NewDString(sc.GetName())
 					typeNameStr := tree.NewDString(typeDesc.GetName())
 					// TODO(knz): This should filter for the current user, see
@@ -1515,44 +1470,6 @@ https://www.postgresql.org/docs/9.5/infoschema-table-constraints.html`,
 				}
 				return nil
 			})
-	},
-}
-
-var informationSchemaUserDefinedTypesTable = virtualSchemaView{
-	comment: `user-defined types` +
-		docs.URL("information-schema.html#user-defined-types") + `
-    https://www.postgresql.org/docs/16/infoschema-user-defined-types.html`,
-	schema: vtable.InformationSchemaUserDefinedTypes,
-	resultColumns: colinfo.ResultColumns{
-		{Name: "user_defined_type_catalog", Typ: types.String},
-		{Name: "user_defined_type_schema", Typ: types.String},
-		{Name: "user_defined_type_name", Typ: types.String},
-		{Name: "user_defined_type_category", Typ: types.String},
-		{Name: "is_instantiable", Typ: types.String},
-		{Name: "is_final", Typ: types.String},
-		{Name: "ordering_form", Typ: types.String},
-		{Name: "ordering_category", Typ: types.String},
-		{Name: "ordering_routine_catalog", Typ: types.String},
-		{Name: "ordering_routine_schema", Typ: types.String},
-		{Name: "ordering_routine_name", Typ: types.String},
-		{Name: "reference_type", Typ: types.String},
-		{Name: "data_type", Typ: types.String},
-		{Name: "character_maximum_length", Typ: types.Int},
-		{Name: "character_octet_length", Typ: types.Int},
-		{Name: "character_set_catalog", Typ: types.String},
-		{Name: "character_set_schema", Typ: types.String},
-		{Name: "character_set_name", Typ: types.String},
-		{Name: "collation_catalog", Typ: types.String},
-		{Name: "collation_schema", Typ: types.String},
-		{Name: "collation_name", Typ: types.String},
-		{Name: "numeric_precision", Typ: types.Int},
-		{Name: "numeric_precision_radix", Typ: types.Int},
-		{Name: "numeric_scale", Typ: types.Int},
-		{Name: "datetime_precision", Typ: types.Int},
-		{Name: "interval_type", Typ: types.String},
-		{Name: "interval_precision", Typ: types.Int},
-		{Name: "source_dtd_identifier", Typ: types.String},
-		{Name: "ref_dtd_identifier", Typ: types.String},
 	},
 }
 
@@ -2048,6 +1965,15 @@ var informationSchemaRoleColumnGrantsTable = virtualSchemaTable{
 	unimplemented: true,
 }
 
+var informationSchemaAttributesTable = virtualSchemaTable{
+	comment: "attributes was created for compatibility and is currently unimplemented",
+	schema:  vtable.InformationSchemaAttributes,
+	populate: func(ctx context.Context, p *planner, _ catalog.DatabaseDescriptor, addRow func(...tree.Datum) error) error {
+		return nil
+	},
+	unimplemented: true,
+}
+
 var informationSchemaDomainConstraintsTable = virtualSchemaTable{
 	comment: "domain_constraints was created for compatibility and is currently unimplemented",
 	schema:  vtable.InformationSchemaDomainConstraints,
@@ -2336,6 +2262,15 @@ var informationSchemaColumnsExtensionsTable = virtualSchemaTable{
 	unimplemented: true,
 }
 
+var informationSchemaUserDefinedTypesTable = virtualSchemaTable{
+	comment: "user_defined_types was created for compatibility and is currently unimplemented",
+	schema:  vtable.InformationSchemaUserDefinedTypes,
+	populate: func(ctx context.Context, p *planner, _ catalog.DatabaseDescriptor, addRow func(...tree.Datum) error) error {
+		return nil
+	},
+	unimplemented: true,
+}
+
 var informationSchemaSQLFeaturesTable = virtualSchemaTable{
 	comment: "sql_features was created for compatibility and is currently unimplemented",
 	schema:  vtable.InformationSchemaSQLFeatures,
@@ -2564,7 +2499,7 @@ func forEachTypeDesc(
 	ctx context.Context,
 	p *planner,
 	dbContext catalog.DatabaseDescriptor,
-	fn func(db catalog.DatabaseDescriptor, sc catalog.SchemaDescriptor, typ catalog.TypeDescriptor) error,
+	fn func(ctx context.Context, db catalog.DatabaseDescriptor, sc catalog.SchemaDescriptor, typ catalog.TypeDescriptor) error,
 ) (err error) {
 	var all nstree.Catalog
 	if dbContext != nil &&
@@ -2594,7 +2529,7 @@ func forEachTypeDesc(
 		if !canSeeDescriptor {
 			continue
 		}
-		if err := fn(dbDesc, sc, typ); err != nil {
+		if err := fn(ctx, dbDesc, sc, typ); err != nil {
 			return err
 		}
 	}

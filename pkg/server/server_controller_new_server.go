@@ -1,12 +1,7 @@
 // Copyright 2023 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package server
 
@@ -74,8 +69,7 @@ func (s *topLevelServer) newTenantServer(
 	if err != nil {
 		return nil, err
 	}
-
-	baseCfg, sqlCfg, err := s.makeSharedProcessTenantConfig(ctx, tenantID, portStartHint, tenantStopper, testArgs.Settings)
+	baseCfg, sqlCfg, err := s.makeSharedProcessTenantConfig(ctx, tenantID, portStartHint, tenantStopper)
 	if err != nil {
 		return nil, err
 	}
@@ -150,11 +144,7 @@ func newTenantServerInternal(
 }
 
 func (s *topLevelServer) makeSharedProcessTenantConfig(
-	ctx context.Context,
-	tenantID roachpb.TenantID,
-	portStartHint int,
-	stopper *stop.Stopper,
-	testSettings *cluster.Settings,
+	ctx context.Context, tenantID roachpb.TenantID, portStartHint int, stopper *stop.Stopper,
 ) (BaseConfig, SQLConfig, error) {
 	// Create a configuration for the new tenant.
 	parentCfg := s.cfg
@@ -163,14 +153,7 @@ func (s *topLevelServer) makeSharedProcessTenantConfig(
 		ServerInterceptors:              s.grpc.serverInterceptorsInfo,
 		SameProcessCapabilityAuthorizer: s.rpcContext.TenantRPCAuthorizer,
 	}
-	st := cluster.MakeClusterSettings()
-	if testSettings != nil {
-		// If there are testing default overrides in the base config, copy them to the
-		// shared process server too.
-		st.SV.TestingCopyForVirtualCluster(&testSettings.SV)
-	}
-
-	baseCfg, sqlCfg, err := makeSharedProcessTenantServerConfig(ctx, tenantID, portStartHint, parentCfg, localServerInfo, st, stopper, s.recorder)
+	baseCfg, sqlCfg, err := makeSharedProcessTenantServerConfig(ctx, tenantID, portStartHint, parentCfg, localServerInfo, stopper, s.recorder)
 	if err != nil {
 		return BaseConfig{}, SQLConfig{}, err
 	}
@@ -185,10 +168,11 @@ func makeSharedProcessTenantServerConfig(
 	portStartHint int,
 	kvServerCfg Config,
 	kvServerInfo LocalKVServerInfo,
-	st *cluster.Settings,
 	stopper *stop.Stopper,
 	nodeMetricsRecorder *status.MetricsRecorder,
 ) (baseCfg BaseConfig, sqlCfg SQLConfig, err error) {
+	st := cluster.MakeClusterSettings()
+
 	// We need a value in the version setting prior to the update
 	// coming from the system.settings table. This value must be valid
 	// and compatible with the state of the tenant's keyspace.
@@ -199,7 +183,7 @@ func makeSharedProcessTenantServerConfig(
 	// have to run all known migrations since then. So initialize
 	// the version setting to the minimum supported version.
 	if err := clusterversion.Initialize(
-		ctx, st.Version.MinSupportedVersion(), &st.SV,
+		ctx, st.Version.BinaryMinSupportedVersion(), &st.SV,
 	); err != nil {
 		return BaseConfig{}, SQLConfig{}, err
 	}
@@ -256,6 +240,7 @@ func makeSharedProcessTenantServerConfig(
 	baseCfg.EnableDemoLoginEndpoint = kvServerCfg.BaseConfig.EnableDemoLoginEndpoint
 	baseCfg.DefaultZoneConfig = kvServerCfg.BaseConfig.DefaultZoneConfig
 	baseCfg.HeapProfileDirName = kvServerCfg.BaseConfig.HeapProfileDirName
+	baseCfg.CPUProfileDirName = kvServerCfg.BaseConfig.CPUProfileDirName
 	baseCfg.GoroutineDumpDirName = kvServerCfg.BaseConfig.GoroutineDumpDirName
 
 	// The ListenerFactory allows us to dynamically choose a
@@ -347,7 +332,7 @@ func makeSharedProcessTenantServerConfig(
 
 	sqlCfg = MakeSQLConfig(tenantID, tempStorageCfg)
 	baseCfg.Settings.ExternalIODir = kvServerCfg.BaseConfig.Settings.ExternalIODir
-	baseCfg.ExternalIODirConfig = kvServerCfg.BaseConfig.ExternalIODirConfig
+	sqlCfg.ExternalIODirConfig = kvServerCfg.SQLConfig.ExternalIODirConfig
 
 	// Use the internal connector instead of the network.
 	// See: https://github.com/cockroachdb/cockroach/issues/84591
@@ -367,6 +352,7 @@ func makeSharedProcessTenantServerConfig(
 	sqlCfg.LocalKVServerInfo = &kvServerInfo
 
 	sqlCfg.NodeMetricsRecorder = nodeMetricsRecorder
+	sqlCfg.LicenseEnforcer = kvServerCfg.SQLConfig.LicenseEnforcer
 
 	return baseCfg, sqlCfg, nil
 }

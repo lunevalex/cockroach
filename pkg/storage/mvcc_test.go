@@ -1,12 +1,7 @@
 // Copyright 2014 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package storage
 
@@ -915,7 +910,7 @@ func TestMVCCInvalidateIterator(t *testing.T) {
 
 			{
 				// Seek the iter to a valid position.
-				iter, err := batch.NewMVCCIterator(context.Background(), MVCCKeyAndIntentsIterKind, iterOptions)
+				iter, err := batch.NewMVCCIterator(MVCCKeyAndIntentsIterKind, iterOptions)
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -932,7 +927,7 @@ func TestMVCCInvalidateIterator(t *testing.T) {
 			case "findSplitKey":
 				_, err = MVCCFindSplitKey(ctx, batch, roachpb.RKeyMin, roachpb.RKeyMax, 64<<20)
 			case "computeStatsForIter":
-				iter, err := batch.NewMVCCIterator(context.Background(), MVCCKeyAndIntentsIterKind, iterOptions)
+				iter, err := batch.NewMVCCIterator(MVCCKeyAndIntentsIterKind, iterOptions)
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -948,7 +943,7 @@ func TestMVCCInvalidateIterator(t *testing.T) {
 			}
 
 			// Verify that the iter is invalid.
-			iter, err := batch.NewMVCCIterator(context.Background(), MVCCKeyAndIntentsIterKind, iterOptions)
+			iter, err := batch.NewMVCCIterator(MVCCKeyAndIntentsIterKind, iterOptions)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -2222,7 +2217,7 @@ func TestMVCCClearTimeRangeOnRandomData(t *testing.T) {
 	ms.AgeTo(2000)
 
 	// Sanity check starting stats.
-	msComputed, err := ComputeStats(ctx, e, localMax, keyMax, 2000)
+	msComputed, err := ComputeStats(e, localMax, keyMax, 2000)
 	require.NoError(t, err)
 	require.Equal(t, msComputed, ms)
 
@@ -2260,7 +2255,7 @@ func TestMVCCClearTimeRangeOnRandomData(t *testing.T) {
 				batch.Close()
 			}
 
-			msComputed, err := ComputeStats(ctx, e, localMax, keyMax, 2000)
+			msComputed, err := ComputeStats(e, localMax, keyMax, 2000)
 			require.NoError(t, err)
 			require.Equal(t, msComputed, ms)
 			// Scanning at "now" post-revert should yield the same result as scanning
@@ -3789,7 +3784,7 @@ func generateBytes(rng *rand.Rand, min int, max int) []byte {
 
 func createEngWithSeparatedIntents(t *testing.T) Engine {
 	eng, err := Open(context.Background(), InMemory(),
-		cluster.MakeTestingClusterSettings(), MaxSize(1<<20))
+		cluster.MakeTestingClusterSettings(), MaxSizeBytes(1<<20))
 	require.NoError(t, err)
 	return eng
 }
@@ -3830,7 +3825,8 @@ func checkEngineEquality(
 		log.Infof(ctx, "checkEngineEquality")
 	}
 	makeIter := func(eng Engine) MVCCIterator {
-		iter, err := eng.NewMVCCIterator(context.Background(), MVCCKeyAndIntentsIterKind, IterOptions{LowerBound: span.Key, UpperBound: span.EndKey})
+		iter, err := eng.NewMVCCIterator(MVCCKeyAndIntentsIterKind,
+			IterOptions{LowerBound: span.Key, UpperBound: span.EndKey})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -4096,7 +4092,8 @@ func TestRandomizedSavepointRollbackAndIntentResolution(t *testing.T) {
 	_, _, _, _, _, err = MVCCResolveWriteIntentRange(ctx, eng, nil, lu, MVCCResolveWriteIntentRangeOptions{})
 	require.NoError(t, err)
 	{
-		iter, err := eng.NewMVCCIterator(context.Background(), MVCCKeyAndIntentsIterKind, IterOptions{LowerBound: lu.Span.Key, UpperBound: lu.Span.EndKey})
+		iter, err := eng.NewMVCCIterator(MVCCKeyAndIntentsIterKind,
+			IterOptions{LowerBound: lu.Span.Key, UpperBound: lu.Span.EndKey})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -4132,7 +4129,8 @@ func TestRandomizedSavepointRollbackAndIntentResolution(t *testing.T) {
 	// Compact the engine so that SINGLEDEL consumes the SETWITHDEL, becoming a
 	// DEL.
 	require.NoError(t, eng.Compact())
-	iter, err := eng.NewMVCCIterator(context.Background(), MVCCKeyAndIntentsIterKind, IterOptions{LowerBound: lu.Span.Key, UpperBound: lu.Span.EndKey})
+	iter, err := eng.NewMVCCIterator(MVCCKeyAndIntentsIterKind,
+		IterOptions{LowerBound: lu.Span.Key, UpperBound: lu.Span.EndKey})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -4898,7 +4896,7 @@ func TestMVCCGarbageCollect(t *testing.T) {
 	}
 	if log.V(1) {
 		log.Info(context.Background(), "Engine content before GC")
-		kvsn, err := Scan(context.Background(), engine, localMax, keyMax, 0)
+		kvsn, err := Scan(engine, localMax, keyMax, 0)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -4945,7 +4943,7 @@ func TestMVCCGarbageCollect(t *testing.T) {
 
 	if log.V(1) {
 		log.Info(context.Background(), "Engine content after GC")
-		kvsn, err := Scan(context.Background(), engine, localMax, keyMax, 0)
+		kvsn, err := Scan(engine, localMax, keyMax, 0)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -4960,7 +4958,7 @@ func TestMVCCGarbageCollect(t *testing.T) {
 		mvccVersionKey(roachpb.Key("b"), ts2),
 		mvccVersionKey(roachpb.Key("b-del"), ts3),
 	}
-	kvs, err := Scan(context.Background(), engine, localMax, keyMax, 0)
+	kvs, err := Scan(engine, localMax, keyMax, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -5107,10 +5105,10 @@ type readWriterReturningSeekLTTrackingIterator struct {
 
 // NewMVCCIterator injects a seekLTTrackingIterator over the engine's real iterator.
 func (rw *readWriterReturningSeekLTTrackingIterator) NewMVCCIterator(
-	ctx context.Context, iterKind MVCCIterKind, opts IterOptions,
+	iterKind MVCCIterKind, opts IterOptions,
 ) (MVCCIterator, error) {
 	var err error
-	rw.it.MVCCIterator, err = rw.ReadWriter.NewMVCCIterator(ctx, iterKind, opts)
+	rw.it.MVCCIterator, err = rw.ReadWriter.NewMVCCIterator(iterKind, opts)
 	return &rw.it, err
 }
 
@@ -5799,7 +5797,7 @@ func TestMVCCGarbageCollectRanges(t *testing.T) {
 			require.NoError(t, MVCCGarbageCollectRangeKeys(ctx, engine, &ms, rangeKeys),
 				"failed to run mvcc range tombstone garbage collect")
 
-			it, err := engine.NewMVCCIterator(context.Background(), MVCCKeyIterKind, IterOptions{
+			it, err := engine.NewMVCCIterator(MVCCKeyIterKind, IterOptions{
 				KeyTypes:   IterKeyTypeRangesOnly,
 				LowerBound: d.rangeStart,
 				UpperBound: d.rangeEnd,
@@ -5826,7 +5824,7 @@ func TestMVCCGarbageCollectRanges(t *testing.T) {
 				"not all range tombstone expectations were consumed")
 
 			ms.AgeTo(tsMax.WallTime)
-			expMs, err := ComputeStats(ctx, engine, d.rangeStart, d.rangeEnd, tsMax.WallTime)
+			expMs, err := ComputeStats(engine, d.rangeStart, d.rangeEnd, tsMax.WallTime)
 			require.NoError(t, err, "failed to compute stats for range")
 			require.EqualValues(t, expMs, ms, "computed range stats vs gc'd")
 
@@ -6028,7 +6026,7 @@ func TestMVCCGarbageCollectClearRange(t *testing.T) {
 	require.Empty(t, ks)
 
 	ms.AgeTo(tsMax.WallTime)
-	it, err := engine.NewMVCCIterator(context.Background(), MVCCKeyAndIntentsIterKind, IterOptions{
+	it, err := engine.NewMVCCIterator(MVCCKeyAndIntentsIterKind, IterOptions{
 		KeyTypes:   IterKeyTypePointsAndRanges,
 		LowerBound: rangeStart,
 		UpperBound: rangeEnd,
@@ -6156,7 +6154,7 @@ func TestMVCCGarbageCollectClearPointsInRange(t *testing.T) {
 	require.EqualValues(t, expKs, ks)
 
 	ms.AgeTo(tsMax.WallTime)
-	expMs, err := ComputeStats(ctx, engine, rangeStart, rangeEnd, tsMax.WallTime)
+	expMs, err := ComputeStats(engine, rangeStart, rangeEnd, tsMax.WallTime)
 	require.NoError(t, err, "failed to compute stats for range")
 	require.EqualValues(t, expMs, ms, "computed range stats vs gc'd")
 
@@ -7257,7 +7255,7 @@ func mvccGetRaw(t *testing.T, r Reader, key MVCCKey) []byte {
 }
 
 func mvccGetRawWithError(t *testing.T, r Reader, key MVCCKey) ([]byte, error) {
-	iter, err := r.NewMVCCIterator(context.Background(), MVCCKeyAndIntentsIterKind, IterOptions{Prefix: true})
+	iter, err := r.NewMVCCIterator(MVCCKeyAndIntentsIterKind, IterOptions{Prefix: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -7383,7 +7381,7 @@ func TestMVCCLookupRangeKeyValue(t *testing.T) {
 	} {
 		fmt.Fprintf(&buf, "# %s\n", tc.name)
 		fmt.Fprintf(&buf, "lookup([%s,%s) @ %d) = ", tc.k, tc.ek, tc.ts.WallTime)
-		valBytes, err := MVCCLookupRangeKeyValue(context.Background(), eng, tc.k, tc.ek, tc.ts)
+		valBytes, err := MVCCLookupRangeKeyValue(eng, tc.k, tc.ek, tc.ts)
 		if err != nil {
 			fmt.Fprintln(&buf, err)
 		} else {
@@ -7397,135 +7395,4 @@ func TestMVCCLookupRangeKeyValue(t *testing.T) {
 	}
 	path := datapathutils.TestDataPath(t, t.Name())
 	echotest.Require(t, buf.String(), path)
-}
-
-func TestMVCCGetForKnownTimestampWithNoIntent(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-	defer log.Scope(t).Close(t)
-
-	ctx := context.Background()
-	engine := NewDefaultInMemForTesting()
-	defer engine.Close()
-
-	for _, tc := range []struct {
-		name         string
-		key          roachpb.Key
-		writeTs      hlc.Timestamp
-		writeToBatch bool
-		writeWithTxn bool
-		val          string
-		readTs       hlc.Timestamp
-		errStr       string
-	}{
-		{
-			name:         "found-in-batch",
-			key:          roachpb.Key("a"),
-			writeTs:      hlc.Timestamp{WallTime: 5},
-			writeToBatch: true,
-			val:          "a-val",
-			readTs:       hlc.Timestamp{WallTime: 5},
-		},
-		{
-			name:         "found-in-engine",
-			key:          roachpb.Key("b"),
-			writeTs:      hlc.Timestamp{WallTime: 5},
-			writeToBatch: false,
-			val:          "b-val",
-			readTs:       hlc.Timestamp{WallTime: 5},
-		},
-		{
-			name:         "higher-timestamp-in-batch",
-			key:          roachpb.Key("c"),
-			writeTs:      hlc.Timestamp{WallTime: 5},
-			writeToBatch: true,
-			val:          "c-val",
-			readTs:       hlc.Timestamp{WallTime: 4},
-			errStr:       "value missing for key",
-		},
-		{
-			name:         "higher-timestamp-in-engine",
-			key:          roachpb.Key("d"),
-			writeTs:      hlc.Timestamp{WallTime: 5},
-			writeToBatch: false,
-			val:          "d-val",
-			readTs:       hlc.Timestamp{WallTime: 4},
-			errStr:       "value missing for key",
-		},
-		{
-			name:         "intent-in-batch-not-seen",
-			key:          roachpb.Key("e"),
-			writeTs:      hlc.Timestamp{WallTime: 5},
-			writeToBatch: true,
-			writeWithTxn: true,
-			val:          "e-val",
-			readTs:       hlc.Timestamp{WallTime: 5},
-		},
-		{
-			name:         "intent-in-engine-not-seen",
-			key:          roachpb.Key("f"),
-			writeTs:      hlc.Timestamp{WallTime: 5},
-			writeToBatch: false,
-			writeWithTxn: true,
-			val:          "f-val",
-			readTs:       hlc.Timestamp{WallTime: 5},
-		},
-		{
-			name:         "lower-timestamp-in-batch",
-			key:          roachpb.Key("g"),
-			writeTs:      hlc.Timestamp{WallTime: 5},
-			writeToBatch: true,
-			val:          "g-val",
-			readTs:       hlc.Timestamp{WallTime: 6},
-			errStr:       "expected timestamp 0.000000006,0 and found 0.000000005,0",
-		},
-		{
-			name:         "lower-timestamp-in-engine",
-			key:          roachpb.Key("h"),
-			writeTs:      hlc.Timestamp{WallTime: 5},
-			writeToBatch: false,
-			val:          "h-val",
-			readTs:       hlc.Timestamp{WallTime: 6},
-			errStr:       "expected timestamp 0.000000006,0 and found 0.000000005,0",
-		},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			var rw ReadWriter
-			rw = engine
-			var batch Batch
-			if tc.writeToBatch {
-				batch = engine.NewBatch()
-				defer batch.Close()
-				rw = batch
-			}
-			val := roachpb.MakeValueFromString(tc.val)
-			var txn *roachpb.Transaction
-			if tc.writeWithTxn {
-				txn = makeTxn(*txn1, tc.writeTs)
-			}
-			_, err := MVCCPut(ctx, rw, tc.key, tc.writeTs, val, MVCCWriteOptions{Txn: txn})
-			require.NoError(t, err)
-			if batch == nil {
-				batch = engine.NewBatch()
-				defer batch.Close()
-			}
-			v, _, err := MVCCGetForKnownTimestampWithNoIntent(
-				ctx, batch, tc.key, tc.readTs, tc.writeToBatch)
-			if len(tc.errStr) == 0 {
-				b, err := v.GetBytes()
-				require.NoError(t, err)
-				require.Equal(t, tc.val, string(b))
-				if tc.writeToBatch {
-					// Also read without the batch-only optimization.
-					v, _, err = MVCCGetForKnownTimestampWithNoIntent(
-						ctx, batch, tc.key, tc.readTs, false)
-					require.NoError(t, err)
-					b, err = v.GetBytes()
-					require.NoError(t, err)
-					require.Equal(t, tc.val, string(b))
-				}
-			} else {
-				require.ErrorContains(t, err, tc.errStr)
-			}
-		})
-	}
 }

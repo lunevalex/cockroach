@@ -1,12 +1,7 @@
 // Copyright 2023 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package tests
 
@@ -219,6 +214,19 @@ func runLeasePreferences(
 	conn := c.Conn(ctx, t.L(), numNodes)
 	defer conn.Close()
 
+	setLeasePreferences := func(ctx context.Context, preferences string) {
+		_, err := conn.ExecContext(ctx, fmt.Sprintf(
+			`ALTER database kv CONFIGURE ZONE USING 
+        num_replicas = %d, 
+        num_voters = %d,
+        voter_constraints='[]',
+        lease_preferences='[%s]'
+      `,
+			spec.replFactor, spec.replFactor, spec.preferences,
+		))
+		require.NoError(t, err)
+	}
+
 	checkLeasePreferenceConformance := func(ctx context.Context) {
 		result, err := waitForLeasePreferences(
 			ctx, t, c, spec.checkNodes, spec.waitForLessPreferred, stableDuration, spec.postEventWaitDuration)
@@ -243,7 +251,7 @@ func runLeasePreferences(
 	// creating the splits and waiting for up-replication on kv will be much
 	// quicker.
 	require.NoError(t, WaitForReplication(ctx, t, conn, spec.replFactor, atLeastReplicationFactor))
-	c.Run(ctx, option.WithNodes(c.Node(numNodes)), fmt.Sprintf(
+	c.Run(ctx, c.Node(numNodes), fmt.Sprintf(
 		`./cockroach workload init kv --scatter --splits %d {pgurl:%d}`,
 		spec.ranges, numNodes))
 	// Wait for under-replicated ranges before checking lease preference
@@ -254,15 +262,12 @@ func runLeasePreferences(
 	// would occasionally fail due to the liveness heartbeat failures, when the
 	// liveness lease is on a stopped node. This is not ideal behavior, #108512.
 	configureZone(t, ctx, conn, "RANGE liveness", zoneConfig{
-		replicas:        spec.replFactor,
-		leasePreference: "[+node5]",
+		replicas:  spec.replFactor,
+		leaseNode: 5,
 	})
 
 	t.L().Printf("setting lease preferences: %s", spec.preferences)
-	configureZone(t, ctx, conn, "DATABASE kv", zoneConfig{
-		replicas:        spec.replFactor,
-		leasePreference: spec.preferences,
-	})
+	setLeasePreferences(ctx, spec.preferences)
 	t.L().Printf("waiting for initial lease preference conformance")
 	checkLeasePreferenceConformance(ctx)
 

@@ -1,12 +1,7 @@
 // Copyright 2020 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package sql
 
@@ -32,6 +27,7 @@ func constructPlan(
 	cascades []exec.Cascade,
 	checks []exec.Node,
 	rootRowCount int64,
+	flags exec.PlanFlags,
 ) (exec.Plan, error) {
 	res := &planComponents{}
 	assignPlan := func(plan *planMaybePhysical, node exec.Node) {
@@ -80,6 +76,30 @@ func constructPlan(
 		for i := range checks {
 			assignPlan(&res.checkPlans[i].plan, checks[i])
 		}
+	}
+	if flags.IsSet(exec.PlanFlagIsDDL) {
+		res.flags.Set(planFlagIsDDL)
+	}
+	if flags.IsSet(exec.PlanFlagContainsFullTableScan) {
+		res.flags.Set(planFlagContainsFullTableScan)
+	}
+	if flags.IsSet(exec.PlanFlagContainsFullIndexScan) {
+		res.flags.Set(planFlagContainsFullIndexScan)
+	}
+	if flags.IsSet(exec.PlanFlagContainsLargeFullTableScan) {
+		res.flags.Set(planFlagContainsLargeFullTableScan)
+	}
+	if flags.IsSet(exec.PlanFlagContainsLargeFullIndexScan) {
+		res.flags.Set(planFlagContainsLargeFullIndexScan)
+	}
+	if flags.IsSet(exec.PlanFlagContainsMutation) {
+		res.flags.Set(planFlagContainsMutation)
+	}
+	if flags.IsSet(exec.PlanFlagContainsLocking) {
+		res.flags.Set(planFlagContainsLocking)
+	}
+	if flags.IsSet(exec.PlanFlagCheckContainsLocking) {
+		res.flags.Set(planFlagCheckContainsLocking)
 	}
 
 	return res, nil

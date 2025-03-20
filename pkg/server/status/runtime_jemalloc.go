@@ -1,12 +1,7 @@
 // Copyright 2016 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 //go:build !stdmalloc
 // +build !stdmalloc
@@ -40,37 +35,37 @@ package status
 //
 //   int err;
 //
-//   sz = sizeof(&stats->Allocated);
+//   sz = sizeof(stats->Allocated);
 //   err = je_mallctl("stats.allocated", &stats->Allocated, &sz, NULL, 0);
 //   if (err != 0) {
 //     return err;
 //   }
-//   sz = sizeof(&stats->Active);
+//   sz = sizeof(stats->Active);
 //   err = je_mallctl("stats.active", &stats->Active, &sz, NULL, 0);
 //   if (err != 0) {
 //     return err;
 //   }
-//   sz = sizeof(&stats->Metadata);
+//   sz = sizeof(stats->Metadata);
 //   err = je_mallctl("stats.metadata", &stats->Metadata, &sz, NULL, 0);
 //   if (err != 0) {
 //     return err;
 //   }
-//   sz = sizeof(&stats->Resident);
+//   sz = sizeof(stats->Resident);
 //   err = je_mallctl("stats.resident", &stats->Resident, &sz, NULL, 0);
 //   if (err != 0) {
 //     return err;
 //   }
-//   sz = sizeof(&stats->Mapped);
+//   sz = sizeof(stats->Mapped);
 //   err = je_mallctl("stats.mapped", &stats->Mapped, &sz, NULL, 0);
 //   if (err != 0) {
 //     return err;
 //   }
-//   sz = sizeof(&stats->Retained);
+//   sz = sizeof(stats->Retained);
 //   err = je_mallctl("stats.retained", &stats->Retained, &sz, NULL, 0);
 //   if (err != 0) {
 //     return err;
 //   }
-//   return err;
+//   return 0;
 // }
 import "C"
 
@@ -81,6 +76,7 @@ import (
 	"strings"
 
 	"github.com/cockroachdb/cockroach/pkg/util/log"
+	"github.com/cockroachdb/redact"
 	"github.com/dustin/go-humanize"
 )
 
@@ -106,7 +102,7 @@ func getJemallocStats(ctx context.Context) (uint, uint, error) {
 		for i := 0; i < v.NumField(); i++ {
 			stats[i] = t.Field(i).Name + ": " + humanize.IBytes(uint64(v.Field(i).Interface().(C.size_t)))
 		}
-		log.Infof(ctx, "jemalloc stats: %s", strings.Join(stats, " "))
+		log.Infof(ctx, "jemalloc stats: %s", redact.Safe(strings.Join(stats, " ")))
 	}
 
 	// NB: the `!V(MaxInt32)` condition is a workaround to not spew this to the
@@ -118,6 +114,18 @@ func getJemallocStats(ctx context.Context) (uint, uint, error) {
 		C.je_malloc_stats_print(nil, nil, nil)
 	}
 
+	// js.Allocated corresponds to stats.allocated, which is effectively the sum
+	// of outstanding allocations times the size class; thus it includes internal
+	// fragmentation.
+	//
+	// js.Resident corresponds to stats.resident, which is documented as follows:
+	//   Maximum number of bytes in physically resident data pages mapped by the
+	//   allocator, comprising all pages dedicated to allocator metadata, pages
+	//   backing active allocations, and unused dirty pages. This is a maximum
+	//   rather than precise because pages may not actually be physically resident
+	//   if they correspond to demand-zeroed virtual memory that has not yet been
+	//   touched. This is a multiple of the page size, and is larger than
+	//   stats.active.
 	return uint(js.Allocated), uint(js.Resident), nil
 }
 

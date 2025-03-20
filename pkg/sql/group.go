@@ -1,12 +1,7 @@
 // Copyright 2015 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package sql
 
@@ -74,9 +69,6 @@ type aggregateFuncHolder struct {
 	arguments tree.Datums
 	// isDistinct indicates whether only distinct values are aggregated.
 	isDistinct bool
-	// distsqlBlocklist is set when this function cannot be evaluated in
-	// distributed fashion.
-	distsqlBlocklist bool
 }
 
 // newAggregateFuncHolder creates an aggregateFuncHolder.
@@ -87,19 +79,14 @@ type aggregateFuncHolder struct {
 // If the aggregation function takes no arguments (e.g. COUNT_ROWS),
 // argRenderIdx is noRenderIdx.
 func newAggregateFuncHolder(
-	funcName string,
-	argRenderIdxs []int,
-	arguments tree.Datums,
-	isDistinct bool,
-	distsqlBlocklist bool,
+	funcName string, argRenderIdxs []int, arguments tree.Datums, isDistinct bool,
 ) *aggregateFuncHolder {
 	res := &aggregateFuncHolder{
-		funcName:         funcName,
-		argRenderIdxs:    argRenderIdxs,
-		filterRenderIdx:  tree.NoColumnIdx,
-		arguments:        arguments,
-		isDistinct:       isDistinct,
-		distsqlBlocklist: distsqlBlocklist,
+		funcName:        funcName,
+		argRenderIdxs:   argRenderIdxs,
+		filterRenderIdx: tree.NoColumnIdx,
+		arguments:       arguments,
+		isDistinct:      isDistinct,
 	}
 	return res
 }

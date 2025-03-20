@@ -20,10 +20,7 @@ go_library(
 go_test(
     name = "workloadindexrec_test",
     srcs = ["index_trie_test.go"],
+    args = ["-test.timeout=295s"],
     embed = [":workloadindexrec"],
-    exec_properties = select({
-        "//build/toolchains:is_heavy": {"Pool": "heavy"},
-        "//conditions:default": {"Pool": "default"},
-    }),
     deps = ["//pkg/sql/sem/tree"],
 )

@@ -1,12 +1,7 @@
 // Copyright 2021 The Cockroach Authors.
 //
-// Use of this software is governed by the Business Source License
-// included in the file licenses/BSL.txt.
-//
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
-// by the Apache License, Version 2.0, included in the file
-// licenses/APL.txt.
+// Use of this software is governed by the CockroachDB Software License
+// included in the /LICENSE file.
 
 package batcheval
 
@@ -74,7 +69,7 @@ func QueryResolvedTimestamp(
 	intentCleanupAge := QueryResolvedTimestampIntentCleanupAge.Get(&st.SV)
 	intentCleanupThresh := cArgs.EvalCtx.Clock().Now().Add(-intentCleanupAge.Nanoseconds(), 0)
 	minIntentTS, encounteredIntents, err := computeMinIntentTimestamp(
-		ctx, reader, args.Span(), maxEncounteredIntents, maxEncounteredIntentKeyBytes, intentCleanupThresh,
+		reader, args.Span(), maxEncounteredIntents, maxEncounteredIntentKeyBytes, intentCleanupThresh,
 	)
 	if err != nil {
 		return result.Result{}, errors.Wrapf(err, "computing minimum intent timestamp")
@@ -96,7 +91,6 @@ func QueryResolvedTimestamp(
 // minimum timestamp of any intent. While doing so, it also collects and returns
 // up to maxEncounteredIntents intents that are older than intentCleanupThresh.
 func computeMinIntentTimestamp(
-	ctx context.Context,
 	reader storage.Reader,
 	span roachpb.Span,
 	maxEncounteredIntents int64,
@@ -109,10 +103,9 @@ func computeMinIntentTimestamp(
 		LowerBound: ltStart,
 		UpperBound: ltEnd,
 		// Ignore Exclusive and Shared locks. We only care about intents.
-		MatchMinStr:  lock.Intent,
-		ReadCategory: storage.BatchEvalReadCategory,
+		MatchMinStr: lock.Intent,
 	}
-	iter, err := storage.NewLockTableIterator(ctx, reader, opts)
+	iter, err := storage.NewLockTableIterator(reader, opts)
 	if err != nil {
 		return hlc.Timestamp{}, nil, err
 	}

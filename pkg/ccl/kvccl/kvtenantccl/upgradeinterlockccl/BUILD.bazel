@@ -8,10 +8,11 @@ go_test(
         "local_test_util_test.go",
         "main_test.go",
     ],
-    exec_properties = select({
-        "//build/toolchains:is_heavy": {"Pool": "heavy"},
-        "//conditions:default": {"Pool": "large"},
+    args = select({
+        "//build/toolchains:use_ci_timeouts": ["-test.timeout=895s"],
+        "//conditions:default": ["-test.timeout=3595s"],
     }),
+    exec_properties = {"Pool": "large"},
     shard_count = 14,
     tags = ["ccl_test"],
     deps = [
